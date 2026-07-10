@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { AssetState, Candle } from '../src/types';
-import { createSimulatedCandles, mulberry32, parseKlines, reconcileCandle, stepSimulation } from '../src/markets';
+import {
+  createSimulatedCandles,
+  isSocketActivityStale,
+  mulberry32,
+  parseKlines,
+  reconcileCandle,
+  stepSimulation,
+} from '../src/markets';
 
 describe('market candle helpers', () => {
   it('parses Binance kline rows into a bounded candle window', () => {
@@ -34,5 +41,11 @@ describe('market candle helpers', () => {
     const second = stepSimulation(state, mulberry32(42), 1_800_400);
     expect(first.price).toBe(second.price);
     expect(first.candles.at(-1)?.high).toBeGreaterThanOrEqual(first.price);
+  });
+
+  it('keeps a combined socket healthy when any stream is active', () => {
+    const now = 50_000;
+    expect(isSocketActivityStale([1_000, 49_500, 2_000], now)).toBe(false);
+    expect(isSocketActivityStale([1_000, 2_000, 3_000], now)).toBe(true);
   });
 });

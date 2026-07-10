@@ -55,6 +55,15 @@ export function reconcileCandle(candles: readonly Candle[], incoming: Candle): C
   return next.slice(-30);
 }
 
+export function isSocketActivityStale(
+  activityTimes: Iterable<number>,
+  now: number,
+  timeoutMs = 12_000,
+): boolean {
+  const latest = Math.max(...activityTimes);
+  return !Number.isFinite(latest) || now - latest > timeoutMs;
+}
+
 export class BinanceMarketFeed implements MarketFeed {
   private readonly states = new Map<AssetSymbol, AssetState>();
   private readonly listeners = new Set<Listener>();
@@ -266,14 +275,9 @@ export class BinanceMarketFeed implements MarketFeed {
   private watchdog(): void {
     if (this.paused || this.disposed || FORCE_SIMULATION) return;
     const now = Date.now();
-    let stale = false;
-    for (const symbol of ASSET_SYMBOLS) {
-      if (now - (this.lastMessage.get(symbol) ?? 0) > 10_000) {
-        this.setMode(symbol, 'simulated');
-        stale = true;
-      }
-    }
-    if (stale) this.socket?.close();
+    if (!isSocketActivityStale(this.lastMessage.values(), now)) return;
+    ASSET_SYMBOLS.forEach((symbol) => this.setMode(symbol, 'simulated'));
+    this.socket?.close();
   }
 
   private handleDisconnect(): void {
