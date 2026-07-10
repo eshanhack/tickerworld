@@ -1,8 +1,10 @@
 import type { AssetSymbol } from './types';
 
-export const WORLD_SEED = new URLSearchParams(location.search).get('seed') ?? 'tickerworld-v1';
-export const FORCE_SIMULATION = new URLSearchParams(location.search).get('data') === 'sim';
-export const DEBUG_MODE = new URLSearchParams(location.search).get('debug') === '1';
+const SEARCH_PARAMS = new URLSearchParams(typeof location === 'undefined' ? '' : location.search);
+
+export const WORLD_SEED = SEARCH_PARAMS.get('seed') ?? 'tickerworld-v1';
+export const FORCE_SIMULATION = SEARCH_PARAMS.get('data') === 'sim';
+export const DEBUG_MODE = SEARCH_PARAMS.get('debug') === '1';
 
 export const CHUNK_SIZE = 48;
 export const CHUNK_SEGMENTS = 24;

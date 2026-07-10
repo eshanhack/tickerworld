@@ -1,0 +1,16 @@
+{
+  "name": "Tickerworld",
+  "short_name": "Tickerworld",
+  "description": "A calm living market world to explore.",
+  "start_url": "/",
+  "display": "fullscreen",
+  "background_color": "#a9d6ce",
+  "theme_color": "#a9d6ce",
+  "icons": [
+    {
+      "src": "/favicon.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    }
+  ]
+}
