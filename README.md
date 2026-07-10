@@ -1,5 +1,12 @@
 # Tickerworld
 
-A lightweight placeholder site ready for deployment on Vercel.
+Tickerworld is a calm browser exploration game set in an endless pastel landscape of living crypto chart monuments.
 
-No build command is required. Import the GitHub repository into Vercel and deploy it as an `Other` framework project.
+## Development
+
+```sh
+npm install
+npm run dev
+```
+
+Use `?data=sim` for deterministic simulated market data and `?debug=1` for runtime diagnostics.
