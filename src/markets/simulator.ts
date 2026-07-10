@@ -83,16 +83,17 @@ export function stepSimulation(
 
   const openTime = Math.floor(now / 60_000) * 60_000;
   const move = gaussian(random) * VOLATILITY[state.symbol] * 0.38;
-  const nextPrice = Math.max(0.0000001, state.price * Math.exp(move));
+  const currentPrice = state.price ?? latest.close;
+  const nextPrice = Math.max(0.0000001, currentPrice * Math.exp(move));
   let candles = [...state.candles];
 
   if (latest.openTime < openTime) {
     candles[candles.length - 1] = { ...latest, closed: true };
     candles.push({
       openTime,
-      open: state.price,
-      high: Math.max(state.price, nextPrice),
-      low: Math.min(state.price, nextPrice),
+      open: currentPrice,
+      high: Math.max(currentPrice, nextPrice),
+      low: Math.min(currentPrice, nextPrice),
       close: nextPrice,
       closed: false,
     });
@@ -110,9 +111,11 @@ export function stepSimulation(
   return {
     ...state,
     candles,
-    previousPrice: state.price,
+    instrument: state.symbol,
+    provider: 'simulation',
+    previousPrice: currentPrice,
     price: nextPrice,
-    direction: nextPrice > state.price ? 'up' : nextPrice < state.price ? 'down' : 'flat',
+    direction: nextPrice > currentPrice ? 'up' : nextPrice < currentPrice ? 'down' : 'flat',
     mode: 'simulated',
     updatedAt: now,
     presentationTick: state.presentationTick + 1,

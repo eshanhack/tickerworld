@@ -1,8 +1,24 @@
 import { Quaternion, Vector3, type Camera } from 'three';
 import type { SurfaceKind, TickDirection } from '../types';
-import { ASSET_AUDIO_PROFILES, clampUnit, normaliseMoveIntensity } from './audioMath';
+import {
+  AMBIENT_KEY_DELAY_RANGE_SECONDS,
+  AMBIENT_PAD_DELAY_RANGE_SECONDS,
+  AMBIENT_PAD_VOICINGS,
+  D_MAJOR_PENTATONIC_HZ,
+  delayInRange,
+  EMPTY_COLORED_NOISE_STATE,
+  nextColoredNoiseSample,
+  pickNonRepeatingIndex,
+} from './ambientMath';
+import {
+  ASSET_AUDIO_PROFILES,
+  clampUnit,
+  marketGestureFrequencies,
+  normaliseMoveIntensity,
+} from './audioMath';
 import type {
   AudioEngineOptions,
+  AudioEnvironment,
   AudioEngineState,
   AudioListenerInput,
   AudioListenerPose,
@@ -23,6 +39,13 @@ interface MonumentGraph {
   readonly descriptor: MonumentAudioSource;
   readonly input: GainNode;
   readonly panner: PannerNode;
+}
+
+interface AmbientPadVoice {
+  readonly index: number;
+  readonly gain: GainNode;
+  readonly sources: readonly OscillatorNode[];
+  readonly nodes: readonly AudioNode[];
 }
 
 interface LegacyAudioListener {
@@ -109,9 +132,18 @@ export class AudioEngine {
   private ambientBus: GainNode | null = null;
   private sfxBus: GainNode | null = null;
   private outputCompressor: DynamicsCompressorNode | null = null;
-  private noiseBuffer: AudioBuffer | null = null;
+  private transientNoiseBuffer: AudioBuffer | null = null;
+  private atmosphereNoiseBuffer: AudioBuffer | null = null;
+  private padToneFilter: BiquadFilterNode | null = null;
+  private atmosphereLowpass: BiquadFilterNode | null = null;
+  private atmosphereGain: GainNode | null = null;
+  private currentPadVoice: AmbientPadVoice | null = null;
   private ambientStarted = false;
-  private pluckTimer: ReturnType<typeof setTimeout> | null = null;
+  private keyTimer: ReturnType<typeof setTimeout> | null = null;
+  private padTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastKeyIndex = -1;
+  private lastPadIndex = -1;
+  private nightFactor = 0;
   private unlockAttempt: Promise<boolean> | null = null;
   private visible = true;
   private disposed = false;
@@ -283,45 +315,10 @@ export class AudioEngine {
     const profile = ASSET_AUDIO_PROFILES[graph.descriptor.symbol];
     const intensity = normaliseMoveIntensity(moveRatio);
     const now = this.context.currentTime;
-    const duration = direction === 'up' ? 0.48 : 0.4;
-    const voiceGain = this.context.createGain();
-    const filter = this.context.createBiquadFilter();
-    filter.type = direction === 'up' ? 'highpass' : 'lowpass';
-    filter.frequency.setValueAtTime(direction === 'up' ? 520 : 900, now);
-    filter.Q.value = direction === 'up' ? 0.4 : 0.7;
-    voiceGain.gain.setValueAtTime(0.0001, now);
-    voiceGain.gain.exponentialRampToValueAtTime(0.055 + intensity * 0.085, now + 0.012);
-    voiceGain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
-    filter.connect(voiceGain);
-    voiceGain.connect(graph.input);
-
-    const primary = this.context.createOscillator();
-    primary.type = direction === 'up' ? 'sine' : 'triangle';
-    primary.detune.value = profile.accent;
-    const startFrequency = direction === 'up' ? profile.frequency : profile.frequency * 0.48;
-    const endFrequency = direction === 'up' ? profile.frequency * 1.26 : profile.frequency * 0.37;
-    primary.frequency.setValueAtTime(startFrequency, now);
-    primary.frequency.exponentialRampToValueAtTime(endFrequency, now + duration * 0.72);
-    primary.connect(filter);
-    primary.start(now);
-    primary.stop(now + duration + 0.02);
-    this.trackFiniteSource(primary, [primary, filter, voiceGain]);
-
-    if (direction === 'up' && this.scheduledSources.size < MAX_SCHEDULED_SOURCES) {
-      const shimmer = this.context.createOscillator();
-      const shimmerGain = this.context.createGain();
-      shimmer.type = 'triangle';
-      shimmer.frequency.setValueAtTime(profile.frequency * 2.01, now);
-      shimmer.detune.value = profile.accent + 7;
-      shimmerGain.gain.setValueAtTime(0.0001, now);
-      shimmerGain.gain.exponentialRampToValueAtTime(0.018 + intensity * 0.018, now + 0.008);
-      shimmerGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.28);
-      shimmer.connect(shimmerGain);
-      shimmerGain.connect(graph.input);
-      shimmer.start(now);
-      shimmer.stop(now + 0.3);
-      this.trackFiniteSource(shimmer, [shimmer, shimmerGain]);
-    }
+    const [first, second] = marketGestureFrequencies(profile.frequency, direction);
+    const peak = 0.026 + intensity * 0.035;
+    this.playGentleNote(graph.input, now, first, 0.34, peak * 0.72, profile.accent);
+    this.playGentleNote(graph.input, now + 0.13, second, 0.52, peak, profile.accent);
   }
 
   public playCandleClose(sourceId: string, intensity = 0.5): void {
@@ -330,20 +327,9 @@ export class AudioEngine {
     if (!graph) return;
     const now = this.context.currentTime;
     const amount = clampUnit(intensity);
-    const oscillator = this.context.createOscillator();
-    const gain = this.context.createGain();
-    oscillator.type = 'sine';
-    oscillator.frequency.setValueAtTime(112, now);
-    oscillator.frequency.exponentialRampToValueAtTime(58, now + 0.24);
-    gain.gain.setValueAtTime(0.0001, now);
-    gain.gain.exponentialRampToValueAtTime(0.065 + amount * 0.055, now + 0.008);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.3);
-    oscillator.connect(gain);
-    gain.connect(graph.input);
-    oscillator.start(now);
-    oscillator.stop(now + 0.32);
-    this.trackFiniteSource(oscillator, [oscillator, gain]);
-    this.playNoiseBurst(graph.input, now, 0.075, 'lowpass', 680, 0.025 + amount * 0.015);
+    this.playDampedResonator(graph.input, now, 104, 0.3, 0.036 + amount * 0.03);
+    this.playDampedResonator(graph.input, now + 0.018, 69, 0.38, 0.018 + amount * 0.012);
+    this.playNoiseBurst(graph.input, now, 0.09, 'lowpass', 420, 0.009 + amount * 0.006);
   }
 
   public playFootstep(options: FootstepSoundOptions): void;
@@ -369,10 +355,18 @@ export class AudioEngine {
       settings.frequency * (1 + sideVariation),
       settings.gain * (sprinting ? 1.18 : 1),
     );
-    this.playFootThump(this.sfxBus, now, settings.thumpFrequency, sprinting ? 0.047 : 0.035);
+    this.playFootThump(this.sfxBus, now, settings.thumpFrequency, sprinting ? 0.03 : 0.022);
     if (sprinting) {
-      this.playNoiseBurst(this.sfxBus, now + 0.035, 0.14, 'bandpass', settings.frequency * 0.72, 0.022);
+      this.playNoiseBurst(this.sfxBus, now + 0.035, 0.13, 'bandpass', settings.frequency * 0.72, 0.011);
     }
+  }
+
+  public setEnvironment(environment: AudioEnvironment): void {
+    if (this.disposed) return;
+    const next = clampUnit(environment.nightFactor);
+    if (Math.abs(next - this.nightFactor) < 0.005) return;
+    this.nightFactor = next;
+    this.applyEnvironmentMix();
   }
 
   public setVolume(volume: number): void {
@@ -398,7 +392,7 @@ export class AudioEngine {
     if (this.disposed || this.visible === visible) return;
     this.visible = visible;
     if (!visible) {
-      this.clearPluckTimer();
+      this.clearAmbientTimers();
       if (this.context) {
         this.setStatus('suspended');
         void this.suspendContext();
@@ -417,7 +411,8 @@ export class AudioEngine {
       .then(() => {
         if (this.disposed || !this.visible) return;
         this.startAmbient();
-        this.scheduleNextPluck();
+        this.scheduleNextKey();
+        this.scheduleNextPad();
         this.setStatus('ready');
       })
       .catch((error: unknown) => {
@@ -430,7 +425,7 @@ export class AudioEngine {
   public dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
-    this.clearPluckTimer();
+    this.clearAmbientTimers();
     this.stopAmbient();
     for (const source of this.scheduledSources) safeStop(source);
     for (const node of this.finiteNodes) safeDisconnect(node);
@@ -448,7 +443,12 @@ export class AudioEngine {
     this.ambientBus = null;
     this.sfxBus = null;
     this.outputCompressor = null;
-    this.noiseBuffer = null;
+    this.transientNoiseBuffer = null;
+    this.atmosphereNoiseBuffer = null;
+    this.padToneFilter = null;
+    this.atmosphereLowpass = null;
+    this.atmosphereGain = null;
+    this.currentPadVoice = null;
     this.statusValue = 'disposed';
     this.reasonValue = undefined;
     this.emit();
@@ -461,8 +461,8 @@ export class AudioEngine {
     const ambient = context.createGain();
     const sfx = context.createGain();
     const compressor = context.createDynamicsCompressor();
-    ambient.gain.value = 0.48;
-    sfx.gain.value = 0.86;
+    ambient.gain.value = 0.42;
+    sfx.gain.value = 0.8;
     compressor.threshold.value = -15;
     compressor.knee.value = 18;
     compressor.ratio.value = 3;
@@ -477,6 +477,7 @@ export class AudioEngine {
     this.sfxBus = sfx;
     this.outputCompressor = compressor;
     this.applyMasterGain();
+    this.applyEnvironmentMix();
   }
 
   private applyMasterGain(): void {
@@ -485,6 +486,15 @@ export class AudioEngine {
     const now = this.context.currentTime;
     this.masterBus.gain.cancelScheduledValues(now);
     this.masterBus.gain.setTargetAtTime(target, now, 0.025);
+  }
+
+  private applyEnvironmentMix(): void {
+    if (!this.context) return;
+    const now = this.context.currentTime;
+    this.ambientBus?.gain.setTargetAtTime(0.42 - this.nightFactor * 0.045, now, 0.8);
+    this.padToneFilter?.frequency.setTargetAtTime(1080 - this.nightFactor * 340, now, 1.4);
+    this.atmosphereLowpass?.frequency.setTargetAtTime(600 - this.nightFactor * 160, now, 1.8);
+    this.atmosphereGain?.gain.setTargetAtTime(0.0075 + this.nightFactor * 0.0015, now, 1.8);
   }
 
   private syncMonumentGraphs(): void {
@@ -570,45 +580,18 @@ export class AudioEngine {
     this.ambientStarted = true;
 
     const padFilter = context.createBiquadFilter();
-    const padGain = context.createGain();
     padFilter.type = 'lowpass';
-    padFilter.frequency.value = 760;
-    padFilter.Q.value = 0.35;
-    padGain.gain.value = 0.055;
-    padFilter.connect(padGain);
-    padGain.connect(this.ambientBus);
+    padFilter.frequency.value = 1080 - this.nightFactor * 340;
+    padFilter.Q.value = 0.28;
+    padFilter.connect(this.ambientBus);
+    this.padToneFilter = padFilter;
     this.ambientNodes.add(padFilter);
-    this.ambientNodes.add(padGain);
-
-    const chord = [110, 164.81, 220];
-    chord.forEach((frequency, index) => {
-      const oscillator = context.createOscillator();
-      oscillator.type = index === 1 ? 'triangle' : 'sine';
-      oscillator.frequency.value = frequency;
-      oscillator.detune.value = [-7, 5, 11][index] ?? 0;
-      oscillator.connect(padFilter);
-      oscillator.start(now);
-      this.ambientSources.add(oscillator);
-      this.ambientNodes.add(oscillator);
-    });
-
-    const padLfo = context.createOscillator();
-    const padLfoDepth = context.createGain();
-    padLfo.type = 'sine';
-    padLfo.frequency.value = 0.031;
-    padLfoDepth.gain.value = 0.016;
-    padLfo.connect(padLfoDepth);
-    padLfoDepth.connect(padGain.gain);
-    padLfo.start(now);
-    this.ambientSources.add(padLfo);
-    this.ambientNodes.add(padLfo);
-    this.ambientNodes.add(padLfoDepth);
 
     const filterLfo = context.createOscillator();
     const filterDepth = context.createGain();
     filterLfo.type = 'sine';
-    filterLfo.frequency.value = 0.017;
-    filterDepth.gain.value = 210;
+    filterLfo.frequency.value = 0.013;
+    filterDepth.gain.value = 95;
     filterLfo.connect(filterDepth);
     filterDepth.connect(padFilter.frequency);
     filterLfo.start(now);
@@ -616,80 +599,246 @@ export class AudioEngine {
     this.ambientNodes.add(filterLfo);
     this.ambientNodes.add(filterDepth);
 
-    const wind = context.createBufferSource();
-    const windFilter = context.createBiquadFilter();
-    const windGain = context.createGain();
-    const windLfo = context.createOscillator();
-    const windLfoDepth = context.createGain();
-    wind.buffer = this.getNoiseBuffer();
-    wind.loop = true;
-    windFilter.type = 'bandpass';
-    windFilter.frequency.value = 520;
-    windFilter.Q.value = 0.28;
-    windGain.gain.value = 0.025;
-    windLfo.frequency.value = 0.047;
-    windLfoDepth.gain.value = 0.011;
-    wind.connect(windFilter);
-    windFilter.connect(windGain);
-    windGain.connect(this.ambientBus);
-    windLfo.connect(windLfoDepth);
-    windLfoDepth.connect(windGain.gain);
-    wind.start(now, this.random() * 0.8);
-    windLfo.start(now);
-    this.ambientSources.add(wind);
-    this.ambientSources.add(windLfo);
-    for (const node of [wind, windFilter, windGain, windLfo, windLfoDepth]) this.ambientNodes.add(node);
-    this.scheduleNextPluck(1.8 + this.random() * 2.4);
+    const atmosphere = context.createBufferSource();
+    const atmosphereHighpass = context.createBiquadFilter();
+    const atmosphereLowpass = context.createBiquadFilter();
+    const atmosphereGain = context.createGain();
+    const atmosphereLfo = context.createOscillator();
+    const atmosphereLfoDepth = context.createGain();
+    const atmosphereFilterLfo = context.createOscillator();
+    const atmosphereFilterDepth = context.createGain();
+    atmosphere.buffer = this.getAtmosphereNoiseBuffer();
+    atmosphere.loop = true;
+    atmosphereHighpass.type = 'highpass';
+    atmosphereHighpass.frequency.value = 90;
+    atmosphereHighpass.Q.value = 0.3;
+    atmosphereLowpass.type = 'lowpass';
+    atmosphereLowpass.frequency.value = 600 - this.nightFactor * 160;
+    atmosphereLowpass.Q.value = 0.25;
+    atmosphereGain.gain.setValueAtTime(0.0001, now);
+    atmosphereGain.gain.exponentialRampToValueAtTime(0.0075 + this.nightFactor * 0.0015, now + 2.5);
+    atmosphereLfo.type = 'sine';
+    atmosphereLfo.frequency.value = 0.021;
+    atmosphereLfoDepth.gain.value = 0.0016;
+    atmosphereFilterLfo.type = 'sine';
+    atmosphereFilterLfo.frequency.value = 0.009;
+    atmosphereFilterDepth.gain.value = 58;
+    atmosphere.connect(atmosphereHighpass);
+    atmosphereHighpass.connect(atmosphereLowpass);
+    atmosphereLowpass.connect(atmosphereGain);
+    atmosphereGain.connect(this.ambientBus);
+    atmosphereLfo.connect(atmosphereLfoDepth);
+    atmosphereLfoDepth.connect(atmosphereGain.gain);
+    atmosphereFilterLfo.connect(atmosphereFilterDepth);
+    atmosphereFilterDepth.connect(atmosphereLowpass.frequency);
+    atmosphere.start(now, this.random() * 6);
+    atmosphereLfo.start(now);
+    atmosphereFilterLfo.start(now);
+    this.ambientSources.add(atmosphere);
+    this.ambientSources.add(atmosphereLfo);
+    this.ambientSources.add(atmosphereFilterLfo);
+    for (const node of [
+      atmosphere,
+      atmosphereHighpass,
+      atmosphereLowpass,
+      atmosphereGain,
+      atmosphereLfo,
+      atmosphereLfoDepth,
+      atmosphereFilterLfo,
+      atmosphereFilterDepth,
+    ]) this.ambientNodes.add(node);
+    this.atmosphereLowpass = atmosphereLowpass;
+    this.atmosphereGain = atmosphereGain;
+
+    this.transitionPad(true);
+    this.scheduleNextKey();
+    this.scheduleNextPad();
   }
 
   private stopAmbient(): void {
-    this.clearPluckTimer();
+    this.clearAmbientTimers();
     for (const source of this.ambientSources) safeStop(source);
     for (const node of this.ambientNodes) safeDisconnect(node);
     this.ambientSources.clear();
     this.ambientNodes.clear();
+    this.padToneFilter = null;
+    this.atmosphereLowpass = null;
+    this.atmosphereGain = null;
+    this.currentPadVoice = null;
+    this.lastKeyIndex = -1;
+    this.lastPadIndex = -1;
     this.ambientStarted = false;
   }
 
-  private scheduleNextPluck(delaySeconds = 3.8 + this.random() * 5.2): void {
-    this.clearPluckTimer();
+  private scheduleNextKey(
+    delaySeconds = delayInRange(this.random(), AMBIENT_KEY_DELAY_RANGE_SECONDS),
+  ): void {
+    if (this.keyTimer !== null) clearTimeout(this.keyTimer);
     if (!this.visible || !this.ambientStarted || this.disposed) return;
-    this.pluckTimer = setTimeout(() => {
-      this.pluckTimer = null;
-      this.playAmbientPluck();
-      this.scheduleNextPluck();
+    this.keyTimer = setTimeout(() => {
+      this.keyTimer = null;
+      this.playAmbientKey();
+      this.scheduleNextKey();
     }, delaySeconds * 1000);
   }
 
-  private clearPluckTimer(): void {
-    if (this.pluckTimer === null) return;
-    clearTimeout(this.pluckTimer);
-    this.pluckTimer = null;
+  private scheduleNextPad(
+    delaySeconds = delayInRange(this.random(), AMBIENT_PAD_DELAY_RANGE_SECONDS),
+  ): void {
+    if (this.padTimer !== null) clearTimeout(this.padTimer);
+    if (!this.visible || !this.ambientStarted || this.disposed) return;
+    this.padTimer = setTimeout(() => {
+      this.padTimer = null;
+      this.transitionPad(false);
+      this.scheduleNextPad();
+    }, delaySeconds * 1000);
   }
 
-  private playAmbientPluck(): void {
+  private clearAmbientTimers(): void {
+    if (this.keyTimer !== null) clearTimeout(this.keyTimer);
+    if (this.padTimer !== null) clearTimeout(this.padTimer);
+    this.keyTimer = null;
+    this.padTimer = null;
+  }
+
+  private transitionPad(initial: boolean): void {
+    if (!this.context || !this.padToneFilter || !this.ambientStarted) return;
+    const now = this.context.currentTime;
+    const fadeSeconds = initial ? 2.5 : 4.8;
+    const index = pickNonRepeatingIndex(this.random(), this.lastPadIndex, AMBIENT_PAD_VOICINGS.length);
+    const previous = this.currentPadVoice;
+    const voice = this.createPadVoice(index, now, fadeSeconds);
+    this.currentPadVoice = voice;
+    this.lastPadIndex = index;
+    if (previous) this.releasePadVoice(previous, now, fadeSeconds);
+  }
+
+  private createPadVoice(index: number, at: number, fadeSeconds: number): AmbientPadVoice {
+    if (!this.context || !this.padToneFilter) throw new Error('Ambient graph is not ready.');
+    const gain = this.context.createGain();
+    gain.gain.setValueAtTime(0.0001, at);
+    gain.gain.exponentialRampToValueAtTime(0.021, at + fadeSeconds);
+    gain.connect(this.padToneFilter);
+    const sources: OscillatorNode[] = [];
+    const nodes: AudioNode[] = [gain];
+    const voicing = AMBIENT_PAD_VOICINGS[index] ?? AMBIENT_PAD_VOICINGS[0];
+    voicing.forEach((frequency, noteIndex) => {
+      const oscillator = this.context?.createOscillator();
+      if (!oscillator) return;
+      oscillator.type = noteIndex === 2 ? 'triangle' : 'sine';
+      oscillator.frequency.value = frequency;
+      oscillator.detune.value = (noteIndex - 1.5) * 2.5;
+      oscillator.connect(gain);
+      oscillator.start(at);
+      sources.push(oscillator);
+      nodes.push(oscillator);
+      this.ambientSources.add(oscillator);
+      this.ambientNodes.add(oscillator);
+    });
+    this.ambientNodes.add(gain);
+    return { index, gain, sources, nodes };
+  }
+
+  private releasePadVoice(voice: AmbientPadVoice, at: number, fadeSeconds: number): void {
+    voice.gain.gain.cancelScheduledValues(at);
+    voice.gain.gain.setValueAtTime(Math.max(0.0001, voice.gain.gain.value), at);
+    voice.gain.gain.exponentialRampToValueAtTime(0.0001, at + fadeSeconds);
+    let remaining = voice.sources.length;
+    const clean = (): void => {
+      remaining -= 1;
+      if (remaining > 0) return;
+      for (const source of voice.sources) this.ambientSources.delete(source);
+      for (const node of voice.nodes) {
+        this.ambientNodes.delete(node);
+        safeDisconnect(node);
+      }
+    };
+    for (const source of voice.sources) {
+      source.addEventListener('ended', clean, { once: true });
+      try {
+        source.stop(at + fadeSeconds + 0.06);
+      } catch {
+        clean();
+      }
+    }
+  }
+
+  private playAmbientKey(): void {
     if (!this.canPlayEffect() || !this.context || !this.ambientBus) return;
-    const pentatonic = [220, 246.94, 293.66, 329.63, 369.99, 440];
-    const frequency = pentatonic[Math.floor(this.random() * pentatonic.length)] ?? 220;
-    const octave = this.random() > 0.78 ? 2 : 1;
+    const index = pickNonRepeatingIndex(this.random(), this.lastKeyIndex, D_MAJOR_PENTATONIC_HZ.length);
+    this.lastKeyIndex = index;
+    const frequency = D_MAJOR_PENTATONIC_HZ[index] ?? 220;
     const now = this.context.currentTime;
     const oscillator = this.context.createOscillator();
     const filter = this.context.createBiquadFilter();
     const gain = this.context.createGain();
     oscillator.type = 'triangle';
-    oscillator.frequency.value = frequency * octave;
-    oscillator.detune.value = this.random() * 8 - 4;
+    oscillator.frequency.value = frequency;
+    oscillator.detune.value = this.random() * 5 - 2.5;
     filter.type = 'lowpass';
-    filter.frequency.value = 1800;
+    filter.frequency.value = 1280 - this.nightFactor * 260;
+    filter.Q.value = 0.35;
     gain.gain.setValueAtTime(0.0001, now);
-    gain.gain.exponentialRampToValueAtTime(0.045, now + 0.008);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + 1.2);
+    gain.gain.exponentialRampToValueAtTime(0.026, now + 0.016);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 1.85);
     oscillator.connect(filter);
     filter.connect(gain);
     gain.connect(this.ambientBus);
     oscillator.start(now);
-    oscillator.stop(now + 1.24);
+    oscillator.stop(now + 1.9);
     this.trackFiniteSource(oscillator, [oscillator, filter, gain]);
+  }
+
+  private playGentleNote(
+    destination: AudioNode,
+    at: number,
+    frequency: number,
+    duration: number,
+    peakGain: number,
+    detune: number,
+  ): void {
+    if (!this.context || this.scheduledSources.size >= MAX_SCHEDULED_SOURCES) return;
+    const oscillator = this.context.createOscillator();
+    const filter = this.context.createBiquadFilter();
+    const gain = this.context.createGain();
+    oscillator.type = 'sine';
+    oscillator.frequency.setValueAtTime(frequency, at);
+    oscillator.detune.value = detune;
+    filter.type = 'lowpass';
+    filter.frequency.value = 840;
+    filter.Q.value = 0.32;
+    gain.gain.setValueAtTime(0.0001, at);
+    gain.gain.exponentialRampToValueAtTime(peakGain, at + 0.018);
+    gain.gain.exponentialRampToValueAtTime(0.0001, at + duration);
+    oscillator.connect(filter);
+    filter.connect(gain);
+    gain.connect(destination);
+    oscillator.start(at);
+    oscillator.stop(at + duration + 0.025);
+    this.trackFiniteSource(oscillator, [oscillator, filter, gain]);
+  }
+
+  private playDampedResonator(
+    destination: AudioNode,
+    at: number,
+    frequency: number,
+    duration: number,
+    peakGain: number,
+  ): void {
+    if (!this.context || this.scheduledSources.size >= MAX_SCHEDULED_SOURCES) return;
+    const oscillator = this.context.createOscillator();
+    const gain = this.context.createGain();
+    oscillator.type = 'sine';
+    oscillator.frequency.setValueAtTime(frequency, at);
+    oscillator.frequency.exponentialRampToValueAtTime(frequency * 0.68, at + duration * 0.72);
+    gain.gain.setValueAtTime(0.0001, at);
+    gain.gain.exponentialRampToValueAtTime(peakGain, at + 0.006);
+    gain.gain.exponentialRampToValueAtTime(0.0001, at + duration);
+    oscillator.connect(gain);
+    gain.connect(destination);
+    oscillator.start(at);
+    oscillator.stop(at + duration + 0.02);
+    this.trackFiniteSource(oscillator, [oscillator, gain]);
   }
 
   private playNoiseBurst(
@@ -704,7 +853,7 @@ export class AudioEngine {
     const source = this.context.createBufferSource();
     const filter = this.context.createBiquadFilter();
     const gain = this.context.createGain();
-    source.buffer = this.getNoiseBuffer();
+    source.buffer = this.getTransientNoiseBuffer();
     filter.type = filterType;
     filter.frequency.value = frequency;
     filter.Q.value = filterType === 'bandpass' ? 0.8 : 0.4;
@@ -714,7 +863,7 @@ export class AudioEngine {
     source.connect(filter);
     filter.connect(gain);
     gain.connect(destination);
-    const maxOffset = Math.max(0, this.getNoiseBuffer().duration - duration - 0.01);
+    const maxOffset = Math.max(0, this.getTransientNoiseBuffer().duration - duration - 0.01);
     source.start(at, this.random() * maxOffset, duration + 0.01);
     this.trackFiniteSource(source, [source, filter, gain]);
   }
@@ -736,19 +885,36 @@ export class AudioEngine {
     this.trackFiniteSource(oscillator, [oscillator, gain]);
   }
 
-  private getNoiseBuffer(): AudioBuffer {
-    if (this.noiseBuffer) return this.noiseBuffer;
+  private getTransientNoiseBuffer(): AudioBuffer {
+    if (this.transientNoiseBuffer) return this.transientNoiseBuffer;
     if (!this.context) throw new Error('Audio context is not ready.');
-    const length = Math.max(1, Math.floor(this.context.sampleRate * 2));
+    const length = Math.max(1, Math.floor(this.context.sampleRate * 1.25));
     const buffer = this.context.createBuffer(1, length, this.context.sampleRate);
     const channel = buffer.getChannelData(0);
-    let previous = 0;
+    let state = EMPTY_COLORED_NOISE_STATE;
     for (let index = 0; index < channel.length; index += 1) {
       const white = this.random() * 2 - 1;
-      previous = previous * 0.22 + white * 0.78;
-      channel[index] = previous;
+      const step = nextColoredNoiseSample(white, state);
+      state = step.state;
+      channel[index] = step.sample * 0.78;
     }
-    this.noiseBuffer = buffer;
+    this.transientNoiseBuffer = buffer;
+    return buffer;
+  }
+
+  private getAtmosphereNoiseBuffer(): AudioBuffer {
+    if (this.atmosphereNoiseBuffer) return this.atmosphereNoiseBuffer;
+    if (!this.context) throw new Error('Audio context is not ready.');
+    const length = Math.max(1, Math.floor(this.context.sampleRate * 8));
+    const buffer = this.context.createBuffer(1, length, this.context.sampleRate);
+    const channel = buffer.getChannelData(0);
+    let state = EMPTY_COLORED_NOISE_STATE;
+    for (let index = 0; index < channel.length; index += 1) {
+      const step = nextColoredNoiseSample(this.random() * 2 - 1, state);
+      state = step.state;
+      channel[index] = step.sample * 0.55;
+    }
+    this.atmosphereNoiseBuffer = buffer;
     return buffer;
   }
 
@@ -780,11 +946,11 @@ export class AudioEngine {
   } {
     switch (surface) {
       case 'sand':
-        return { duration: 0.13, filter: 'bandpass', frequency: 720, gain: 0.052, thumpFrequency: 92 };
+        return { duration: 0.14, filter: 'bandpass', frequency: 430, gain: 0.03, thumpFrequency: 88 };
       case 'stone':
-        return { duration: 0.07, filter: 'highpass', frequency: 1350, gain: 0.047, thumpFrequency: 142 };
+        return { duration: 0.075, filter: 'bandpass', frequency: 680, gain: 0.026, thumpFrequency: 126 };
       case 'grass':
-        return { duration: 0.1, filter: 'lowpass', frequency: 1050, gain: 0.044, thumpFrequency: 104 };
+        return { duration: 0.11, filter: 'lowpass', frequency: 520, gain: 0.027, thumpFrequency: 98 };
     }
   }
 

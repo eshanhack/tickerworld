@@ -1,6 +1,7 @@
 import type { Candle } from '../types';
 
 export const MONUMENT_CANDLE_COUNT = 30;
+export const MONUMENT_SHUNT_DURATION_SECONDS = 0.58;
 
 export interface PriceRange {
   min: number;
@@ -176,9 +177,21 @@ export function smoothCandles(
   });
 }
 
-export function unusualMoveScore(candles: readonly Candle[], previousPrice: number, price: number): number {
+export function unusualMoveScore(
+  candles: readonly Candle[],
+  previousPrice: number | null | undefined,
+  price: number | null | undefined,
+): number {
   const recent = selectChartCandles(candles, 20);
-  if (recent.length === 0 || !Number.isFinite(previousPrice) || !Number.isFinite(price)) {
+  if (
+    recent.length === 0
+    || previousPrice === null
+    || previousPrice === undefined
+    || price === null
+    || price === undefined
+    || !Number.isFinite(previousPrice)
+    || !Number.isFinite(price)
+  ) {
     return 0;
   }
 
@@ -188,23 +201,19 @@ export function unusualMoveScore(candles: readonly Candle[], previousPrice: numb
   return Math.abs(price - previousPrice) / baseline;
 }
 
-const wholePriceFormatter = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 });
-const twoDecimalPriceFormatter = new Intl.NumberFormat('en-US', {
-  minimumFractionDigits: 2,
-  maximumFractionDigits: 2,
-});
+const largePriceFormatter = new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 });
+const regularPriceFormatter = new Intl.NumberFormat('en-US', { maximumFractionDigits: 3 });
+const fractionalPriceFormatter = new Intl.NumberFormat('en-US', { maximumFractionDigits: 6 });
 
-export function formatPrice(price: number): string {
-  if (!Number.isFinite(price)) {
+export function formatPrice(price: number | null | undefined): string {
+  if (price === null || price === undefined || !Number.isFinite(price)) {
     return '$—';
   }
   if (Math.abs(price) >= 1_000) {
-    return `$${wholePriceFormatter.format(price)}`;
+    return `$${largePriceFormatter.format(price)}`;
   }
   if (Math.abs(price) >= 1) {
-    return `$${twoDecimalPriceFormatter.format(price)}`;
+    return `$${regularPriceFormatter.format(price)}`;
   }
-
-  const decimals = Math.min(8, Math.max(4, 2 - Math.floor(Math.log10(Math.max(Math.abs(price), 1e-8)))));
-  return `$${price.toFixed(decimals)}`;
+  return `$${fractionalPriceFormatter.format(price)}`;
 }

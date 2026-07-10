@@ -10,7 +10,8 @@ export const ASSET_SYMBOLS = [
 ] as const;
 
 export type AssetSymbol = (typeof ASSET_SYMBOLS)[number];
-export type FeedMode = 'live' | 'reconnecting' | 'simulated';
+export type FeedMode = 'connecting' | 'live' | 'reconnecting' | 'simulated';
+export type MarketProvider = 'hyperliquid' | 'simulation';
 export type TickDirection = 'up' | 'down' | 'flat';
 export type SurfaceKind = 'grass' | 'sand' | 'stone';
 
@@ -25,10 +26,11 @@ export interface Candle {
 
 export interface AssetState {
   symbol: AssetSymbol;
-  pair: `${AssetSymbol}USDT`;
+  instrument: AssetSymbol;
+  provider: MarketProvider;
   candles: readonly Candle[];
-  price: number;
-  previousPrice: number;
+  price: number | null;
+  previousPrice: number | null;
   direction: TickDirection;
   mode: FeedMode;
   updatedAt: number;

@@ -13,6 +13,11 @@ export interface NearestMonument {
   distance: number;
 }
 
+export interface MonumentGroundSample {
+  height: number;
+  surface: 'stone';
+}
+
 export class MonumentSystem implements GameSystem {
   readonly root = new Group();
 
@@ -88,6 +93,22 @@ export class MonumentSystem implements GameSystem {
       }
     }
     return nearest;
+  }
+
+  sampleGround(x: number, z: number): MonumentGroundSample | null {
+    let highest: MonumentGroundSample | null = null;
+    for (const monument of this.monuments) {
+      const sample = monument.sampleGround(x, z);
+      if (sample && (!highest || sample.height > highest.height)) highest = sample;
+    }
+    return highest;
+  }
+
+  collidesCamera(x: number, y: number, z: number): boolean {
+    for (const monument of this.monuments) {
+      if (monument.collidesCamera(x, y, z)) return true;
+    }
+    return false;
   }
 
   setCamera(camera: Camera): void {

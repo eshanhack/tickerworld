@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import nunitoFontUrl from '@fontsource/nunito/files/nunito-latin-700-normal.woff?url';
 import { AudioEngine } from './audio';
 import { DEBUG_MODE, GRAND_MONUMENTS, WORLD_SEED } from './config';
-import { BinanceMarketFeed } from './markets';
+import { HyperliquidMarketFeed } from './markets';
 import { Monument, MonumentSystem } from './monuments';
 import { FoxPlayer, ThirdPersonCamera, type FootstepEvent } from './player';
 import type { AssetState, AssetSymbol } from './types';
@@ -58,7 +58,7 @@ export class Game {
   private readonly world: WorldSystem;
   private readonly player: FoxPlayer;
   private readonly cameraRig: ThirdPersonCamera;
-  private readonly market = new BinanceMarketFeed();
+  private readonly market = new HyperliquidMarketFeed();
   private readonly monuments: MonumentSystem;
   private readonly audio = new AudioEngine();
   private readonly hud: Hud;
@@ -196,7 +196,15 @@ export class Game {
     this.clock.start();
     if (DEBUG_MODE) {
       Object.defineProperty(window, '__tickerworldDebug', {
-        value: { scene: this.scene, renderer: this.renderer, player: this.player, world: this.world },
+        value: {
+          scene: this.scene,
+          renderer: this.renderer,
+          player: this.player,
+          world: this.world,
+          market: this.market,
+          monuments: this.monuments,
+          audio: this.audio,
+        },
         configurable: true,
       });
     }
@@ -229,8 +237,8 @@ export class Game {
     this.player.update(
       delta,
       this.cameraRig.yaw,
-      (x, z) => this.world.heightAt(x, z),
-      (x, z) => this.world.surfaceAt(x, z),
+      (x, z) => this.groundHeightAt(x, z),
+      (x, z) => this.groundSurfaceAt(x, z),
       (footstep) => this.onFootstep(footstep),
     );
     this.world.update(this.player.position, this.elapsed);
@@ -239,11 +247,12 @@ export class Game {
     this.cameraRig.update(
       delta,
       this.cameraTarget,
-      (x, z) => this.world.heightAt(x, z),
+      (x, z) => this.groundHeightAt(x, z),
       (x, y, z) => this.cameraObstacleAt(x, y, z),
     );
     this.monuments.setNightFactor(this.world.nightFactor);
     this.monuments.update(delta, this.elapsed);
+    this.audio.setEnvironment({ nightFactor: this.world.nightFactor });
     this.audio.updateListener(this.camera);
     this.updateHud();
     this.updatePerformance(delta);
@@ -261,19 +270,21 @@ export class Game {
     this.latestStates.set(state.symbol, state);
     this.monuments.updateAsset(state);
 
-    if (!previous || state.presentationTick <= previous.presentationTick || state.direction === 'flat') return;
-    const moveRatio = previous.price > 0 ? Math.abs(state.price - previous.price) / previous.price : 0;
-    for (const monument of this.monuments.getForSymbol(state.symbol)) {
-      const id = this.monumentIds.get(monument);
-      if (id) this.audio.playTick(id, state.direction, moveRatio);
-    }
-    const previousOpen = previous.candles.at(-1)?.openTime;
+    const previousOpen = previous?.candles.at(-1)?.openTime;
     const currentOpen = state.candles.at(-1)?.openTime;
     if (previousOpen !== undefined && currentOpen !== undefined && previousOpen !== currentOpen) {
       for (const monument of this.monuments.getForSymbol(state.symbol)) {
         const id = this.monumentIds.get(monument);
         if (id) this.audio.playCandleClose(id);
       }
+    }
+
+    if (!previous || state.presentationTick <= previous.presentationTick || state.direction === 'flat') return;
+    if (state.price === null || previous.price === null) return;
+    const moveRatio = previous.price > 0 ? Math.abs(state.price - previous.price) / previous.price : 0;
+    for (const monument of this.monuments.getForSymbol(state.symbol)) {
+      const id = this.monumentIds.get(monument);
+      if (id) this.audio.playTick(id, state.direction, moveRatio);
     }
   }
 
@@ -358,12 +369,21 @@ export class Game {
   }
 
   private cameraObstacleAt(x: number, y: number, z: number): boolean {
-    for (const monument of this.monuments.getAll()) {
-      monument.root.getWorldPosition(this.tempPosition);
-      const radius = monument.kind === 'grand' ? 6.2 * monument.root.scale.x : 4.5 * monument.root.scale.x;
-      if (Math.hypot(x - this.tempPosition.x, z - this.tempPosition.z) < radius && y < this.tempPosition.y + 7) return true;
+    return this.monuments.collidesCamera(x, y, z);
+  }
+
+  private groundHeightAt(x: number, z: number): number {
+    const terrainHeight = this.world.heightAt(x, z);
+    const monumentGround = this.monuments.sampleGround(x, z);
+    return monumentGround ? Math.max(terrainHeight, monumentGround.height) : terrainHeight;
+  }
+
+  private groundSurfaceAt(x: number, z: number) {
+    const monumentGround = this.monuments.sampleGround(x, z);
+    if (monumentGround && monumentGround.height >= this.world.heightAt(x, z) - 0.03) {
+      return monumentGround.surface;
     }
-    return false;
+    return this.world.surfaceAt(x, z);
   }
 
   private updatePerformance(delta: number): void {
@@ -385,11 +405,15 @@ export class Game {
     }
     if (DEBUG_MODE) {
       const world = this.world.getDebugStats();
+      const btcMarket = this.market.getState('BTC');
+      const audioState = this.audio.state;
       this.hud.setDebug([
         `fps ${this.fps.toFixed(1)} · dpr ${this.pixelRatio.toFixed(2)}`,
         `draws ${this.renderer.info.render.calls} · tris ${this.estimateTriangles()}`,
         `chunks ${world.loadedChunks}/${world.desiredChunks} · queued ${world.queuedLoads}`,
         `props ${world.propInstances} · echoes ${world.activeEchoes}`,
+        `market ${btcMarket.mode} · tick ${btcMarket.presentationTick} · candles ${btcMarket.candles.length}`,
+        `audio ${audioState.status} · muted ${audioState.muted}`,
         `pos ${this.player.position.x.toFixed(2)}, ${this.player.position.z.toFixed(2)} · yaw ${this.cameraRig.yaw.toFixed(2)}`,
         `textures ${this.renderer.info.memory.textures} · geometries ${this.renderer.info.memory.geometries}`,
       ].join('\n'));

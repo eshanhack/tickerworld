@@ -46,6 +46,31 @@ describe('FoxPlayer', () => {
     walker.dispose();
     sprinter.dispose();
   });
+
+  it('keeps four named legs and paws above the sampled ground while animated', () => {
+    const input = new PlayerInputController({ target: null, document: null });
+    const fox = new FoxPlayer({ input });
+    const pawNames = ['FrontLeft', 'FrontRight', 'HindLeft', 'HindRight']
+      .map((name) => `Fox${name}Paw`);
+
+    input.setVirtualInput(0.35, 1, true);
+    for (let frame = 0; frame < 240; frame += 1) {
+      fox.update(1 / 60, 0, () => 0, () => 'grass');
+    }
+    fox.group.updateMatrixWorld(true);
+
+    for (const pawName of pawNames) {
+      const paw = fox.group.getObjectByName(pawName);
+      expect(paw, `${pawName} should exist`).toBeTruthy();
+      const bounds = new THREE.Box3().setFromObject(paw!);
+      expect(bounds.min.y, `${pawName} should not sink underground`).toBeGreaterThanOrEqual(-0.02);
+    }
+    expect(fox.group.getObjectByName('FoxFrontLeftLeg')).toBeTruthy();
+    expect(fox.group.getObjectByName('FoxFrontRightLeg')).toBeTruthy();
+    expect(fox.group.getObjectByName('FoxHindLeftLeg')).toBeTruthy();
+    expect(fox.group.getObjectByName('FoxHindRightLeg')).toBeTruthy();
+    fox.dispose();
+  });
 });
 
 describe('ThirdPersonCamera', () => {

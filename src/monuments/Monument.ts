@@ -1,5 +1,6 @@
 import {
   BoxGeometry,
+  BufferGeometry,
   Camera,
   Color,
   ConeGeometry,
@@ -7,6 +8,7 @@ import {
   DynamicDrawUsage,
   Group,
   InstancedMesh,
+  Matrix4,
   Material,
   Mesh,
   MeshBasicMaterial,
@@ -21,6 +23,7 @@ import { Text } from 'troika-three-text';
 import type { AssetState, AssetSymbol, Candle, TickDirection } from '../types';
 import {
   MONUMENT_CANDLE_COUNT,
+  MONUMENT_SHUNT_DURATION_SECONDS,
   cloneCandle,
   computePriceRange,
   didCandleWindowRoll,
@@ -32,9 +35,16 @@ import {
   unusualMoveScore,
   type PriceRange,
 } from './chartMath';
+import { buildMedallion, type MonumentKind } from './medallions';
+import {
+  collidesLocalCamera,
+  PLAZA_LAYERS,
+  PLAZA_STEPS,
+  sampleLocalStoneGround,
+} from './monumentGeometry';
 import { SparklePool } from './SparklePool';
 
-export type MonumentKind = 'grand' | 'echo';
+export type { MonumentKind } from './medallions';
 
 export interface MonumentPosition {
   x: number;
@@ -57,8 +67,8 @@ const COLORS = {
   stoneDark: 0x81796f,
   cream: 0xfff1cf,
   ink: 0x31373d,
-  green: 0x70b883,
-  red: 0xc96c63,
+  green: 0x8fd8a3,
+  red: 0xefa09a,
   teal: 0x5f9b91,
   bush: 0x789b72,
   flower: 0xe6a3a8,
@@ -67,11 +77,13 @@ const COLORS = {
 
 const CHART_WIDTH = 13.8;
 const CHART_HEIGHT = 5.15;
-const SHUNT_DURATION_SECONDS = 0.58;
 const tempObject = new Object3D();
 const tempCameraPosition = new Vector3();
 const tempBillboardPosition = new Vector3();
 const tempMonumentPosition = new Vector3();
+const tempLocalPoint = new Vector3();
+const tempWorldPoint = new Vector3();
+const tempInverseMatrix = new Matrix4();
 
 interface LampBulb {
   readonly mesh: Mesh<SphereGeometry, MeshStandardMaterial>;
@@ -83,14 +95,18 @@ export class Monument {
   readonly symbol: AssetSymbol;
   readonly kind: MonumentKind;
   readonly discoverable: boolean;
-  readonly bodyInstances: InstancedMesh<RoundedBoxGeometry, MeshStandardMaterial>;
-  readonly wickInstances: InstancedMesh<CylinderGeometry, MeshStandardMaterial>;
+  readonly greenBodyInstances: InstancedMesh<RoundedBoxGeometry, MeshStandardMaterial>;
+  readonly redBodyInstances: InstancedMesh<RoundedBoxGeometry, MeshStandardMaterial>;
+  readonly greenWickInstances: InstancedMesh<CylinderGeometry, MeshStandardMaterial>;
+  readonly redWickInstances: InstancedMesh<CylinderGeometry, MeshStandardMaterial>;
 
   private readonly chartGroup = new Group();
   private readonly billboardGroup = new Group();
   private readonly symbolText = new Text();
   private readonly priceText = new Text();
   private readonly sparkles = new SparklePool(24);
+  private readonly activeBodyHighlight: Mesh<RoundedBoxGeometry, MeshStandardMaterial>;
+  private readonly activeWickHighlight: Mesh<CylinderGeometry, MeshStandardMaterial>;
   private readonly pulseRingMaterial: MeshBasicMaterial;
   private readonly pulseRing: Mesh<TorusGeometry, MeshBasicMaterial>;
   private readonly priceCardMaterial = new MeshStandardMaterial({
@@ -102,7 +118,6 @@ export class Monument {
   private readonly lamps: LampBulb[] = [];
   private readonly upColor = new Color(COLORS.green);
   private readonly downColor = new Color(COLORS.red);
-  private readonly creamColor = new Color(COLORS.cream);
   private readonly targetRangeFallback: PriceRange = { min: 0, max: 1 };
 
   private targetCandles: Candle[] = [];
@@ -133,41 +148,86 @@ export class Monument {
     this.buildPlaza();
 
     const bodyGeometry = new RoundedBoxGeometry(1, 1, 1, 2, 0.15);
-    const bodyMaterial = new MeshStandardMaterial({
-      color: 0xffffff,
-      roughness: 0.68,
-      metalness: 0.02,
-      vertexColors: true,
-      emissive: COLORS.cream,
-      emissiveIntensity: 0,
-    });
-    this.bodyInstances = new InstancedMesh(bodyGeometry, bodyMaterial, MONUMENT_CANDLE_COUNT);
-    this.bodyInstances.name = `${this.symbol}-candle-bodies`;
-    this.bodyInstances.instanceMatrix.setUsage(DynamicDrawUsage);
-    this.bodyInstances.count = 0;
-    this.bodyInstances.castShadow = true;
-    this.bodyInstances.receiveShadow = true;
-    this.bodyInstances.frustumCulled = false;
-
     const wickGeometry = new CylinderGeometry(0.055, 0.055, 1, 7);
-    const wickMaterial = new MeshStandardMaterial({
-      color: 0xffffff,
-      roughness: 0.72,
-      vertexColors: true,
+    const createMaterial = (color: number, roughness: number): MeshStandardMaterial => (
+      new MeshStandardMaterial({
+        color,
+        emissive: color,
+        emissiveIntensity: 0.08,
+        roughness,
+        metalness: 0.01,
+      })
+    );
+    const createPool = <TGeometry extends BufferGeometry>(
+      name: string,
+      geometry: TGeometry,
+      material: MeshStandardMaterial,
+    ): InstancedMesh<TGeometry, MeshStandardMaterial> => {
+      const pool = new InstancedMesh<TGeometry, MeshStandardMaterial>(
+        geometry,
+        material,
+        MONUMENT_CANDLE_COUNT,
+      );
+      pool.name = `${this.symbol}-${name}`;
+      pool.instanceMatrix.setUsage(DynamicDrawUsage);
+      pool.count = 0;
+      pool.castShadow = true;
+      pool.receiveShadow = true;
+      pool.frustumCulled = false;
+      return pool;
+    };
+
+    this.greenBodyInstances = createPool(
+      'green-candle-bodies',
+      bodyGeometry,
+      createMaterial(COLORS.green, 0.66),
+    );
+    this.redBodyInstances = createPool(
+      'red-candle-bodies',
+      bodyGeometry,
+      createMaterial(COLORS.red, 0.66),
+    );
+    this.greenWickInstances = createPool(
+      'green-candle-wicks',
+      wickGeometry,
+      createMaterial(COLORS.green, 0.72),
+    );
+    this.redWickInstances = createPool(
+      'red-candle-wicks',
+      wickGeometry,
+      createMaterial(COLORS.red, 0.72),
+    );
+
+    const highlightMaterial = new MeshStandardMaterial({
+      color: COLORS.cream,
       emissive: COLORS.cream,
-      emissiveIntensity: 0,
+      emissiveIntensity: 0.55,
+      roughness: 0.52,
+      transparent: true,
+      opacity: 0.3,
+      depthWrite: false,
     });
-    this.wickInstances = new InstancedMesh(wickGeometry, wickMaterial, MONUMENT_CANDLE_COUNT);
-    this.wickInstances.name = `${this.symbol}-candle-wicks`;
-    this.wickInstances.instanceMatrix.setUsage(DynamicDrawUsage);
-    this.wickInstances.count = 0;
-    this.wickInstances.castShadow = true;
-    this.wickInstances.receiveShadow = true;
-    this.wickInstances.frustumCulled = false;
+    this.activeBodyHighlight = new Mesh(bodyGeometry, highlightMaterial);
+    this.activeBodyHighlight.name = `${this.symbol}-active-candle-highlight`;
+    this.activeBodyHighlight.frustumCulled = false;
+    this.activeBodyHighlight.visible = false;
+    this.activeWickHighlight = new Mesh(wickGeometry, highlightMaterial.clone());
+    this.activeWickHighlight.name = `${this.symbol}-active-wick-highlight`;
+    this.activeWickHighlight.frustumCulled = false;
+    this.activeWickHighlight.visible = false;
 
     this.chartGroup.name = `${this.symbol}-chart`;
-    this.chartGroup.position.set(0, 0.78, 0);
-    this.chartGroup.add(this.wickInstances, this.bodyInstances, this.sparkles.points);
+    this.chartGroup.position.set(0, 0.56, 0.46);
+    this.chartGroup.scale.y = 0.68;
+    this.chartGroup.add(
+      this.greenWickInstances,
+      this.redWickInstances,
+      this.greenBodyInstances,
+      this.redBodyInstances,
+      this.activeWickHighlight,
+      this.activeBodyHighlight,
+      this.sparkles.points,
+    );
     this.root.add(this.chartGroup);
 
     this.pulseRingMaterial = new MeshBasicMaterial({
@@ -181,9 +241,11 @@ export class Monument {
     this.pulseRing.visible = false;
     this.chartGroup.add(this.pulseRing);
 
-    this.buildSign(options.fontUrl);
-    this.buildFurniture();
-    this.buildLandscaping();
+    this.buildShrine(options.fontUrl);
+    if (this.kind === 'grand') {
+      this.buildFurniture();
+      this.buildLandscaping();
+    }
 
     if (options.initialState) {
       this.setAssetState(options.initialState);
@@ -260,7 +322,9 @@ export class Monument {
     if (formattedPrice !== this.displayedPrice) {
       this.displayedPrice = formattedPrice;
       this.priceText.text = formattedPrice;
-      this.priceText.sync();
+      if (typeof self !== 'undefined') {
+        this.priceText.sync();
+      }
     }
 
     if (state.presentationTick !== this.lastPresentationTick) {
@@ -290,7 +354,7 @@ export class Monument {
     this.displayedRange = easePriceRange(this.displayedRange, this.targetRange, delta);
 
     if (this.shuntProgress < 1) {
-      this.shuntProgress = Math.min(1, this.shuntProgress + delta / SHUNT_DURATION_SECONDS);
+      this.shuntProgress = Math.min(1, this.shuntProgress + delta / MONUMENT_SHUNT_DURATION_SECONDS);
     }
     this.updateChartInstances();
     this.updatePulse(delta);
@@ -318,6 +382,38 @@ export class Monument {
 
   nearestDistance(point: Vector3): number {
     return this.distanceTo(point, true);
+  }
+
+  sampleGround(worldX: number, worldZ: number): { height: number; surface: 'stone' } | null {
+    if (!this.active || this.disposed) {
+      return null;
+    }
+
+    this.root.updateWorldMatrix(true, false);
+    this.root.getWorldPosition(tempMonumentPosition);
+    tempInverseMatrix.copy(this.root.matrixWorld).invert();
+    tempLocalPoint
+      .set(worldX, tempMonumentPosition.y, worldZ)
+      .applyMatrix4(tempInverseMatrix);
+    const sample = sampleLocalStoneGround(tempLocalPoint.x, tempLocalPoint.z);
+    if (!sample) {
+      return null;
+    }
+
+    tempWorldPoint
+      .set(tempLocalPoint.x, sample.height, tempLocalPoint.z)
+      .applyMatrix4(this.root.matrixWorld);
+    return { height: tempWorldPoint.y, surface: 'stone' };
+  }
+
+  collidesCamera(worldX: number, worldY: number, worldZ: number): boolean {
+    if (!this.active || this.disposed) {
+      return false;
+    }
+    this.root.updateWorldMatrix(true, false);
+    tempInverseMatrix.copy(this.root.matrixWorld).invert();
+    tempLocalPoint.set(worldX, worldY, worldZ).applyMatrix4(tempInverseMatrix);
+    return collidesLocalCamera(tempLocalPoint.x, tempLocalPoint.y, tempLocalPoint.z);
   }
 
   dispose(): void {
@@ -358,18 +454,18 @@ export class Monument {
     const middleMaterial = new MeshStandardMaterial({ color: COLORS.stone, roughness: 0.92 });
     const upperMaterial = new MeshStandardMaterial({ color: COLORS.stoneLight, roughness: 0.9 });
 
-    const lower = new Mesh(new CylinderGeometry(9.7, 10, 0.42, 40), lowerMaterial);
-    lower.position.y = 0.1;
-    const middle = new Mesh(new CylinderGeometry(8.85, 9.15, 0.32, 40), middleMaterial);
-    middle.position.y = 0.43;
-    const upper = new Mesh(new CylinderGeometry(7.95, 8.2, 0.26, 40), upperMaterial);
-    upper.position.y = 0.71;
-
-    for (const layer of [lower, middle, upper]) {
+    const layerMaterials = [lowerMaterial, middleMaterial, upperMaterial] as const;
+    PLAZA_LAYERS.forEach((definition, index) => {
+      const layer = new Mesh(
+        new CylinderGeometry(definition.radius, definition.radius, definition.height, 40),
+        layerMaterials[index] ?? upperMaterial,
+      );
+      layer.position.y = definition.centerY;
+      layer.name = `${this.symbol}-plaza-tier-${index + 1}`;
       layer.receiveShadow = true;
       layer.castShadow = true;
       this.root.add(layer);
-    }
+    });
 
     const ring = new Mesh(
       new TorusGeometry(8.36, 0.075, 6, 48),
@@ -381,33 +477,23 @@ export class Monument {
     this.root.add(ring);
 
     const stepMaterial = new MeshStandardMaterial({ color: COLORS.stoneLight, roughness: 0.9 });
-    for (let i = 0; i < 3; i += 1) {
-      const step = new Mesh(new BoxGeometry(3.5 + i * 0.6, 0.17, 1.1), stepMaterial);
-      step.position.set(0, 0.28 - i * 0.08, 9.1 + i * 0.68);
+    PLAZA_STEPS.forEach((definition, index) => {
+      const step = new Mesh(
+        new BoxGeometry(definition.width, definition.height, definition.depth),
+        stepMaterial,
+      );
+      step.name = `${this.symbol}-plaza-step-${index + 1}`;
+      step.position.set(definition.x, definition.y, definition.z);
       step.castShadow = true;
       step.receiveShadow = true;
       this.root.add(step);
-    }
+    });
   }
 
-  private buildSign(fontUrl?: string): void {
-    const signMaterial = new MeshStandardMaterial({ color: COLORS.stoneDark, roughness: 0.82 });
-    const pillarGeometry = new RoundedBoxGeometry(0.7, 5.9, 0.75, 2, 0.16);
-    for (const x of [-4.5, 4.5]) {
-      const pillar = new Mesh(pillarGeometry, signMaterial);
-      pillar.position.set(x, 3.48, -1.05);
-      pillar.castShadow = true;
-      pillar.receiveShadow = true;
-      this.root.add(pillar);
-    }
-    const lintel = new Mesh(new RoundedBoxGeometry(9.7, 0.72, 0.8, 2, 0.16), signMaterial);
-    lintel.position.set(0, 6.2, -1.05);
-    lintel.castShadow = true;
-    lintel.receiveShadow = true;
-    this.root.add(lintel);
-
+  private buildShrine(fontUrl?: string): void {
+    this.root.add(buildMedallion(this.symbol, this.kind));
     this.symbolText.text = this.symbol;
-    this.symbolText.fontSize = 1.02;
+    this.symbolText.fontSize = this.kind === 'echo' || this.symbol === 'BTC' ? 0.8 : 0.98;
     this.symbolText.color = COLORS.cream;
     this.symbolText.anchorX = 'center';
     this.symbolText.anchorY = 'middle';
@@ -418,18 +504,20 @@ export class Monument {
     if (fontUrl) {
       this.symbolText.font = fontUrl;
     }
-    this.symbolText.position.set(0, 6.23, -0.62);
-    this.symbolText.sync();
+    this.symbolText.position.set(0, this.symbol === 'BTC' ? 5.98 : 7.52, -0.34);
+    if (typeof self !== 'undefined') {
+      this.symbolText.sync();
+    }
     this.root.add(this.symbolText);
 
     const card = new Mesh(
       new RoundedBoxGeometry(1, 1, 1, 3, 0.14),
       this.priceCardMaterial,
     );
-    card.scale.set(4.1, 1.02, 0.12);
+    card.scale.set(this.kind === 'echo' ? 3.5 : 4.25, 1.02, 0.12);
     card.position.z = -0.1;
     card.castShadow = true;
-    this.billboardGroup.position.set(0, 6.95, 0.2);
+    this.billboardGroup.position.set(0, 6.82, 0.34);
     this.billboardGroup.add(card);
 
     this.priceText.text = '$—';
@@ -445,7 +533,9 @@ export class Monument {
       this.priceText.font = fontUrl;
     }
     this.priceText.position.z = 0.02;
-    this.priceText.sync();
+    if (typeof self !== 'undefined') {
+      this.priceText.sync();
+    }
     this.billboardGroup.add(this.priceText);
     this.root.add(this.billboardGroup);
   }
@@ -553,46 +643,65 @@ export class Monument {
       xOffset,
     );
 
-    this.bodyInstances.count = layouts.length;
-    this.wickInstances.count = layouts.length;
+    let greenCount = 0;
+    let redCount = 0;
+    this.activeBodyHighlight.visible = false;
+    this.activeWickHighlight.visible = false;
+
     layouts.forEach((layout, index) => {
       const isLatest = index === layouts.length - 1;
-      const candleColor = (layout.isUp ? this.upColor : this.downColor).clone();
-      if (isLatest && this.pulseEnergy > 0) {
-        candleColor.lerp(this.creamColor, Math.min(0.42, this.pulseEnergy * 0.35));
-      }
+      const bodyPool = layout.isUp ? this.greenBodyInstances : this.redBodyInstances;
+      const wickPool = layout.isUp ? this.greenWickInstances : this.redWickInstances;
+      const poolIndex = layout.isUp ? greenCount++ : redCount++;
 
       tempObject.position.set(layout.x, layout.bodyY, 0);
       tempObject.rotation.set(0, 0, 0);
       tempObject.scale.set(spacing * 0.68, layout.bodyHeight, 0.44);
       tempObject.updateMatrix();
-      this.bodyInstances.setMatrixAt(index, tempObject.matrix);
-      this.bodyInstances.setColorAt(index, candleColor);
+      bodyPool.setMatrixAt(poolIndex, tempObject.matrix);
 
       tempObject.position.set(layout.x, layout.wickY, 0);
       tempObject.scale.set(1, layout.wickHeight, 1);
       tempObject.updateMatrix();
-      this.wickInstances.setMatrixAt(index, tempObject.matrix);
-      this.wickInstances.setColorAt(index, candleColor);
+      wickPool.setMatrixAt(poolIndex, tempObject.matrix);
+
+      if (isLatest) {
+        this.activeBodyHighlight.position.set(layout.x, layout.bodyY, 0.005);
+        this.activeBodyHighlight.scale.set(
+          spacing * 0.76,
+          layout.bodyHeight + 0.055,
+          0.49,
+        );
+        this.activeBodyHighlight.visible = true;
+        this.activeWickHighlight.position.set(layout.x, layout.wickY, 0.005);
+        this.activeWickHighlight.scale.set(1.12, layout.wickHeight + 0.04, 1.12);
+        this.activeWickHighlight.visible = true;
+      }
     });
 
-    this.bodyInstances.instanceMatrix.needsUpdate = true;
-    this.wickInstances.instanceMatrix.needsUpdate = true;
-    if (this.bodyInstances.instanceColor) {
-      this.bodyInstances.instanceColor.needsUpdate = true;
-    }
-    if (this.wickInstances.instanceColor) {
-      this.wickInstances.instanceColor.needsUpdate = true;
+    this.greenBodyInstances.count = greenCount;
+    this.greenWickInstances.count = greenCount;
+    this.redBodyInstances.count = redCount;
+    this.redWickInstances.count = redCount;
+    for (const pool of [
+      this.greenBodyInstances,
+      this.greenWickInstances,
+      this.redBodyInstances,
+      this.redWickInstances,
+    ]) {
+      pool.instanceMatrix.needsUpdate = true;
     }
   }
 
   private updatePulse(deltaSeconds: number): void {
     this.pulseEnergy = Math.max(0, this.pulseEnergy - deltaSeconds * 1.9);
     const color = this.pulseDirection === 'down' ? this.downColor : this.upColor;
-    this.bodyInstances.material.emissive.copy(color);
-    this.wickInstances.material.emissive.copy(color);
-    this.bodyInstances.material.emissiveIntensity = this.pulseEnergy * 0.18;
-    this.wickInstances.material.emissiveIntensity = this.pulseEnergy * 0.12;
+    this.greenBodyInstances.material.emissiveIntensity = 0.08 + this.pulseEnergy * 0.08;
+    this.greenWickInstances.material.emissiveIntensity = 0.08 + this.pulseEnergy * 0.05;
+    this.redBodyInstances.material.emissiveIntensity = 0.08 + this.pulseEnergy * 0.08;
+    this.redWickInstances.material.emissiveIntensity = 0.08 + this.pulseEnergy * 0.05;
+    this.activeBodyHighlight.material.opacity = 0.2 + this.pulseEnergy * 0.22;
+    this.activeWickHighlight.material.opacity = 0.18 + this.pulseEnergy * 0.18;
     this.priceCardMaterial.emissive.copy(color);
     this.priceCardMaterial.emissiveIntensity = this.pulseEnergy * 0.15;
 

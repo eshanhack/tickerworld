@@ -27,6 +27,7 @@ export interface FoxPlayerOptions {
 
 interface LegRig {
   readonly pivot: THREE.Group;
+  readonly restY: number;
   readonly phase: number;
   readonly front: boolean;
 }
@@ -243,7 +244,7 @@ export class FoxPlayer {
       const swing = Math.sin(phase) * (0.18 + speedRatio * 0.48) * movementAmount * motionScale;
       const lift = Math.max(0, Math.sin(phase + Math.PI * 0.35)) * speedRatio * 0.08 * motionScale;
       leg.pivot.rotation.x = swing * (leg.front ? 1 : 0.9);
-      leg.pivot.position.y = lift;
+      leg.pivot.position.y = leg.restY + lift;
     }
 
     const idleBreath = Math.sin(this.elapsed * 2.15) * 0.018;
@@ -367,21 +368,25 @@ export class FoxPlayer {
     }
 
     const legPositions = [
-      { x: -0.43, z: -0.46, phase: 0, front: true },
-      { x: 0.43, z: -0.46, phase: Math.PI, front: true },
-      { x: -0.43, z: 0.48, phase: Math.PI, front: false },
-      { x: 0.43, z: 0.48, phase: 0, front: false },
+      { name: 'FrontLeft', x: -0.42, z: -0.5, phase: 0, front: true },
+      { name: 'FrontRight', x: 0.42, z: -0.5, phase: Math.PI, front: true },
+      { name: 'HindLeft', x: -0.42, z: 0.5, phase: Math.PI, front: false },
+      { name: 'HindRight', x: 0.42, z: 0.5, phase: 0, front: false },
     ] as const;
     for (const definition of legPositions) {
       const pivot = new THREE.Group();
-      pivot.position.set(definition.x, 0.79, definition.z);
-      const leg = enableShadows(new THREE.Mesh(new THREE.CapsuleGeometry(0.135, 0.35, 3, 6), fur));
-      leg.position.y = -0.31;
-      const paw = enableShadows(new THREE.Mesh(new THREE.SphereGeometry(0.17, 7, 5), cream));
+      const restY = 0.715;
+      pivot.name = `Fox${definition.name}LegPivot`;
+      pivot.position.set(definition.x, restY, definition.z);
+      const leg = enableShadows(new THREE.Mesh(new THREE.CapsuleGeometry(0.145, 0.34, 3, 6), fur));
+      leg.name = `Fox${definition.name}Leg`;
+      leg.position.y = -0.3;
+      const paw = enableShadows(new THREE.Mesh(new THREE.SphereGeometry(0.18, 7, 5), cream));
+      paw.name = `Fox${definition.name}Paw`;
       paw.position.set(0, -0.59, -0.035);
-      paw.scale.set(1, 0.6, 1.18);
+      paw.scale.set(1.05, 0.58, 1.2);
       pivot.add(leg, paw);
-      this.legs.push({ pivot, phase: definition.phase, front: definition.front });
+      this.legs.push({ pivot, restY, phase: definition.phase, front: definition.front });
       this.model.add(pivot);
     }
 

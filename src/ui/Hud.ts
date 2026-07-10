@@ -12,7 +12,7 @@ export interface HudCallbacks {
 
 interface NearbyView {
   symbol: AssetSymbol;
-  price: number;
+  price: number | null;
   mode: FeedMode;
   distance: number;
 }
@@ -42,6 +42,8 @@ export class Hud {
   private joystickCenter = { x: 0, y: 0 };
   private compassEnabled = true;
   private toastTimer: number | undefined;
+  private pricePulseTimer: number | undefined;
+  private displayedNearbyPrice = '';
 
   constructor(container: HTMLElement, callbacks: HudCallbacks) {
     this.callbacks = callbacks;
@@ -64,8 +66,8 @@ export class Hud {
 
       <section class="nearby-panel is-hidden" aria-live="polite" data-nearby>
         <div class="nearby-symbol" data-nearby-symbol>BTC</div>
-        <div><div class="nearby-label">nearby market</div><div class="nearby-price" data-nearby-price>$0</div></div>
-        <div class="market-mode simulated" data-nearby-mode>SIMULATED</div>
+        <div><div class="nearby-label">nearby market</div><div class="nearby-price" data-nearby-price>$—</div></div>
+        <div class="market-mode connecting" data-nearby-mode>CONNECTING</div>
       </section>
 
       <button class="compass is-hidden" type="button" aria-label="Toggle monument compass" data-compass>
@@ -93,7 +95,7 @@ export class Hud {
         </dl>
         <button type="button" class="compass-setting" data-compass-setting><span>Monument whisper</span><strong>ON</strong></button>
         <button type="button" class="compass-setting motion-setting" data-motion-setting><span>Gentle motion</span><strong>OFF</strong></button>
-        <p>Live prices use Binance USDT market data. Simulated mode keeps the world moving when the feed is unavailable. For ambience, not financial advice.</p>
+        <p>Live prices use Hyperliquid perpetual market data. If the feed drops, the last genuine values pause while Tickerworld reconnects. For ambience, not financial advice.</p>
       </section>
 
       <div class="mobile-joystick" data-joystick aria-hidden="true"><div class="joystick-knob" data-joystick-knob></div></div>
@@ -151,10 +153,24 @@ export class Hud {
     this.nearbyPanel.classList.toggle('is-hidden', !view);
     if (!view) return;
     this.nearbySymbol.textContent = view.symbol;
-    this.nearbyPrice.textContent = formatPrice(view.price);
-    const live = view.mode === 'live';
-    this.nearbyMode.textContent = live ? 'LIVE · BINANCE' : view.mode === 'reconnecting' ? 'RECONNECTING' : 'SIMULATED';
-    this.nearbyMode.className = `market-mode ${live ? 'live' : 'simulated'}`;
+    const nextPrice = formatPrice(view.price);
+    if (nextPrice !== this.displayedNearbyPrice) {
+      this.displayedNearbyPrice = nextPrice;
+      this.nearbyPrice.textContent = nextPrice;
+      this.nearbyPrice.classList.remove('is-ticking');
+      void this.nearbyPrice.offsetWidth;
+      this.nearbyPrice.classList.add('is-ticking');
+      if (this.pricePulseTimer !== undefined) window.clearTimeout(this.pricePulseTimer);
+      this.pricePulseTimer = window.setTimeout(() => this.nearbyPrice.classList.remove('is-ticking'), 420);
+    }
+    this.nearbyMode.textContent = view.mode === 'live'
+      ? 'LIVE · HYPERLIQUID'
+      : view.mode === 'connecting'
+        ? 'CONNECTING'
+        : view.mode === 'reconnecting'
+          ? 'RECONNECTING'
+          : 'SIMULATED · QA';
+    this.nearbyMode.className = `market-mode ${view.mode}`;
     this.nearbyPanel.style.setProperty('--nearby-distance', `${Math.min(1, view.distance / 80)}`);
   }
 
@@ -208,6 +224,7 @@ export class Hud {
     this.joystick.removeEventListener('pointerup', this.joystickEnd);
     this.joystick.removeEventListener('pointercancel', this.joystickEnd);
     document.removeEventListener('keydown', this.keydown);
+    if (this.pricePulseTimer !== undefined) window.clearTimeout(this.pricePulseTimer);
     this.root.remove();
   }
 

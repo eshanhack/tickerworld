@@ -6,6 +6,7 @@ export {
 } from './MonumentSystem';
 export {
   MONUMENT_CANDLE_COUNT,
+  MONUMENT_SHUNT_DURATION_SECONDS,
   cloneCandle,
   computePriceRange,
   didCandleWindowRoll,

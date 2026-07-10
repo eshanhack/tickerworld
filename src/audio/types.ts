@@ -54,6 +54,11 @@ export interface AudioEngineOptions {
   readonly random?: () => number;
 }
 
+export interface AudioEnvironment {
+  /** 0 is warm daylight and 1 is the warmest night mix. */
+  readonly nightFactor: number;
+}
+
 export type AudioStateListener = (state: AudioEngineState) => void;
 
 export interface TickSoundOptions {
