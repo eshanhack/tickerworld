@@ -8,6 +8,7 @@ import {
   delayInRange,
   EMPTY_COLORED_NOISE_STATE,
   nextColoredNoiseSample,
+  pickAmbientResponseIndex,
   pickNonRepeatingIndex,
 } from './ambientMath';
 import {
@@ -25,6 +26,7 @@ import type {
   AudioPosition,
   AudioStateListener,
   FootstepSoundOptions,
+  JumpSoundKind,
   MonumentAudioSource,
   TickSoundOptions,
 } from './types';
@@ -137,6 +139,7 @@ export class AudioEngine {
   private padToneFilter: BiquadFilterNode | null = null;
   private atmosphereLowpass: BiquadFilterNode | null = null;
   private atmosphereGain: GainNode | null = null;
+  private ambientEchoInput: DelayNode | null = null;
   private currentPadVoice: AmbientPadVoice | null = null;
   private ambientStarted = false;
   private keyTimer: ReturnType<typeof setTimeout> | null = null;
@@ -327,9 +330,9 @@ export class AudioEngine {
     if (!graph) return;
     const now = this.context.currentTime;
     const amount = clampUnit(intensity);
-    this.playDampedResonator(graph.input, now, 104, 0.3, 0.036 + amount * 0.03);
-    this.playDampedResonator(graph.input, now + 0.018, 69, 0.38, 0.018 + amount * 0.012);
-    this.playNoiseBurst(graph.input, now, 0.09, 'lowpass', 420, 0.009 + amount * 0.006);
+    this.playDampedResonator(graph.input, now, 196, 0.22, 0.025 + amount * 0.02);
+    this.playDampedResonator(graph.input, now + 0.025, 293.66, 0.31, 0.012 + amount * 0.008);
+    this.playNoiseBurst(graph.input, now, 0.07, 'lowpass', 520, 0.006 + amount * 0.004);
   }
 
   public playFootstep(options: FootstepSoundOptions): void;
@@ -359,6 +362,38 @@ export class AudioEngine {
     if (sprinting) {
       this.playNoiseBurst(this.sfxBus, now + 0.035, 0.13, 'bandpass', settings.frequency * 0.72, 0.011);
     }
+  }
+
+  /** A bright lift for the first jump and a higher magical flourish for the air jump. */
+  public playJump(kind: JumpSoundKind): void {
+    if (!this.canPlayEffect() || !this.context || !this.sfxBus) return;
+    const now = this.context.currentTime;
+    if (kind === 'double-jump') {
+      this.playMagicalSweep(this.sfxBus, now, 523.25, 880, 0.52, 0.036);
+      this.playGentleNote(this.sfxBus, now + 0.12, 987.77, 0.66, 0.018, 1.5);
+      this.playNoiseBurst(this.sfxBus, now, 0.11, 'bandpass', 920, 0.0065);
+      return;
+    }
+    this.playMagicalSweep(this.sfxBus, now, 369.99, 587.33, 0.42, 0.029);
+    this.playNoiseBurst(this.sfxBus, now, 0.09, 'bandpass', 720, 0.0055);
+  }
+
+  /** A surface-aware soft puff with a small, friendly settling chime. */
+  public playLanding(surface: SurfaceKind, intensity = 0.5): void {
+    if (!this.canPlayEffect() || !this.context || !this.sfxBus) return;
+    const amount = clampUnit(intensity);
+    const now = this.context.currentTime;
+    const settings = this.footstepSettings(surface);
+    this.playNoiseBurst(
+      this.sfxBus,
+      now,
+      settings.duration * (0.8 + amount * 0.55),
+      settings.filter,
+      settings.frequency * 0.9,
+      settings.gain * (0.36 + amount * 0.5),
+    );
+    this.playFootThump(this.sfxBus, now, settings.thumpFrequency * 1.12, 0.009 + amount * 0.018);
+    this.playGentleNote(this.sfxBus, now + 0.035, 587.33, 0.3, 0.005 + amount * 0.006, -1.5);
   }
 
   public setEnvironment(environment: AudioEnvironment): void {
@@ -448,6 +483,7 @@ export class AudioEngine {
     this.padToneFilter = null;
     this.atmosphereLowpass = null;
     this.atmosphereGain = null;
+    this.ambientEchoInput = null;
     this.currentPadVoice = null;
     this.statusValue = 'disposed';
     this.reasonValue = undefined;
@@ -461,7 +497,7 @@ export class AudioEngine {
     const ambient = context.createGain();
     const sfx = context.createGain();
     const compressor = context.createDynamicsCompressor();
-    ambient.gain.value = 0.42;
+    ambient.gain.value = 0.4;
     sfx.gain.value = 0.8;
     compressor.threshold.value = -15;
     compressor.knee.value = 18;
@@ -491,10 +527,10 @@ export class AudioEngine {
   private applyEnvironmentMix(): void {
     if (!this.context) return;
     const now = this.context.currentTime;
-    this.ambientBus?.gain.setTargetAtTime(0.42 - this.nightFactor * 0.045, now, 0.8);
-    this.padToneFilter?.frequency.setTargetAtTime(1080 - this.nightFactor * 340, now, 1.4);
-    this.atmosphereLowpass?.frequency.setTargetAtTime(600 - this.nightFactor * 160, now, 1.8);
-    this.atmosphereGain?.gain.setTargetAtTime(0.0075 + this.nightFactor * 0.0015, now, 1.8);
+    this.ambientBus?.gain.setTargetAtTime(0.4 + this.nightFactor * 0.012, now, 0.8);
+    this.padToneFilter?.frequency.setTargetAtTime(1900 - this.nightFactor * 120, now, 1.4);
+    this.atmosphereLowpass?.frequency.setTargetAtTime(780 - this.nightFactor * 90, now, 1.8);
+    this.atmosphereGain?.gain.setTargetAtTime(0.0018 + this.nightFactor * 0.00025, now, 1.8);
   }
 
   private syncMonumentGraphs(): void {
@@ -581,8 +617,8 @@ export class AudioEngine {
 
     const padFilter = context.createBiquadFilter();
     padFilter.type = 'lowpass';
-    padFilter.frequency.value = 1080 - this.nightFactor * 340;
-    padFilter.Q.value = 0.28;
+    padFilter.frequency.value = 1900 - this.nightFactor * 120;
+    padFilter.Q.value = 0.22;
     padFilter.connect(this.ambientBus);
     this.padToneFilter = padFilter;
     this.ambientNodes.add(padFilter);
@@ -591,13 +627,26 @@ export class AudioEngine {
     const filterDepth = context.createGain();
     filterLfo.type = 'sine';
     filterLfo.frequency.value = 0.013;
-    filterDepth.gain.value = 95;
+    filterDepth.gain.value = 65;
     filterLfo.connect(filterDepth);
     filterDepth.connect(padFilter.frequency);
     filterLfo.start(now);
     this.ambientSources.add(filterLfo);
     this.ambientNodes.add(filterLfo);
     this.ambientNodes.add(filterDepth);
+
+    const echo = context.createDelay(0.5);
+    const echoFeedback = context.createGain();
+    const echoWet = context.createGain();
+    echo.delayTime.value = 0.245;
+    echoFeedback.gain.value = 0.14;
+    echoWet.gain.value = 0.11;
+    echo.connect(echoFeedback);
+    echoFeedback.connect(echo);
+    echo.connect(echoWet);
+    echoWet.connect(this.ambientBus);
+    this.ambientEchoInput = echo;
+    for (const node of [echo, echoFeedback, echoWet]) this.ambientNodes.add(node);
 
     const atmosphere = context.createBufferSource();
     const atmosphereHighpass = context.createBiquadFilter();
@@ -610,19 +659,19 @@ export class AudioEngine {
     atmosphere.buffer = this.getAtmosphereNoiseBuffer();
     atmosphere.loop = true;
     atmosphereHighpass.type = 'highpass';
-    atmosphereHighpass.frequency.value = 90;
+    atmosphereHighpass.frequency.value = 160;
     atmosphereHighpass.Q.value = 0.3;
     atmosphereLowpass.type = 'lowpass';
-    atmosphereLowpass.frequency.value = 600 - this.nightFactor * 160;
+    atmosphereLowpass.frequency.value = 780 - this.nightFactor * 90;
     atmosphereLowpass.Q.value = 0.25;
     atmosphereGain.gain.setValueAtTime(0.0001, now);
-    atmosphereGain.gain.exponentialRampToValueAtTime(0.0075 + this.nightFactor * 0.0015, now + 2.5);
+    atmosphereGain.gain.exponentialRampToValueAtTime(0.0018 + this.nightFactor * 0.00025, now + 3.2);
     atmosphereLfo.type = 'sine';
     atmosphereLfo.frequency.value = 0.021;
-    atmosphereLfoDepth.gain.value = 0.0016;
+    atmosphereLfoDepth.gain.value = 0.00035;
     atmosphereFilterLfo.type = 'sine';
     atmosphereFilterLfo.frequency.value = 0.009;
-    atmosphereFilterDepth.gain.value = 58;
+    atmosphereFilterDepth.gain.value = 42;
     atmosphere.connect(atmosphereHighpass);
     atmosphereHighpass.connect(atmosphereLowpass);
     atmosphereLowpass.connect(atmosphereGain);
@@ -664,6 +713,7 @@ export class AudioEngine {
     this.padToneFilter = null;
     this.atmosphereLowpass = null;
     this.atmosphereGain = null;
+    this.ambientEchoInput = null;
     this.currentPadVoice = null;
     this.lastKeyIndex = -1;
     this.lastPadIndex = -1;
@@ -717,7 +767,7 @@ export class AudioEngine {
     if (!this.context || !this.padToneFilter) throw new Error('Ambient graph is not ready.');
     const gain = this.context.createGain();
     gain.gain.setValueAtTime(0.0001, at);
-    gain.gain.exponentialRampToValueAtTime(0.021, at + fadeSeconds);
+    gain.gain.exponentialRampToValueAtTime(0.0075, at + fadeSeconds);
     gain.connect(this.padToneFilter);
     const sources: OscillatorNode[] = [];
     const nodes: AudioNode[] = [gain];
@@ -725,7 +775,7 @@ export class AudioEngine {
     voicing.forEach((frequency, noteIndex) => {
       const oscillator = this.context?.createOscillator();
       if (!oscillator) return;
-      oscillator.type = noteIndex === 2 ? 'triangle' : 'sine';
+      oscillator.type = 'sine';
       oscillator.frequency.value = frequency;
       oscillator.detune.value = (noteIndex - 1.5) * 2.5;
       oscillator.connect(gain);
@@ -767,26 +817,57 @@ export class AudioEngine {
     if (!this.canPlayEffect() || !this.context || !this.ambientBus) return;
     const index = pickNonRepeatingIndex(this.random(), this.lastKeyIndex, D_MAJOR_PENTATONIC_HZ.length);
     this.lastKeyIndex = index;
-    const frequency = D_MAJOR_PENTATONIC_HZ[index] ?? 220;
+    const frequency = D_MAJOR_PENTATONIC_HZ[index] ?? 440;
     const now = this.context.currentTime;
-    const oscillator = this.context.createOscillator();
+    this.playAmbientPiano(now, frequency, 0.035);
+    if (this.random() < 0.62) {
+      const responseIndex = pickAmbientResponseIndex(index, this.random());
+      const responseFrequency = D_MAJOR_PENTATONIC_HZ[responseIndex] ?? frequency;
+      this.playAmbientPiano(now + 0.7 + this.random() * 0.35, responseFrequency, 0.022);
+    }
+  }
+
+  private playAmbientPiano(at: number, frequency: number, peakGain: number): void {
+    if (
+      !this.context
+      || !this.ambientBus
+      || this.scheduledSources.size > MAX_SCHEDULED_SOURCES - 3
+    ) return;
     const filter = this.context.createBiquadFilter();
-    const gain = this.context.createGain();
-    oscillator.type = 'triangle';
-    oscillator.frequency.value = frequency;
-    oscillator.detune.value = this.random() * 5 - 2.5;
+    const envelope = this.context.createGain();
     filter.type = 'lowpass';
-    filter.frequency.value = 1280 - this.nightFactor * 260;
-    filter.Q.value = 0.35;
-    gain.gain.setValueAtTime(0.0001, now);
-    gain.gain.exponentialRampToValueAtTime(0.026, now + 0.016);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + 1.85);
-    oscillator.connect(filter);
-    filter.connect(gain);
-    gain.connect(this.ambientBus);
-    oscillator.start(now);
-    oscillator.stop(now + 1.9);
-    this.trackFiniteSource(oscillator, [oscillator, filter, gain]);
+    filter.frequency.value = 3300 - this.nightFactor * 180;
+    filter.Q.value = 0.42;
+    envelope.gain.setValueAtTime(0.0001, at);
+    envelope.gain.exponentialRampToValueAtTime(peakGain, at + 0.028);
+    envelope.gain.exponentialRampToValueAtTime(peakGain * 0.34, at + 0.42);
+    envelope.gain.exponentialRampToValueAtTime(0.0001, at + 3.15);
+    filter.connect(envelope);
+    envelope.connect(this.ambientBus);
+    if (this.ambientEchoInput) envelope.connect(this.ambientEchoInput);
+
+    const sources: OscillatorNode[] = [];
+    const nodes: AudioNode[] = [filter, envelope];
+    const partials = [
+      { ratio: 1, gain: 0.74, type: 'sine' as OscillatorType },
+      { ratio: 2, gain: 0.19, type: 'triangle' as OscillatorType },
+      { ratio: 3, gain: 0.07, type: 'sine' as OscillatorType },
+    ];
+    for (const partial of partials) {
+      const oscillator = this.context.createOscillator();
+      const partialGain = this.context.createGain();
+      oscillator.type = partial.type;
+      oscillator.frequency.setValueAtTime(frequency * partial.ratio, at);
+      oscillator.detune.value = (this.random() - 0.5) * 2.4;
+      partialGain.gain.value = partial.gain;
+      oscillator.connect(partialGain);
+      partialGain.connect(filter);
+      oscillator.start(at);
+      oscillator.stop(at + 3.2);
+      sources.push(oscillator);
+      nodes.push(oscillator, partialGain);
+    }
+    this.trackFiniteVoice(sources, nodes);
   }
 
   private playGentleNote(
@@ -809,6 +890,36 @@ export class AudioEngine {
     filter.Q.value = 0.32;
     gain.gain.setValueAtTime(0.0001, at);
     gain.gain.exponentialRampToValueAtTime(peakGain, at + 0.018);
+    gain.gain.exponentialRampToValueAtTime(0.0001, at + duration);
+    oscillator.connect(filter);
+    filter.connect(gain);
+    gain.connect(destination);
+    oscillator.start(at);
+    oscillator.stop(at + duration + 0.025);
+    this.trackFiniteSource(oscillator, [oscillator, filter, gain]);
+  }
+
+  private playMagicalSweep(
+    destination: AudioNode,
+    at: number,
+    fromFrequency: number,
+    toFrequency: number,
+    duration: number,
+    peakGain: number,
+  ): void {
+    if (!this.context || this.scheduledSources.size >= MAX_SCHEDULED_SOURCES) return;
+    const oscillator = this.context.createOscillator();
+    const filter = this.context.createBiquadFilter();
+    const gain = this.context.createGain();
+    oscillator.type = 'sine';
+    oscillator.frequency.setValueAtTime(fromFrequency, at);
+    oscillator.frequency.exponentialRampToValueAtTime(toFrequency, at + duration * 0.72);
+    filter.type = 'lowpass';
+    filter.frequency.value = 2400;
+    filter.Q.value = 0.45;
+    gain.gain.setValueAtTime(0.0001, at);
+    gain.gain.exponentialRampToValueAtTime(peakGain, at + 0.024);
+    gain.gain.exponentialRampToValueAtTime(peakGain * 0.42, at + duration * 0.42);
     gain.gain.exponentialRampToValueAtTime(0.0001, at + duration);
     oscillator.connect(filter);
     filter.connect(gain);
@@ -928,6 +1039,25 @@ export class AudioEngine {
         safeDisconnect(node);
       }
     }, { once: true });
+  }
+
+  private trackFiniteVoice(
+    sources: readonly AudioScheduledSourceNode[],
+    nodes: readonly AudioNode[],
+  ): void {
+    for (const source of sources) this.scheduledSources.add(source);
+    for (const node of nodes) this.finiteNodes.add(node);
+    let remaining = sources.length;
+    const release = (): void => {
+      remaining -= 1;
+      if (remaining > 0) return;
+      for (const source of sources) this.scheduledSources.delete(source);
+      for (const node of nodes) {
+        this.finiteNodes.delete(node);
+        safeDisconnect(node);
+      }
+    };
+    for (const source of sources) source.addEventListener('ended', release, { once: true });
   }
 
   private canPlayEffect(): boolean {

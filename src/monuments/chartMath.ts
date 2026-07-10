@@ -21,6 +21,11 @@ export interface CandleLayout {
   readonly isUp: boolean;
 }
 
+export interface SpringScalar {
+  readonly value: number;
+  readonly velocity: number;
+}
+
 const MIN_ABSOLUTE_RANGE = 1e-8;
 
 function finiteOr(value: number, fallback: number): number {
@@ -104,6 +109,44 @@ export function priceToChartY(price: number, range: PriceRange, height: number):
   const span = Math.max(range.max - range.min, MIN_ABSOLUTE_RANGE);
   const normalized = (finiteOr(price, range.min) - range.min) / span;
   return Math.min(1, Math.max(0, normalized)) * height;
+}
+
+/**
+ * Advances a scalar with a critically damped spring. This form cannot overshoot
+ * a stationary target, so chart geometry remains a smooth presentation of the
+ * real OHLC value instead of implying a price that never traded.
+ */
+export function stepCriticallyDampedSpring(
+  current: SpringScalar,
+  target: number,
+  deltaSeconds: number,
+  smoothTime = 0.16,
+): SpringScalar {
+  const delta = Math.min(0.1, Math.max(0, deltaSeconds));
+  const safeTarget = finiteOr(target, current.value);
+  if (delta === 0) {
+    return current;
+  }
+
+  const duration = Math.max(0.04, smoothTime);
+  const omega = 2 / duration;
+  const x = omega * delta;
+  const decay = 1 / (1 + x + 0.48 * x * x + 0.235 * x * x * x);
+  const change = current.value - safeTarget;
+  const temp = (current.velocity + omega * change) * delta;
+  let velocity = (current.velocity - omega * temp) * decay;
+  let value = safeTarget + (change + temp) * decay;
+
+  const crossedTarget = (safeTarget - current.value > 0) === (value > safeTarget);
+  if (crossedTarget) {
+    value = safeTarget;
+    velocity = 0;
+  }
+
+  if (Math.abs(value - safeTarget) < 1e-9 && Math.abs(velocity) < 1e-7) {
+    return { value: safeTarget, velocity: 0 };
+  }
+  return { value, velocity };
 }
 
 export function layoutCandles(

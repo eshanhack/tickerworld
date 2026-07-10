@@ -10,6 +10,32 @@ vi.hoisted(() => {
 
 import { FoxPlayer, PlayerInputController, ThirdPersonCamera } from '../src/player';
 
+function emitKey(target: EventTarget, type: 'keydown' | 'keyup', code: string, repeat = false): void {
+  const event = new Event(type, { cancelable: true });
+  Object.defineProperties(event, {
+    code: { value: code },
+    repeat: { value: repeat },
+  });
+  target.dispatchEvent(event);
+}
+
+describe('PlayerInputController', () => {
+  it('queues one jump per Space key edge and ignores key repeat', () => {
+    const target = new EventTarget();
+    const input = new PlayerInputController({ target: target as unknown as Window, document: null });
+
+    emitKey(target, 'keydown', 'Space');
+    expect(input.consumeJump()).toBe(true);
+    expect(input.consumeJump()).toBe(false);
+    emitKey(target, 'keydown', 'Space', true);
+    expect(input.consumeJump()).toBe(false);
+    emitKey(target, 'keyup', 'Space');
+    emitKey(target, 'keydown', 'Space');
+    expect(input.consumeJump()).toBe(true);
+    input.dispose();
+  });
+});
+
 describe('FoxPlayer', () => {
   it('moves forward relative to a south-facing camera and emits alternating footsteps', () => {
     const input = new PlayerInputController({ target: null, document: null });
@@ -69,7 +95,80 @@ describe('FoxPlayer', () => {
     expect(fox.group.getObjectByName('FoxFrontRightLeg')).toBeTruthy();
     expect(fox.group.getObjectByName('FoxHindLeftLeg')).toBeTruthy();
     expect(fox.group.getObjectByName('FoxHindRightLeg')).toBeTruthy();
+    const model = fox.group.getObjectByName('FoxModel');
+    expect(model?.scale.x).toBeGreaterThan(0.74);
+    expect(model?.scale.x).toBeLessThan(0.82);
+    const foxBounds = new THREE.Box3().setFromObject(fox.group);
+    expect(foxBounds.max.y).toBeLessThan(2.2);
     fox.dispose();
+  });
+
+  it('follows a responsive jump arc and reports jump and landing actions', () => {
+    const input = new PlayerInputController({ target: null, document: null });
+    const fox = new FoxPlayer({ input });
+    const actions: Array<{ type: string; surface: string; intensity: number }> = [];
+    fox.update(1 / 60, 0, () => 1.5, () => 'stone');
+    fox.requestJump();
+    let highest = fox.position.y;
+
+    for (let frame = 0; frame < 150; frame += 1) {
+      fox.update(1 / 60, 0, () => 1.5, () => 'stone', undefined, (event) => actions.push(event));
+      highest = Math.max(highest, fox.position.y);
+    }
+
+    expect(highest).toBeGreaterThan(2.7);
+    expect(fox.position.y).toBeCloseTo(1.5, 3);
+    expect(fox.snapshot.grounded).toBe(true);
+    expect(fox.snapshot.jumpsUsed).toBe(0);
+    expect(actions.map((event) => event.type)).toEqual(['jump', 'land']);
+    expect(actions[1]?.surface).toBe('stone');
+    expect(actions[1]?.intensity).toBeGreaterThan(0.25);
+    fox.dispose();
+  });
+
+  it('allows exactly two jumps while airborne and resets the allowance on landing', () => {
+    const fox = new FoxPlayer({ input: new PlayerInputController({ target: null, document: null }) });
+    const actions: string[] = [];
+    const update = () => fox.update(1 / 60, 0, () => 0, () => 'grass', undefined, (event) => actions.push(event.type));
+    update();
+
+    fox.requestJump();
+    update();
+    fox.requestJump();
+    update();
+    fox.requestJump();
+    update();
+    expect(actions.filter((type) => type.includes('jump'))).toEqual(['jump', 'double-jump']);
+    expect(fox.snapshot.jumpsUsed).toBe(2);
+
+    for (let frame = 0; frame < 180 && !fox.snapshot.grounded; frame += 1) update();
+    expect(fox.snapshot.grounded).toBe(true);
+    expect(fox.snapshot.jumpsUsed).toBe(0);
+
+    fox.requestJump();
+    update();
+    expect(actions.filter((type) => type.includes('jump'))).toEqual(['jump', 'double-jump', 'jump']);
+    fox.dispose();
+  });
+
+  it('disposes pooled magical geometry and materials exactly once', () => {
+    const fox = new FoxPlayer({ input: new PlayerInputController({ target: null, document: null }) });
+    const geometries = new Set<THREE.BufferGeometry>();
+    const materials = new Set<THREE.Material>();
+    fox.group.traverse((object) => {
+      if (!(object instanceof THREE.Mesh)) return;
+      geometries.add(object.geometry);
+      const objectMaterials = Array.isArray(object.material) ? object.material : [object.material];
+      objectMaterials.forEach((material) => materials.add(material));
+    });
+    const geometrySpies = [...geometries].map((geometry) => vi.spyOn(geometry, 'dispose'));
+    const materialSpies = [...materials].map((material) => vi.spyOn(material, 'dispose'));
+
+    fox.dispose();
+    fox.dispose();
+
+    geometrySpies.forEach((spy) => expect(spy).toHaveBeenCalledTimes(1));
+    materialSpies.forEach((spy) => expect(spy).toHaveBeenCalledTimes(1));
   });
 });
 

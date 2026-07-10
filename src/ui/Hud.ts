@@ -8,6 +8,7 @@ export interface HudCallbacks {
   onCompassToggle: (enabled: boolean) => void;
   onReducedMotionToggle: (enabled: boolean) => void;
   onVirtualInput: (x: number, forward: number, sprint: boolean) => void;
+  onJump: () => void;
 }
 
 interface NearbyView {
@@ -38,6 +39,7 @@ export class Hud {
   private readonly debug: HTMLElement;
   private readonly joystick: HTMLElement;
   private readonly joystickKnob: HTMLElement;
+  private readonly jumpButton: HTMLButtonElement;
   private joystickPointer: number | null = null;
   private joystickCenter = { x: 0, y: 0 };
   private compassEnabled = true;
@@ -60,7 +62,7 @@ export class Hud {
           <button class="enter-button" type="button" data-enter>
             <span>Enter the world</span><small>sound on</small>
           </button>
-          <div class="enter-controls"><kbd>WASD</kbd> roam <span>·</span> <kbd>Shift</kbd> run <span>·</span> drag to look</div>
+          <div class="enter-controls"><kbd>WASD</kbd> roam <span>·</span> <kbd>Shift</kbd> run <span>·</span> <kbd>Space</kbd> jump twice <span>·</span> drag to look</div>
         </div>
       </section>
 
@@ -90,6 +92,7 @@ export class Hud {
         <dl>
           <div><dt>Move</dt><dd>WASD or arrow keys</dd></div>
           <div><dt>Run</dt><dd>Hold Shift</dd></div>
+          <div><dt>Jump</dt><dd>Space (press twice to spin)</dd></div>
           <div><dt>Look</dt><dd>Drag the world</dd></div>
           <div><dt>Zoom</dt><dd>Mouse wheel</dd></div>
         </dl>
@@ -99,6 +102,7 @@ export class Hud {
       </section>
 
       <div class="mobile-joystick" data-joystick aria-hidden="true"><div class="joystick-knob" data-joystick-knob></div></div>
+      <button class="mobile-jump" type="button" aria-label="Jump; tap again in the air to double jump" data-jump><span>&#10022;</span><small>JUMP</small></button>
       <div class="rotate-device"><span>↻</span><strong>Turn your phone sideways</strong><small>Tickerworld likes a wider view.</small></div>
       <pre class="debug-panel is-hidden" data-debug></pre>
     `;
@@ -122,6 +126,7 @@ export class Hud {
     this.debug = this.required('[data-debug]');
     this.joystick = this.required('[data-joystick]');
     this.joystickKnob = this.required('[data-joystick-knob]');
+    this.jumpButton = this.required<HTMLButtonElement>('[data-jump]');
 
     this.enterButton.addEventListener('click', this.enter);
     this.muteButton.addEventListener('click', this.mute);
@@ -135,6 +140,7 @@ export class Hud {
     this.joystick.addEventListener('pointermove', this.joystickMove);
     this.joystick.addEventListener('pointerup', this.joystickEnd);
     this.joystick.addEventListener('pointercancel', this.joystickEnd);
+    this.jumpButton.addEventListener('pointerdown', this.jump);
     document.addEventListener('keydown', this.keydown);
   }
 
@@ -223,6 +229,7 @@ export class Hud {
     this.joystick.removeEventListener('pointermove', this.joystickMove);
     this.joystick.removeEventListener('pointerup', this.joystickEnd);
     this.joystick.removeEventListener('pointercancel', this.joystickEnd);
+    this.jumpButton.removeEventListener('pointerdown', this.jump);
     document.removeEventListener('keydown', this.keydown);
     if (this.pricePulseTimer !== undefined) window.clearTimeout(this.pricePulseTimer);
     this.root.remove();
@@ -243,6 +250,10 @@ export class Hud {
 
   private readonly mute = (): void => this.callbacks.onMuteToggle();
   private readonly volume = (): void => this.callbacks.onVolumeChange(Number(this.volumeInput.value));
+  private readonly jump = (event: PointerEvent): void => {
+    event.preventDefault();
+    this.callbacks.onJump();
+  };
   private readonly toggleHelp = (): void => {
     this.helpPanel.classList.toggle('is-hidden');
   };

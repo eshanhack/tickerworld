@@ -1,6 +1,6 @@
 import { Group, Vector3 } from 'three';
-import { describe, expect, it } from 'vitest';
-import { ASSET_SYMBOLS, type AssetState, type Candle } from '../src/types';
+import { describe, expect, it, vi } from 'vitest';
+import { ASSET_SYMBOLS, type AssetState, type Candle, type TickDirection } from '../src/types';
 import {
   MONUMENT_CANDLE_COUNT,
   MONUMENT_SHUNT_DURATION_SECONDS,
@@ -10,16 +10,22 @@ import {
   formatPrice,
   layoutCandles,
   smoothCandles,
+  stepCriticallyDampedSpring,
 } from '../src/monuments/chartMath';
 import { buildMedallion } from '../src/monuments/medallions';
 import { MEDALLION_CENTER, PLINTH_BOUNDS } from '../src/monuments/monumentGeometry';
 import { Monument } from '../src/monuments/Monument';
+import { TickTrailPool } from '../src/monuments/TickTrailPool';
 
 function candle(openTime: number, open: number, high: number, low: number, close: number, closed = true): Candle {
   return { openTime, open, high, low, close, closed };
 }
 
-function state(candles: readonly Candle[], presentationTick = 1): AssetState {
+function state(
+  candles: readonly Candle[],
+  presentationTick = 1,
+  direction: TickDirection = 'up',
+): AssetState {
   const price = candles.at(-1)?.close ?? null;
   return {
     symbol: 'BTC',
@@ -28,7 +34,7 @@ function state(candles: readonly Candle[], presentationTick = 1): AssetState {
     candles,
     price,
     previousPrice: price,
-    direction: 'up',
+    direction,
     mode: 'live',
     updatedAt: Date.now(),
     presentationTick,
@@ -87,6 +93,18 @@ describe('monument chart math', () => {
     expect(smoothed[1]?.close).toBeLessThan(12);
   });
 
+  it('critically damps live geometry to truth without inventing overshoot', () => {
+    let spring = { value: 10, velocity: 0 };
+    let previous = spring.value;
+    for (let frame = 0; frame < 90; frame += 1) {
+      spring = stepCriticallyDampedSpring(spring, 14, 1 / 60, 0.19);
+      expect(spring.value).toBeGreaterThanOrEqual(previous);
+      expect(spring.value).toBeLessThanOrEqual(14);
+      previous = spring.value;
+    }
+    expect(spring.value).toBeCloseTo(14, 4);
+  });
+
   it('uses the locked shunt timing and adaptive nullable price formatting', () => {
     expect(MONUMENT_SHUNT_DURATION_SECONDS).toBe(0.58);
     expect(formatPrice(null)).toBe('$—');
@@ -122,6 +140,58 @@ describe('monument chart math', () => {
     monument.update(0.08, 0.08);
     expect(Array.from(monument.greenBodyInstances.instanceMatrix.array)).not.toEqual(before);
     monument.dispose();
+  });
+
+  it('keeps a true-price guide alive and emits a pooled bead for flat ticks', () => {
+    const monument = new Monument({ symbol: 'BTC' });
+    const initial = [
+      candle(1, 8, 13, 7, 11),
+      candle(2, 11, 14, 9, 12),
+      candle(3, 12, 13, 10, 11, false),
+    ];
+    monument.setAssetState(state(initial, 1, 'flat'));
+    monument.update(0.016, 0.016);
+
+    expect(monument.livePriceGuide.visible).toBe(true);
+    expect(monument.livePriceMarker.visible).toBe(true);
+    expect(monument.livePriceGuide.position.y).toBeCloseTo(monument.livePriceMarker.position.y, 8);
+    expect(monument.activeTickBeadCount).toBe(1);
+    expect(monument.root.getObjectByName('live-market-tick-trail')).toBeDefined();
+
+    const flatMarkerScale = monument.livePriceMarker.scale.x;
+    monument.setAssetState(state(initial, 2, 'flat'));
+    monument.update(0.016, 0.032);
+    expect(monument.activeTickBeadCount).toBe(2);
+    expect(monument.livePriceMarker.scale.x).toBeGreaterThanOrEqual(flatMarkerScale);
+
+    const priorGuideY = monument.livePriceGuide.position.y;
+    const moved = [...initial.slice(0, -1), candle(3, 12, 13, 10, 12, false)];
+    monument.setAssetState(state(moved, 3, 'up'));
+    monument.update(0.08, 0.112);
+    expect(monument.livePriceGuide.position.y).toBeGreaterThan(priorGuideY);
+    expect(monument.livePriceGuide.position.y).toBeCloseTo(monument.livePriceMarker.position.y, 8);
+    monument.dispose();
+  });
+
+  it('bounds and disposes the tick trail pool exactly once', () => {
+    const trail = new TickTrailPool(2);
+    const disposeMesh = vi.spyOn(trail.mesh, 'dispose');
+    const disposeGeometry = vi.spyOn(trail.mesh.geometry, 'dispose');
+    const disposeMaterial = vi.spyOn(trail.mesh.material, 'dispose');
+    expect(trail.emit(100, 'up')).toBe(true);
+    expect(trail.emit(101, 'down')).toBe(true);
+    expect(trail.emit(102, 'flat')).toBe(true);
+    trail.update(0.016, { min: 90, max: 110 }, 5, 7);
+    expect(trail.activeCount).toBeLessThanOrEqual(2);
+    expect(trail.mesh.count).toBe(trail.activeCount);
+
+    trail.dispose();
+    trail.dispose();
+    expect(trail.mesh.count).toBe(0);
+    expect(disposeMesh).toHaveBeenCalledTimes(1);
+    expect(disposeGeometry).toHaveBeenCalledTimes(1);
+    expect(disposeMaterial).toHaveBeenCalledTimes(1);
+    expect(trail.emit(103, 'up')).toBe(false);
   });
 
   it('samples transformed plaza tiers and collides with only solid shrine volumes', () => {

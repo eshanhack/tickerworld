@@ -5,11 +5,13 @@ import {
   AMBIENT_PAD_VOICINGS,
   ASSET_AUDIO_PROFILES,
   AudioEngine,
+  D_MAJOR_PENTATONIC_HZ,
   delayInRange,
   EMPTY_COLORED_NOISE_STATE,
   marketGestureFrequencies,
   nextColoredNoiseSample,
   normaliseMoveIntensity,
+  pickAmbientResponseIndex,
   pickNonRepeatingIndex,
 } from '../src/audio';
 
@@ -49,6 +51,7 @@ interface FakeNode extends Partial<AudioScheduledSourceNode> {
   readonly gain?: AudioParam;
   readonly frequency?: AudioParam;
   readonly detune?: AudioParam;
+  readonly delayTime?: AudioParam;
   readonly Q?: AudioParam;
   loop?: boolean;
   buffer?: AudioBuffer | null;
@@ -123,6 +126,7 @@ function makeFakeContext(): {
       const node = createNode(['frequency', 'Q']);
       return node as unknown as BiquadFilterNode;
     }),
+    createDelay: vi.fn(() => createNode(['delayTime']) as unknown as DelayNode),
     createDynamicsCompressor: vi.fn(() => {
       const node = createNode(['threshold', 'knee', 'ratio', 'attack', 'release']);
       return node as unknown as DynamicsCompressorNode;
@@ -215,10 +219,24 @@ describe('audio mapping', () => {
 });
 
 describe('ambient composition', () => {
-  it('uses the locked sparse timing ranges', () => {
-    expect(delayInRange(0, AMBIENT_KEY_DELAY_RANGE_SECONDS)).toBe(9);
-    expect(delayInRange(1, AMBIENT_KEY_DELAY_RANGE_SECONDS)).toBe(17);
-    expect(delayInRange(0.5, AMBIENT_PAD_DELAY_RANGE_SECONDS)).toBe(23);
+  it('uses a calm but regularly audible key cadence and slow pad changes', () => {
+    expect(delayInRange(0, AMBIENT_KEY_DELAY_RANGE_SECONDS)).toBe(5);
+    expect(delayInRange(1, AMBIENT_KEY_DELAY_RANGE_SECONDS)).toBe(10);
+    expect(delayInRange(0.5, AMBIENT_PAD_DELAY_RANGE_SECONDS)).toBe(31);
+    expect(Math.min(...D_MAJOR_PENTATONIC_HZ)).toBeGreaterThanOrEqual(293.66);
+    expect(Math.min(...AMBIENT_PAD_VOICINGS.flat())).toBeGreaterThanOrEqual(146.83);
+  });
+
+  it('answers a key with a different in-scale note deterministically', () => {
+    expect(pickAmbientResponseIndex(0, 0)).toBe(2);
+    expect(pickAmbientResponseIndex(0, 1)).toBe(3);
+    expect(pickAmbientResponseIndex(9, 0)).toBe(7);
+    for (let primary = 0; primary < D_MAJOR_PENTATONIC_HZ.length; primary += 1) {
+      const answer = pickAmbientResponseIndex(primary, 0.5);
+      expect(answer).toBeGreaterThanOrEqual(0);
+      expect(answer).toBeLessThan(D_MAJOR_PENTATONIC_HZ.length);
+      expect(answer).not.toBe(primary);
+    }
   });
 
   it('never immediately repeats a pad voicing', () => {
@@ -249,6 +267,44 @@ describe('ambient composition', () => {
 });
 
 describe('AudioEngine lifecycle', () => {
+  it('schedules a deterministic bright piano call and pentatonic response', async () => {
+    vi.useFakeTimers();
+    const fake = makeFakeContext();
+    const engine = new AudioEngine({ contextFactory: () => fake.context, storage: null, random: () => 0 });
+    await engine.unlock();
+
+    expect(fake.oscillators).toHaveLength(7);
+    vi.advanceTimersByTime(5_000);
+    expect(fake.oscillators).toHaveLength(13);
+    expect(fake.oscillators[7]?.frequency?.value).toBeCloseTo(293.66);
+    expect(fake.oscillators[10]?.frequency?.value).toBeCloseTo(369.99);
+
+    engine.dispose();
+    vi.useRealTimers();
+  });
+
+  it('plays bounded magical jump and surface landing voices and cleans them up', async () => {
+    vi.useFakeTimers();
+    const fake = makeFakeContext();
+    const engine = new AudioEngine({ contextFactory: () => fake.context, storage: null, random: () => 0.5 });
+    await engine.unlock();
+    const oscillatorCount = fake.oscillators.length;
+    const bufferSourceCount = fake.bufferSources.length;
+
+    engine.playJump('jump');
+    engine.playJump('double-jump');
+    engine.playLanding('grass', 0.8);
+
+    expect(fake.oscillators.length - oscillatorCount).toBe(5);
+    expect(fake.bufferSources.length - bufferSourceCount).toBe(3);
+    engine.dispose();
+    expect(fake.oscillators.slice(oscillatorCount).every((source) => (
+      (source.stop?.mock.calls.length ?? 0) > 0
+    ))).toBe(true);
+    expect(fake.nodes.slice(1).every((node) => node.disconnect.mock.calls.length > 0)).toBe(true);
+    vi.useRealTimers();
+  });
+
   it('keeps one ambient graph through repeated unlock and visibility cycles', async () => {
     vi.useFakeTimers();
     const fake = makeFakeContext();

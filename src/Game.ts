@@ -4,7 +4,7 @@ import { AudioEngine } from './audio';
 import { DEBUG_MODE, GRAND_MONUMENTS, WORLD_SEED } from './config';
 import { HyperliquidMarketFeed } from './markets';
 import { Monument, MonumentSystem } from './monuments';
-import { FoxPlayer, ThirdPersonCamera, type FootstepEvent } from './player';
+import { FoxPlayer, ThirdPersonCamera, type FootstepEvent, type FoxActionEvent } from './player';
 import type { AssetState, AssetSymbol } from './types';
 import { Hud } from './ui';
 import { WorldSystem, type EchoPlacementDescriptor } from './world';
@@ -164,6 +164,7 @@ export class Game {
         safeWrite(REDUCED_MOTION_KEY, String(enabled));
       },
       onVirtualInput: (x, forward, sprint) => this.player.setVirtualInput(x, forward, sprint),
+      onJump: () => this.player.requestJump(),
     });
 
     try {
@@ -240,6 +241,7 @@ export class Game {
       (x, z) => this.groundHeightAt(x, z),
       (x, z) => this.groundSurfaceAt(x, z),
       (footstep) => this.onFootstep(footstep),
+      (action) => this.onFoxAction(action),
     );
     this.world.update(this.player.position, this.elapsed);
     this.cameraTarget.copy(this.player.position);
@@ -263,6 +265,15 @@ export class Game {
   private onFootstep(event: FootstepEvent): void {
     if (!this.entered) return;
     this.audio.playFootstep({ surface: event.surface, sprinting: event.sprinting, side: event.side });
+  }
+
+  private onFoxAction(event: FoxActionEvent): void {
+    if (!this.entered) return;
+    if (event.type === 'land') {
+      this.audio.playLanding(event.surface, event.intensity);
+      return;
+    }
+    this.audio.playJump(event.type);
   }
 
   private onMarketState(state: AssetState): void {
@@ -407,6 +418,7 @@ export class Game {
       const world = this.world.getDebugStats();
       const btcMarket = this.market.getState('BTC');
       const audioState = this.audio.state;
+      const playerState = this.player.snapshot;
       this.hud.setDebug([
         `fps ${this.fps.toFixed(1)} · dpr ${this.pixelRatio.toFixed(2)}`,
         `draws ${this.renderer.info.render.calls} · tris ${this.estimateTriangles()}`,
@@ -414,6 +426,7 @@ export class Game {
         `props ${world.propInstances} · echoes ${world.activeEchoes}`,
         `market ${btcMarket.mode} · tick ${btcMarket.presentationTick} · candles ${btcMarket.candles.length}`,
         `audio ${audioState.status} · muted ${audioState.muted}`,
+        `fox ${playerState.grounded ? 'grounded' : 'airborne'} · jumps ${playerState.jumpsUsed}/2 · vy ${playerState.verticalSpeed.toFixed(2)}`,
         `pos ${this.player.position.x.toFixed(2)}, ${this.player.position.z.toFixed(2)} · yaw ${this.cameraRig.yaw.toFixed(2)}`,
         `textures ${this.renderer.info.memory.textures} · geometries ${this.renderer.info.memory.geometries}`,
       ].join('\n'));

@@ -112,6 +112,7 @@ canvas {
 .hud.is-awaiting-entry .hud-actions,
 .hud.is-awaiting-entry .hud-toast,
 .hud.is-awaiting-entry .mobile-joystick,
+.hud.is-awaiting-entry .mobile-jump,
 .hud.is-awaiting-entry .debug-panel {
   opacity: 0;
   pointer-events: none;
@@ -431,6 +432,29 @@ canvas {
 }
 .joystick-knob { position: absolute; top: 50%; left: 50%; width: 3.1rem; height: 3.1rem; margin: -1.55rem; border: 1px solid rgba(255,255,255,.5); border-radius: 50%; background: rgba(255,241,207,.75); box-shadow: 0 .5rem 1.4rem rgba(47,58,57,.14); }
 
+.mobile-jump {
+  position: absolute;
+  right: max(1.55rem, env(safe-area-inset-right));
+  bottom: max(1.65rem, env(safe-area-inset-bottom));
+  display: none;
+  place-items: center;
+  align-content: center;
+  width: 5.25rem;
+  height: 5.25rem;
+  border: 1px solid rgba(255,255,255,.58);
+  border-radius: 48% 52% 46% 54%;
+  background: radial-gradient(circle at 38% 28%, rgba(255,255,255,.7), rgba(217,200,255,.78) 55%, rgba(95,155,145,.7));
+  box-shadow: 0 .75rem 1.8rem rgba(47,58,57,.2), inset 0 0 0 .35rem rgba(255,241,207,.14);
+  color: #fff8dd;
+  pointer-events: auto;
+  touch-action: none;
+  text-shadow: 0 .1rem .35rem rgba(80,68,116,.35);
+  transition: transform .12s ease, box-shadow .12s ease;
+}
+.mobile-jump span { font-size: 1.65rem; line-height: 1; }
+.mobile-jump small { margin-top: .2rem; font-size: .57rem; font-weight: 900; letter-spacing: .12em; }
+.mobile-jump:active { transform: scale(.9) rotate(-5deg); box-shadow: 0 .35rem .9rem rgba(47,58,57,.18); }
+
 .rotate-device { display: none; position: absolute; inset: 0; place-items: center; align-content: center; gap: .55rem; padding: 2rem; background: #a9d6ce; color: #31373d; text-align: center; pointer-events: auto; }
 .rotate-device span { font-size: 3rem; color: #c9744f; }
 .rotate-device strong { font-size: 1.25rem; }
@@ -443,6 +467,7 @@ canvas {
 
 @media (hover: none), (pointer: coarse) {
   .mobile-joystick { display: block; }
+  .mobile-jump { display: grid; }
   .enter-controls { display: none; }
   .volume-control { display: none; }
   .hud-actions { bottom: auto; top: max(1rem, env(safe-area-inset-top)); }
@@ -457,6 +482,7 @@ canvas {
 
 @media (max-width: 900px) {
   .mobile-joystick { display: block; }
+  .mobile-jump { display: grid; }
   .volume-control { display: none; }
 }
 

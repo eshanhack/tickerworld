@@ -24,6 +24,7 @@ const MOVEMENT_KEYS = new Set([
   'ArrowRight',
   'ShiftLeft',
   'ShiftRight',
+  'Space',
 ]);
 
 function clampAxis(value: number): number {
@@ -31,6 +32,7 @@ function clampAxis(value: number): number {
 }
 
 function isEditableTarget(target: EventTarget | null): boolean {
+  if (typeof Element === 'undefined') return false;
   if (!(target instanceof Element)) return false;
   const tagName = target.tagName.toLowerCase();
   return tagName === 'input' || tagName === 'textarea' || tagName === 'select' || target.hasAttribute('contenteditable');
@@ -48,6 +50,7 @@ export class PlayerInputController {
   private virtualX = 0;
   private virtualForward = 0;
   private virtualSprint = false;
+  private jumpQueued = false;
   private enabled = true;
 
   public constructor(options: PlayerInputControllerOptions = {}) {
@@ -94,6 +97,18 @@ export class PlayerInputController {
     this.virtualSprint = sprint;
   }
 
+  /** Queue one jump edge for the next player update (keyboard and touch share this path). */
+  public requestJump(): void {
+    if (this.enabled) this.jumpQueued = true;
+  }
+
+  /** Returns a queued jump once, preventing key-repeat from creating extra jumps. */
+  public consumeJump(): boolean {
+    if (!this.enabled || !this.jumpQueued) return false;
+    this.jumpQueued = false;
+    return true;
+  }
+
   public setEnabled(enabled: boolean): void {
     this.enabled = enabled;
     if (!enabled) this.clear();
@@ -104,6 +119,7 @@ export class PlayerInputController {
     this.virtualX = 0;
     this.virtualForward = 0;
     this.virtualSprint = false;
+    this.jumpQueued = false;
   };
 
   public dispose(): void {
@@ -120,8 +136,10 @@ export class PlayerInputController {
 
   private readonly onKeyDown = (event: KeyboardEvent): void => {
     if (!MOVEMENT_KEYS.has(event.code) || isEditableTarget(event.target)) return;
+    const wasPressed = this.pressed.has(event.code);
     this.pressed.add(event.code);
-    if (event.code.startsWith('Arrow')) event.preventDefault();
+    if (event.code === 'Space' && !wasPressed && !event.repeat) this.requestJump();
+    if (event.code.startsWith('Arrow') || event.code === 'Space') event.preventDefault();
   };
 
   private readonly onKeyUp = (event: KeyboardEvent): void => {

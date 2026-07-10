@@ -17,6 +17,18 @@ export interface FootstepEvent {
 
 export type FootstepListener = (event: FootstepEvent) => void;
 
+export type FoxActionKind = 'jump' | 'double-jump' | 'land';
+
+export interface FoxActionEvent {
+  readonly type: FoxActionKind;
+  readonly position: THREE.Vector3;
+  readonly surface: SurfaceKind;
+  /** Normalized action energy in the range 0..1. */
+  readonly intensity: number;
+}
+
+export type FoxActionListener = (event: FoxActionEvent) => void;
+
 export interface FoxPlayerOptions {
   readonly input?: PlayerInputController;
   readonly spawn?: Readonly<THREE.Vector3>;
@@ -39,9 +51,23 @@ interface TailJoint {
   pitchVelocity: number;
 }
 
+interface MagicParticle {
+  readonly mesh: THREE.Mesh;
+  readonly velocity: THREE.Vector3;
+  life: number;
+  maxLife: number;
+  baseScale: number;
+}
+
 const UP = new THREE.Vector3(0, 1, 0);
 const DEFAULT_SURFACE: SurfaceSampler = () => 'grass';
 const NO_HEIGHT: HeightSampler = () => 0;
+const MODEL_SCALE = 0.78;
+const GRAVITY = 25.5;
+const JUMP_IMPULSE = 8.65;
+const DOUBLE_JUMP_IMPULSE = 8.15;
+const COYOTE_SECONDS = 0.11;
+const JUMP_BUFFER_SECONDS = 0.14;
 
 function damp(current: number, target: number, responsiveness: number, deltaSeconds: number): number {
   return THREE.MathUtils.lerp(current, target, 1 - Math.exp(-responsiveness * deltaSeconds));
@@ -68,6 +94,7 @@ export class FoxPlayer {
   public readonly input: PlayerInputController;
 
   private readonly model = new THREE.Group();
+  private readonly magicGroup = new THREE.Group();
   private readonly velocity = new THREE.Vector3();
   private readonly desiredVelocity = new THREE.Vector3();
   private readonly movementDirection = new THREE.Vector3();
@@ -75,6 +102,9 @@ export class FoxPlayer {
   private readonly tail: TailJoint[] = [];
   private readonly eyes: THREE.Mesh[] = [];
   private readonly ears: THREE.Object3D[] = [];
+  private readonly magicParticles: MagicParticle[] = [];
+  private readonly frameStart = new THREE.Vector3();
+  private readonly frameDisplacement = new THREE.Vector3();
   private readonly walkSpeed: number;
   private readonly sprintSpeed: number;
   private elapsed = 0;
@@ -88,6 +118,15 @@ export class FoxPlayer {
   private squashPulse = 0;
   private wasMoving = false;
   private grounded = false;
+  private groundInitialized = false;
+  private verticalVelocity = 0;
+  private jumpsUsed = 0;
+  private coyoteRemaining = 0;
+  private jumpBufferRemaining = 0;
+  private airborneTime = 0;
+  private spinProgress = -1;
+  private magicCursor = 0;
+  private magicTimer = 0;
   private currentSurface: SurfaceKind = 'grass';
   private reducedMotion: boolean;
   private disposed = false;
@@ -100,9 +139,12 @@ export class FoxPlayer {
 
     this.group.name = 'FoxPlayer';
     this.model.name = 'FoxModel';
-    this.group.add(this.model);
+    this.magicGroup.name = 'FoxMagicEffects';
+    this.model.scale.setScalar(MODEL_SCALE);
+    this.group.add(this.model, this.magicGroup);
     if (options.spawn) this.group.position.copy(options.spawn);
     this.buildFox();
+    this.buildMagicPool();
   }
 
   public get position(): THREE.Vector3 {
@@ -118,6 +160,9 @@ export class FoxPlayer {
       speed,
       sprinting: speed > this.walkSpeed * 1.08,
       surface: this.currentSurface,
+      grounded: this.grounded,
+      jumpsUsed: this.jumpsUsed,
+      verticalSpeed: this.verticalVelocity,
     };
   }
 
@@ -128,11 +173,23 @@ export class FoxPlayer {
   public setPosition(x: number, y: number, z: number): void {
     this.group.position.set(x, y, z);
     this.velocity.set(0, 0, 0);
+    this.verticalVelocity = 0;
     this.grounded = true;
+    this.groundInitialized = true;
+    this.jumpsUsed = 0;
+    this.coyoteRemaining = COYOTE_SECONDS;
+    this.jumpBufferRemaining = 0;
+    this.airborneTime = 0;
+    for (const particle of this.magicParticles) particle.mesh.visible = false;
   }
 
   public setVirtualInput(moveX: number, moveForward: number, sprint = false): void {
     this.input.setVirtualInput(moveX, moveForward, sprint);
+  }
+
+  /** Queue a jump through the same edge-triggered path used by the Space key. */
+  public requestJump(): void {
+    this.input.requestJump();
   }
 
   /**
@@ -145,13 +202,17 @@ export class FoxPlayer {
     heightAt: HeightSampler = NO_HEIGHT,
     surfaceAt: SurfaceSampler = DEFAULT_SURFACE,
     onFootstep?: FootstepListener,
+    onAction?: FoxActionListener,
   ): PlayerSnapshot {
     if (this.disposed) return this.snapshot;
     const delta = Math.min(Math.max(deltaSeconds, 0), 0.05);
     if (delta === 0) return this.snapshot;
     this.elapsed += delta;
+    this.frameStart.copy(this.group.position);
 
     const input = this.input.state;
+    if (this.input.consumeJump()) this.jumpBufferRemaining = JUMP_BUFFER_SECONDS;
+    else this.jumpBufferRemaining = Math.max(0, this.jumpBufferRemaining - delta);
     const inputMagnitude = Math.min(1, Math.hypot(input.moveX, input.moveForward));
     const sprintRequested = input.sprint && inputMagnitude > 0.15;
     const topSpeed = sprintRequested ? this.sprintSpeed : this.walkSpeed;
@@ -170,7 +231,8 @@ export class FoxPlayer {
     this.desiredVelocity.copy(this.movementDirection).multiplyScalar(topSpeed * inputMagnitude);
     const currentSpeed = Math.hypot(this.velocity.x, this.velocity.z);
     const desiredSpeed = Math.hypot(this.desiredVelocity.x, this.desiredVelocity.z);
-    const response = desiredSpeed > currentSpeed ? (sprintRequested ? 7.2 : 8.8) : 11.5;
+    const groundedResponse = desiredSpeed > currentSpeed ? (sprintRequested ? 7.2 : 8.8) : 11.5;
+    const response = this.grounded ? groundedResponse : (desiredSpeed > 0.05 ? 6.4 : 1.8);
     const velocityBlend = 1 - Math.exp(-response * delta);
     this.velocity.lerp(this.desiredVelocity, velocityBlend);
     if (desiredSpeed === 0 && this.velocity.lengthSq() < 0.0004) this.velocity.set(0, 0, 0);
@@ -190,19 +252,66 @@ export class FoxPlayer {
     this.group.position.x += this.velocity.x * delta;
     this.group.position.z += this.velocity.z * delta;
     const groundY = safeHeight(heightAt, this.group.position.x, this.group.position.z, this.group.position.y);
-    if (!this.grounded) {
+    this.currentSurface = surfaceAt(this.group.position.x, this.group.position.z);
+    if (!this.groundInitialized) {
       this.group.position.y = groundY;
       this.grounded = true;
+      this.groundInitialized = true;
+      this.coyoteRemaining = COYOTE_SECONDS;
+    } else if (this.grounded && this.group.position.y - groundY > 0.24) {
+      this.grounded = false;
     } else {
-      this.group.position.y = damp(this.group.position.y, groundY, 18, delta);
+      if (this.grounded) {
+        this.group.position.y = damp(this.group.position.y, groundY, 18, delta);
+        this.verticalVelocity = 0;
+        this.coyoteRemaining = COYOTE_SECONDS;
+      } else {
+        this.coyoteRemaining = Math.max(0, this.coyoteRemaining - delta);
+      }
     }
-    this.currentSurface = surfaceAt(this.group.position.x, this.group.position.z);
+
+    if (this.jumpBufferRemaining > 0) {
+      if (this.grounded || (this.coyoteRemaining > 0 && this.jumpsUsed === 0)) {
+        this.performJump(false, onAction);
+      } else if (!this.grounded && this.jumpsUsed === 1) {
+        this.performJump(true, onAction);
+      }
+    }
+
+    if (!this.grounded) {
+      this.airborneTime += delta;
+      this.verticalVelocity -= GRAVITY * delta;
+      this.group.position.y += this.verticalVelocity * delta;
+      if (this.group.position.y <= groundY && this.verticalVelocity <= 0) {
+        const landingSpeed = Math.abs(this.verticalVelocity);
+        const wasAirborneLongEnough = this.airborneTime > 0.075;
+        this.group.position.y = groundY;
+        this.verticalVelocity = 0;
+        this.grounded = true;
+        this.jumpsUsed = 0;
+        this.coyoteRemaining = COYOTE_SECONDS;
+        this.airborneTime = 0;
+        this.spinProgress = -1;
+        this.model.rotation.x = 0;
+        if (wasAirborneLongEnough) {
+          const intensity = THREE.MathUtils.clamp(landingSpeed / 11, 0.25, 1);
+          this.squashPulse = 1.25 + intensity * 0.55;
+          this.spawnMagic(5, 0.75);
+          onAction?.({
+            type: 'land',
+            position: this.group.position.clone(),
+            surface: this.currentSurface,
+            intensity,
+          });
+        }
+      }
+    }
 
     const distance = speed * delta;
     this.travelled += distance;
     this.distanceSinceFootstep += distance;
     const stride = THREE.MathUtils.lerp(1.14, 0.82, THREE.MathUtils.clamp((speed - this.walkSpeed) / Math.max(0.1, this.sprintSpeed - this.walkSpeed), 0, 1));
-    if (moving && this.distanceSinceFootstep >= stride * 0.5) {
+    if (this.grounded && moving && this.distanceSinceFootstep >= stride * 0.5) {
       this.distanceSinceFootstep %= stride * 0.5;
       const side: FootstepEvent['side'] = this.nextFoot++ % 2 === 0 ? 'left' : 'right';
       onFootstep?.({
@@ -215,6 +324,8 @@ export class FoxPlayer {
     }
 
     this.animate(delta, speed, sprintRequested);
+    this.frameDisplacement.copy(this.group.position).sub(this.frameStart);
+    this.updateMagic(delta, this.frameDisplacement, speed);
     return this.snapshot;
   }
 
@@ -224,13 +335,33 @@ export class FoxPlayer {
     this.input.dispose();
     this.group.removeFromParent();
     const materials = new Set<THREE.Material>();
+    const geometries = new Set<THREE.BufferGeometry>();
     this.group.traverse((object) => {
       if (!(object instanceof THREE.Mesh)) return;
-      object.geometry.dispose();
+      geometries.add(object.geometry);
       if (Array.isArray(object.material)) object.material.forEach((material) => materials.add(material));
       else materials.add(object.material);
     });
+    geometries.forEach((geometry) => geometry.dispose());
     materials.forEach((material) => material.dispose());
+  }
+
+  private performJump(doubleJump: boolean, onAction?: FoxActionListener): void {
+    this.jumpBufferRemaining = 0;
+    this.grounded = false;
+    this.coyoteRemaining = 0;
+    this.airborneTime = 0;
+    this.jumpsUsed = doubleJump ? 2 : 1;
+    this.verticalVelocity = doubleJump ? DOUBLE_JUMP_IMPULSE : JUMP_IMPULSE;
+    this.squashPulse = doubleJump ? -0.62 : -0.82;
+    if (doubleJump) this.spinProgress = 0;
+    this.spawnMagic(doubleJump ? 10 : 7, doubleJump ? 1.2 : 0.92);
+    onAction?.({
+      type: doubleJump ? 'double-jump' : 'jump',
+      position: this.group.position.clone(),
+      surface: this.currentSurface,
+      intensity: doubleJump ? 1 : 0.78,
+    });
   }
 
   private animate(delta: number, speed: number, sprinting: boolean): void {
@@ -243,19 +374,40 @@ export class FoxPlayer {
       const phase = gaitPhase + leg.phase;
       const swing = Math.sin(phase) * (0.18 + speedRatio * 0.48) * movementAmount * motionScale;
       const lift = Math.max(0, Math.sin(phase + Math.PI * 0.35)) * speedRatio * 0.08 * motionScale;
-      leg.pivot.rotation.x = swing * (leg.front ? 1 : 0.9);
-      leg.pivot.position.y = leg.restY + lift;
+      const airborneTuck = this.grounded ? 0 : (leg.front ? 0.26 : -0.18);
+      leg.pivot.rotation.x = damp(leg.pivot.rotation.x, swing * (leg.front ? 1 : 0.9) + airborneTuck, 14, delta);
+      leg.pivot.position.y = damp(leg.pivot.position.y, leg.restY + lift + (this.grounded ? 0 : 0.08), 16, delta);
     }
 
     const idleBreath = Math.sin(this.elapsed * 2.15) * 0.018;
     const gaitBob = Math.abs(Math.sin(gaitPhase)) * 0.075 * movementAmount * motionScale;
-    this.model.position.y = idleBreath + gaitBob;
+    const airborneFloat = this.grounded ? 0 : Math.sin(this.airborneTime * 7) * 0.025 * motionScale;
+    this.model.position.y = idleBreath + gaitBob + airborneFloat;
     this.model.rotation.z = Math.sin(gaitPhase * 0.5) * 0.025 * movementAmount * motionScale;
+
+    if (this.spinProgress >= 0) {
+      this.spinProgress += delta / 0.52;
+      if (this.spinProgress >= 1) {
+        this.spinProgress = -1;
+        this.model.rotation.x = 0;
+      } else if (this.reducedMotion) {
+        this.model.rotation.x = -Math.sin(this.spinProgress * Math.PI) * 0.18;
+      } else {
+        const eased = THREE.MathUtils.smoothstep(this.spinProgress, 0, 1);
+        this.model.rotation.x = -eased * Math.PI * 2;
+      }
+    } else {
+      this.model.rotation.x = damp(this.model.rotation.x, 0, 14, delta);
+    }
 
     this.squashPulse *= Math.exp(-6.8 * delta);
     const strideSquash = Math.sin(gaitPhase * 2) * 0.018 * movementAmount * motionScale;
     const squash = this.squashPulse * motionScale + strideSquash;
-    this.model.scale.set(1 + squash * 0.055, 1 - squash * 0.09, 1 + squash * 0.045);
+    this.model.scale.set(
+      MODEL_SCALE * (1 + squash * 0.055),
+      MODEL_SCALE * (1 - squash * 0.09),
+      MODEL_SCALE * (1 + squash * 0.045),
+    );
 
     this.animateBlink(delta);
     this.animateEars(delta, speedRatio, motionScale);
@@ -310,11 +462,91 @@ export class FoxPlayer {
     });
   }
 
+  private buildMagicPool(): void {
+    const sparkleGeometry = new THREE.OctahedronGeometry(0.075, 0);
+    const wispGeometry = new THREE.SphereGeometry(0.055, 6, 4);
+    const materials = [
+      new THREE.MeshBasicMaterial({ color: 0xffe9a8, transparent: true, opacity: 0.82, depthWrite: false, blending: THREE.AdditiveBlending }),
+      new THREE.MeshBasicMaterial({ color: 0xd9c8ff, transparent: true, opacity: 0.72, depthWrite: false, blending: THREE.AdditiveBlending }),
+      new THREE.MeshBasicMaterial({ color: 0xbcebd8, transparent: true, opacity: 0.72, depthWrite: false, blending: THREE.AdditiveBlending }),
+    ];
+
+    for (let index = 0; index < 32; index += 1) {
+      const mesh = new THREE.Mesh(index % 3 === 0 ? sparkleGeometry : wispGeometry, materials[index % materials.length]);
+      mesh.name = `FoxMagicParticle${index + 1}`;
+      mesh.visible = false;
+      mesh.frustumCulled = false;
+      mesh.renderOrder = 3;
+      this.magicGroup.add(mesh);
+      this.magicParticles.push({ mesh, velocity: new THREE.Vector3(), life: 0, maxLife: 1, baseScale: 1 });
+    }
+  }
+
+  private spawnMagic(count: number, energy: number): void {
+    if (this.reducedMotion) count = Math.max(1, Math.ceil(count * 0.42));
+    for (let index = 0; index < count; index += 1) {
+      const serial = this.magicCursor++;
+      const particle = this.magicParticles[serial % this.magicParticles.length];
+      if (!particle) continue;
+      const phase = serial * 2.39996 + this.elapsed * 0.73;
+      const radius = 0.18 + ((serial * 17) % 11) / 32;
+      const height = 0.3 + ((serial * 13) % 17) / 14;
+      particle.mesh.position.set(Math.cos(phase) * radius, height, Math.sin(phase) * radius);
+      const outward = 0.28 + energy * 0.32;
+      particle.velocity.set(
+        Math.cos(phase) * outward,
+        0.22 + energy * (0.16 + (serial % 5) * 0.035),
+        Math.sin(phase) * outward,
+      );
+      particle.maxLife = 0.48 + (serial % 7) * 0.055 + energy * 0.14;
+      particle.life = particle.maxLife;
+      particle.baseScale = 0.65 + energy * 0.38 + (serial % 3) * 0.09;
+      particle.mesh.scale.setScalar(particle.baseScale * 0.15);
+      particle.mesh.visible = true;
+    }
+  }
+
+  private updateMagic(delta: number, displacement: THREE.Vector3, speed: number): void {
+    for (let index = 0; index < this.magicParticles.length; index += 1) {
+      const particle = this.magicParticles[index];
+      if (!particle?.mesh.visible) continue;
+      particle.mesh.position.sub(displacement);
+      particle.life -= delta;
+      if (particle.life <= 0) {
+        particle.mesh.visible = false;
+        continue;
+      }
+      particle.velocity.y += delta * 0.12;
+      particle.mesh.position.addScaledVector(particle.velocity, delta);
+      particle.mesh.position.x += Math.sin(this.elapsed * 5 + index) * delta * 0.035;
+      particle.mesh.position.z += Math.cos(this.elapsed * 4.2 + index) * delta * 0.035;
+      particle.mesh.rotation.y += delta * (2.4 + (index % 4));
+      const normalizedLife = particle.life / particle.maxLife;
+      const bloom = Math.sin(Math.min(1, (1 - normalizedLife) * 5) * Math.PI * 0.5);
+      particle.mesh.scale.setScalar(particle.baseScale * Math.max(0.02, normalizedLife) * Math.max(0.2, bloom));
+    }
+
+    this.magicTimer -= delta;
+    if (this.magicTimer > 0) return;
+    const active = !this.grounded || speed > 0.55;
+    this.spawnMagic(1, active ? 0.38 : 0.2);
+    this.magicTimer = this.reducedMotion
+      ? (active ? 0.24 : 0.85)
+      : (active ? 0.095 : 0.52);
+  }
+
   private buildFox(): void {
     const fur = new THREE.MeshStandardMaterial({ color: PALETTE.fox, roughness: 0.86, flatShading: true });
     const cream = new THREE.MeshStandardMaterial({ color: PALETTE.foxCream, roughness: 0.9, flatShading: true });
     const ink = new THREE.MeshStandardMaterial({ color: PALETTE.ink, roughness: 0.72, flatShading: true });
     const innerEar = new THREE.MeshStandardMaterial({ color: PALETTE.pink, roughness: 0.9, flatShading: true });
+    const magicAccent = new THREE.MeshStandardMaterial({
+      color: 0xeadcff,
+      emissive: 0x7b68a8,
+      emissiveIntensity: 0.34,
+      roughness: 0.48,
+      flatShading: true,
+    });
 
     const body = enableShadows(new THREE.Mesh(new THREE.SphereGeometry(1, 12, 8), fur));
     body.name = 'FoxBody';
@@ -366,6 +598,13 @@ export class FoxPlayer {
       this.ears.push(ear);
       this.model.add(ear);
     }
+
+    const charm = enableShadows(new THREE.Mesh(new THREE.OctahedronGeometry(0.105, 0), magicAccent));
+    charm.name = 'FoxMagicCharm';
+    charm.position.set(0, 1.99, -1.18);
+    charm.rotation.z = Math.PI * 0.25;
+    charm.scale.set(0.72, 1, 0.42);
+    this.model.add(charm);
 
     const legPositions = [
       { name: 'FrontLeft', x: -0.42, z: -0.5, phase: 0, front: true },

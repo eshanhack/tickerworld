@@ -2,6 +2,9 @@ export { FoxPlayer } from './FoxPlayer';
 export type {
   FootstepEvent,
   FootstepListener,
+  FoxActionEvent,
+  FoxActionKind,
+  FoxActionListener,
   FoxPlayerOptions,
   HeightSampler,
   SurfaceSampler,

@@ -7,6 +7,7 @@ export {
   delayInRange,
   EMPTY_COLORED_NOISE_STATE,
   nextColoredNoiseSample,
+  pickAmbientResponseIndex,
   pickNonRepeatingIndex,
 } from './ambientMath';
 export { ASSET_AUDIO_PROFILES, marketGestureFrequencies, normaliseMoveIntensity } from './audioMath';
@@ -22,5 +23,6 @@ export type {
   AudioStateListener,
   FootstepSoundOptions,
   MonumentAudioSource,
+  JumpSoundKind,
   TickSoundOptions,
 } from './types';

@@ -72,3 +72,5 @@ export interface FootstepSoundOptions {
   readonly sprinting?: boolean;
   readonly side?: 'left' | 'right';
 }
+
+export type JumpSoundKind = 'jump' | 'double-jump';

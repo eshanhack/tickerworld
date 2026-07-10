@@ -16,7 +16,10 @@ export {
   priceToChartY,
   selectChartCandles,
   smoothCandles,
+  stepCriticallyDampedSpring,
   unusualMoveScore,
   type CandleLayout,
   type PriceRange,
+  type SpringScalar,
 } from './chartMath';
+export { TickTrailPool } from './TickTrailPool';

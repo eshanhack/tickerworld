@@ -68,4 +68,7 @@ export interface PlayerSnapshot {
   speed: number;
   sprinting: boolean;
   surface: SurfaceKind;
+  grounded: boolean;
+  jumpsUsed: number;
+  verticalSpeed: number;
 }

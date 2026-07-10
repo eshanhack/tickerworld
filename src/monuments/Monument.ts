@@ -30,10 +30,14 @@ import {
   easePriceRange,
   formatPrice,
   layoutCandles,
+  priceToChartY,
   selectChartCandles,
   smoothCandles,
+  stepCriticallyDampedSpring,
   unusualMoveScore,
+  type CandleLayout,
   type PriceRange,
+  type SpringScalar,
 } from './chartMath';
 import { buildMedallion, type MonumentKind } from './medallions';
 import {
@@ -43,6 +47,7 @@ import {
   sampleLocalStoneGround,
 } from './monumentGeometry';
 import { SparklePool } from './SparklePool';
+import { TickTrailPool } from './TickTrailPool';
 
 export type { MonumentKind } from './medallions';
 
@@ -77,6 +82,7 @@ const COLORS = {
 
 const CHART_WIDTH = 13.8;
 const CHART_HEIGHT = 5.15;
+const LIVE_MARKER_X = CHART_WIDTH * 0.5 + 0.42;
 const tempObject = new Object3D();
 const tempCameraPosition = new Vector3();
 const tempBillboardPosition = new Vector3();
@@ -90,6 +96,14 @@ interface LampBulb {
   readonly phase: number;
 }
 
+interface ActiveChartSpring {
+  readonly openTime: number;
+  bodyY: SpringScalar;
+  bodyHeight: SpringScalar;
+  wickY: SpringScalar;
+  wickHeight: SpringScalar;
+}
+
 export class Monument {
   readonly root = new Group();
   readonly symbol: AssetSymbol;
@@ -99,12 +113,15 @@ export class Monument {
   readonly redBodyInstances: InstancedMesh<RoundedBoxGeometry, MeshStandardMaterial>;
   readonly greenWickInstances: InstancedMesh<CylinderGeometry, MeshStandardMaterial>;
   readonly redWickInstances: InstancedMesh<CylinderGeometry, MeshStandardMaterial>;
+  readonly livePriceGuide: Mesh<BoxGeometry, MeshBasicMaterial>;
+  readonly livePriceMarker: Mesh<SphereGeometry, MeshStandardMaterial>;
 
   private readonly chartGroup = new Group();
   private readonly billboardGroup = new Group();
   private readonly symbolText = new Text();
   private readonly priceText = new Text();
   private readonly sparkles = new SparklePool(24);
+  private readonly tickTrail = new TickTrailPool(12);
   private readonly activeBodyHighlight: Mesh<RoundedBoxGeometry, MeshStandardMaterial>;
   private readonly activeWickHighlight: Mesh<CylinderGeometry, MeshStandardMaterial>;
   private readonly pulseRingMaterial: MeshBasicMaterial;
@@ -118,6 +135,7 @@ export class Monument {
   private readonly lamps: LampBulb[] = [];
   private readonly upColor = new Color(COLORS.green);
   private readonly downColor = new Color(COLORS.red);
+  private readonly flatColor = new Color(COLORS.cream);
   private readonly targetRangeFallback: PriceRange = { min: 0, max: 1 };
 
   private targetCandles: Candle[] = [];
@@ -129,9 +147,14 @@ export class Monument {
   private disposed = false;
   private shuntProgress = 1;
   private pulseEnergy = 0;
+  private markerTickEnergy = 0;
   private pulseDirection: TickDirection = 'flat';
   private lastPresentationTick = -1;
   private displayedPrice = '';
+  private targetLivePrice: number | null = null;
+  private displayedLivePrice: number | null = null;
+  private livePriceVelocity = 0;
+  private activeChartSpring: ActiveChartSpring | null = null;
   private nightFactor = 0;
 
   constructor(options: MonumentOptions) {
@@ -216,16 +239,48 @@ export class Monument {
     this.activeWickHighlight.frustumCulled = false;
     this.activeWickHighlight.visible = false;
 
+    this.livePriceGuide = new Mesh(
+      new BoxGeometry(1, 1, 1),
+      new MeshBasicMaterial({
+        color: COLORS.cream,
+        transparent: true,
+        opacity: 0.14,
+        depthWrite: false,
+        toneMapped: false,
+      }),
+    );
+    this.livePriceGuide.name = `${this.symbol}-live-price-guide`;
+    this.livePriceGuide.scale.set(CHART_WIDTH + 0.36, 0.04, 0.03);
+    this.livePriceGuide.position.z = -0.065;
+    this.livePriceGuide.visible = false;
+
+    this.livePriceMarker = new Mesh(
+      new SphereGeometry(0.16, 10, 7),
+      new MeshStandardMaterial({
+        color: COLORS.cream,
+        emissive: COLORS.cream,
+        emissiveIntensity: 0.65,
+        roughness: 0.42,
+      }),
+    );
+    this.livePriceMarker.name = `${this.symbol}-live-price-marker`;
+    this.livePriceMarker.position.set(LIVE_MARKER_X, CHART_HEIGHT * 0.5, 0.045);
+    this.livePriceMarker.visible = false;
+    this.livePriceMarker.frustumCulled = false;
+
     this.chartGroup.name = `${this.symbol}-chart`;
     this.chartGroup.position.set(0, 0.56, 0.46);
     this.chartGroup.scale.y = 0.68;
     this.chartGroup.add(
+      this.livePriceGuide,
       this.greenWickInstances,
       this.redWickInstances,
       this.greenBodyInstances,
       this.redBodyInstances,
       this.activeWickHighlight,
       this.activeBodyHighlight,
+      this.tickTrail.mesh,
+      this.livePriceMarker,
       this.sparkles.points,
     );
     this.root.add(this.chartGroup);
@@ -236,8 +291,8 @@ export class Monument {
       opacity: 0,
       depthWrite: false,
     });
-    this.pulseRing = new Mesh(new TorusGeometry(2.15, 0.045, 6, 42), this.pulseRingMaterial);
-    this.pulseRing.position.set(0, CHART_HEIGHT * 0.5, -0.48);
+    this.pulseRing = new Mesh(new TorusGeometry(0.28, 0.026, 6, 28), this.pulseRingMaterial);
+    this.pulseRing.position.set(LIVE_MARKER_X, CHART_HEIGHT * 0.5, 0.025);
     this.pulseRing.visible = false;
     this.chartGroup.add(this.pulseRing);
 
@@ -314,6 +369,14 @@ export class Monument {
 
     this.targetCandles = nextCandles;
     this.targetRange = computePriceRange(this.targetCandles);
+    const latestClose = nextCandles.at(-1)?.close;
+    this.targetLivePrice = latestClose !== undefined && Number.isFinite(latestClose)
+      ? latestClose
+      : null;
+    if (this.displayedLivePrice === null && this.targetLivePrice !== null) {
+      this.displayedLivePrice = this.targetLivePrice;
+      this.livePriceVelocity = 0;
+    }
     if (this.displayedCandles.length === nextCandles.length && this.lastPresentationTick < 0) {
       this.displayedRange = { ...this.targetRange };
     }
@@ -328,9 +391,13 @@ export class Monument {
     }
 
     if (state.presentationTick !== this.lastPresentationTick) {
+      this.pulseDirection = state.direction;
+      this.pulseEnergy = Math.max(this.pulseEnergy, state.direction === 'flat' ? 0.68 : 1);
+      this.markerTickEnergy = 1;
+      if (this.targetLivePrice !== null) {
+        this.tickTrail.emit(this.targetLivePrice, state.direction);
+      }
       if (this.lastPresentationTick >= 0 && state.direction !== 'flat') {
-        this.pulseDirection = state.direction;
-        this.pulseEnergy = Math.max(this.pulseEnergy, 1);
         const score = unusualMoveScore(state.candles, state.previousPrice, state.price);
         if (score >= 1.7) {
           const color = state.direction === 'up' ? this.upColor : this.downColor;
@@ -356,8 +423,10 @@ export class Monument {
     if (this.shuntProgress < 1) {
       this.shuntProgress = Math.min(1, this.shuntProgress + delta / MONUMENT_SHUNT_DURATION_SECONDS);
     }
-    this.updateChartInstances();
-    this.updatePulse(delta);
+    this.updateChartInstances(delta);
+    this.updatePulse(delta, elapsedSeconds);
+    this.updateLivePrice(delta, elapsedSeconds);
+    this.tickTrail.update(delta, this.displayedRange, CHART_HEIGHT, LIVE_MARKER_X);
     this.sparkles.update(delta);
 
     for (const lamp of this.lamps) {
@@ -426,7 +495,12 @@ export class Monument {
     const geometries = new Set<{ dispose(): void }>();
     const materials = new Set<Material>();
     this.root.traverse((object) => {
-      if (object === this.symbolText || object === this.priceText || object === this.sparkles.points) {
+      if (
+        object === this.symbolText
+        || object === this.priceText
+        || object === this.sparkles.points
+        || object === this.tickTrail.mesh
+      ) {
         return;
       }
       if (object instanceof Mesh || object instanceof InstancedMesh) {
@@ -446,7 +520,12 @@ export class Monument {
     this.symbolText.dispose();
     this.priceText.dispose();
     this.sparkles.dispose();
+    this.tickTrail.dispose();
     this.root.clear();
+  }
+
+  get activeTickBeadCount(): number {
+    return this.tickTrail.activeCount;
   }
 
   private buildPlaza(): void {
@@ -631,12 +710,19 @@ export class Monument {
     });
   }
 
-  private updateChartInstances(): void {
+  private updateChartInstances(deltaSeconds: number): void {
     const spacing = CHART_WIDTH / MONUMENT_CANDLE_COUNT;
     const easedShunt = 1 - (1 - this.shuntProgress) ** 3;
     const xOffset = spacing * (1 - easedShunt);
     const layouts = layoutCandles(
       this.displayedCandles,
+      this.displayedRange,
+      CHART_WIDTH,
+      CHART_HEIGHT,
+      xOffset,
+    );
+    const targetLayouts = layoutCandles(
+      this.targetCandles,
       this.displayedRange,
       CHART_WIDTH,
       CHART_HEIGHT,
@@ -650,31 +736,36 @@ export class Monument {
 
     layouts.forEach((layout, index) => {
       const isLatest = index === layouts.length - 1;
-      const bodyPool = layout.isUp ? this.greenBodyInstances : this.redBodyInstances;
-      const wickPool = layout.isUp ? this.greenWickInstances : this.redWickInstances;
-      const poolIndex = layout.isUp ? greenCount++ : redCount++;
+      const targetLayout = isLatest ? targetLayouts.at(-1) : undefined;
+      const visualLayout = targetLayout
+        ? this.stepActiveChartSpring(targetLayout, deltaSeconds)
+        : layout;
+      const bodyPool = visualLayout.isUp ? this.greenBodyInstances : this.redBodyInstances;
+      const wickPool = visualLayout.isUp ? this.greenWickInstances : this.redWickInstances;
+      const poolIndex = visualLayout.isUp ? greenCount++ : redCount++;
+      const activeSwell = isLatest ? 1 + this.markerTickEnergy * 0.1 : 1;
 
-      tempObject.position.set(layout.x, layout.bodyY, 0);
+      tempObject.position.set(layout.x, visualLayout.bodyY, 0);
       tempObject.rotation.set(0, 0, 0);
-      tempObject.scale.set(spacing * 0.68, layout.bodyHeight, 0.44);
+      tempObject.scale.set(spacing * 0.68 * activeSwell, visualLayout.bodyHeight, 0.44 * activeSwell);
       tempObject.updateMatrix();
       bodyPool.setMatrixAt(poolIndex, tempObject.matrix);
 
-      tempObject.position.set(layout.x, layout.wickY, 0);
-      tempObject.scale.set(1, layout.wickHeight, 1);
+      tempObject.position.set(layout.x, visualLayout.wickY, 0);
+      tempObject.scale.set(1 + (activeSwell - 1) * 0.35, visualLayout.wickHeight, 1);
       tempObject.updateMatrix();
       wickPool.setMatrixAt(poolIndex, tempObject.matrix);
 
       if (isLatest) {
-        this.activeBodyHighlight.position.set(layout.x, layout.bodyY, 0.005);
+        this.activeBodyHighlight.position.set(layout.x, visualLayout.bodyY, 0.005);
         this.activeBodyHighlight.scale.set(
-          spacing * 0.76,
-          layout.bodyHeight + 0.055,
-          0.49,
+          spacing * 0.76 * activeSwell,
+          visualLayout.bodyHeight + 0.055,
+          0.49 * activeSwell,
         );
         this.activeBodyHighlight.visible = true;
-        this.activeWickHighlight.position.set(layout.x, layout.wickY, 0.005);
-        this.activeWickHighlight.scale.set(1.12, layout.wickHeight + 0.04, 1.12);
+        this.activeWickHighlight.position.set(layout.x, visualLayout.wickY, 0.005);
+        this.activeWickHighlight.scale.set(1.12, visualLayout.wickHeight + 0.04, 1.12);
         this.activeWickHighlight.visible = true;
       }
     });
@@ -693,9 +784,14 @@ export class Monument {
     }
   }
 
-  private updatePulse(deltaSeconds: number): void {
+  private updatePulse(deltaSeconds: number, elapsedSeconds: number): void {
     this.pulseEnergy = Math.max(0, this.pulseEnergy - deltaSeconds * 1.9);
-    const color = this.pulseDirection === 'down' ? this.downColor : this.upColor;
+    this.markerTickEnergy = Math.max(0, this.markerTickEnergy - deltaSeconds * 1.45);
+    const color = this.pulseDirection === 'down'
+      ? this.downColor
+      : this.pulseDirection === 'up'
+        ? this.upColor
+        : this.flatColor;
     this.greenBodyInstances.material.emissiveIntensity = 0.08 + this.pulseEnergy * 0.08;
     this.greenWickInstances.material.emissiveIntensity = 0.08 + this.pulseEnergy * 0.05;
     this.redBodyInstances.material.emissiveIntensity = 0.08 + this.pulseEnergy * 0.08;
@@ -704,16 +800,105 @@ export class Monument {
     this.activeWickHighlight.material.opacity = 0.18 + this.pulseEnergy * 0.18;
     this.priceCardMaterial.emissive.copy(color);
     this.priceCardMaterial.emissiveIntensity = this.pulseEnergy * 0.15;
+    this.livePriceMarker.material.color.copy(color);
+    this.livePriceMarker.material.emissive.copy(color);
+    this.livePriceMarker.material.emissiveIntensity = 0.5 + this.markerTickEnergy * 1.15;
+    const breathing = 1 + Math.sin(elapsedSeconds * 4.2) * 0.08;
+    this.livePriceMarker.scale.setScalar(breathing + this.markerTickEnergy * 0.24);
+    this.livePriceGuide.material.color.copy(color);
+    this.livePriceGuide.material.opacity = 0.15 + this.markerTickEnergy * 0.2;
 
     if (this.pulseEnergy > 0.01) {
       this.pulseRing.visible = true;
       this.pulseRingMaterial.color.copy(color);
-      this.pulseRingMaterial.opacity = this.pulseEnergy * 0.32;
-      this.pulseRing.scale.setScalar(1 + (1 - this.pulseEnergy) * 0.38);
+      this.pulseRingMaterial.opacity = this.pulseEnergy * 0.52;
+      this.pulseRing.scale.setScalar(1 + (1 - this.pulseEnergy) * 1.7);
     } else {
       this.pulseRing.visible = false;
       this.pulseRingMaterial.opacity = 0;
     }
+  }
+
+  private stepActiveChartSpring(target: CandleLayout, deltaSeconds: number): CandleLayout {
+    if (!this.activeChartSpring || this.activeChartSpring.openTime !== target.candle.openTime) {
+      this.activeChartSpring = {
+        openTime: target.candle.openTime,
+        bodyY: { value: target.bodyY, velocity: 0 },
+        bodyHeight: { value: target.bodyHeight, velocity: 0 },
+        wickY: { value: target.wickY, velocity: 0 },
+        wickHeight: { value: target.wickHeight, velocity: 0 },
+      };
+    } else {
+      this.activeChartSpring.bodyY = stepCriticallyDampedSpring(
+        this.activeChartSpring.bodyY,
+        target.bodyY,
+        deltaSeconds,
+        0.19,
+      );
+      this.activeChartSpring.bodyHeight = stepCriticallyDampedSpring(
+        this.activeChartSpring.bodyHeight,
+        target.bodyHeight,
+        deltaSeconds,
+        0.19,
+      );
+      this.activeChartSpring.wickY = stepCriticallyDampedSpring(
+        this.activeChartSpring.wickY,
+        target.wickY,
+        deltaSeconds,
+        0.22,
+      );
+      this.activeChartSpring.wickHeight = stepCriticallyDampedSpring(
+        this.activeChartSpring.wickHeight,
+        target.wickHeight,
+        deltaSeconds,
+        0.22,
+      );
+    }
+
+    return {
+      ...target,
+      bodyY: this.activeChartSpring.bodyY.value,
+      bodyHeight: this.activeChartSpring.bodyHeight.value,
+      wickY: this.activeChartSpring.wickY.value,
+      wickHeight: this.activeChartSpring.wickHeight.value,
+    };
+  }
+
+  private updateLivePrice(deltaSeconds: number, elapsedSeconds: number): void {
+    if (this.targetLivePrice === null) {
+      this.livePriceGuide.visible = false;
+      this.livePriceMarker.visible = false;
+      this.pulseRing.visible = false;
+      return;
+    }
+
+    if (this.displayedLivePrice === null) {
+      this.displayedLivePrice = this.targetLivePrice;
+      this.livePriceVelocity = 0;
+    } else {
+      const next = stepCriticallyDampedSpring(
+        { value: this.displayedLivePrice, velocity: this.livePriceVelocity },
+        this.targetLivePrice,
+        deltaSeconds,
+        0.18,
+      );
+      this.displayedLivePrice = next.value;
+      this.livePriceVelocity = next.velocity;
+    }
+
+    const y = priceToChartY(this.displayedLivePrice, this.displayedRange, CHART_HEIGHT);
+    this.livePriceGuide.position.y = y;
+    this.livePriceMarker.position.y = y;
+    this.pulseRing.position.y = y;
+    this.livePriceGuide.visible = true;
+    this.livePriceMarker.visible = true;
+    if (this.pulseEnergy > 0.01) {
+      this.pulseRing.visible = true;
+    }
+
+    // A barely perceptible guide shimmer keeps the live lane legible without
+    // suggesting any price movement between actual feed presentations.
+    this.livePriceGuide.scale.y = 0.04 * (1 + Math.sin(elapsedSeconds * 2.4) * 0.1);
   }
 
   private updateBillboard(camera: Camera): void {

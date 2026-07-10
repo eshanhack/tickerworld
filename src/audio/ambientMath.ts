@@ -1,21 +1,21 @@
 import { clampUnit } from './audioMath';
 
-export const AMBIENT_KEY_DELAY_RANGE_SECONDS = [9, 17] as const;
-export const AMBIENT_PAD_DELAY_RANGE_SECONDS = [18, 28] as const;
+export const AMBIENT_KEY_DELAY_RANGE_SECONDS = [5, 10] as const;
+export const AMBIENT_PAD_DELAY_RANGE_SECONDS = [24, 38] as const;
 
-/** D major pentatonic, kept in a soft piano-like register. */
+/** D major pentatonic in a bright, bell-piano register. */
 export const D_MAJOR_PENTATONIC_HZ = [
-  146.83, 164.81, 185, 220, 246.94,
   293.66, 329.63, 369.99, 440, 493.88,
+  587.33, 659.25, 739.99, 880, 987.77,
 ] as const;
 
-/** Open add2/add6 voicings. Adjacent entries deliberately avoid a functional song progression. */
+/** Airy add2/add6/sus voicings; no bass notes or functional song progression. */
 export const AMBIENT_PAD_VOICINGS = [
-  [73.42, 82.41, 92.5, 110],
-  [98, 123.47, 146.83, 164.81],
-  [110, 123.47, 138.59, 164.81],
-  [82.41, 98, 123.47, 138.59],
-  [61.74, 69.3, 73.42, 92.5],
+  [146.83, 220, 329.63, 493.88],
+  [164.81, 246.94, 369.99, 587.33],
+  [185, 220, 293.66, 440],
+  [220, 329.63, 369.99, 493.88],
+  [246.94, 369.99, 440, 659.25],
 ] as const;
 
 export interface ColoredNoiseState {
@@ -66,6 +66,20 @@ export function pickNonRepeatingIndex(
   }
   const slot = Math.min(safeCount - 2, Math.floor(clampUnit(randomValue) * (safeCount - 1)));
   return slot >= previousIndex ? slot + 1 : slot;
+}
+
+/** Picks a nearby pentatonic answer note without repeating the call note. */
+export function pickAmbientResponseIndex(
+  primaryIndex: number,
+  randomValue: number,
+  count = D_MAJOR_PENTATONIC_HZ.length,
+): number {
+  const safeCount = Math.max(2, Math.floor(count));
+  const primary = Math.min(safeCount - 1, Math.max(0, Math.floor(primaryIndex)));
+  const step = clampUnit(randomValue) < 0.5 ? 2 : 3;
+  return primary + step < safeCount
+    ? primary + step
+    : Math.max(0, primary - step);
 }
 
 /** One deterministic step of a blended pink/brown atmosphere generator. */
