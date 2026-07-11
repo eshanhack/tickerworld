@@ -1,7 +1,9 @@
 import {
+  AdditiveBlending,
   BoxGeometry,
   BufferGeometry,
   Camera,
+  CircleGeometry,
   Color,
   ConeGeometry,
   CylinderGeometry,
@@ -21,6 +23,7 @@ import {
 } from 'three';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 import { Text } from 'troika-three-text';
+import type { NewsItem } from '../news';
 import type { AssetState, AssetSymbol, Candle, FeedMode, TickDirection } from '../types';
 import {
   MONUMENT_CANDLE_COUNT,
@@ -52,6 +55,7 @@ import {
 import { SparklePool } from './SparklePool';
 import { TickTrailPool } from './TickTrailPool';
 import { HorizonBadgePanel } from './HorizonBadgePanel';
+import { NewsPanel, type NewsInteraction } from './NewsPanel';
 
 export type { MonumentKind } from './medallions';
 
@@ -102,6 +106,7 @@ const PRESENTATION_FACING_RESPONSE = 7.5;
 
 interface LampBulb {
   readonly mesh: Mesh<SphereGeometry, MeshStandardMaterial>;
+  readonly aura: Mesh<CircleGeometry, MeshBasicMaterial>;
   readonly phase: number;
 }
 
@@ -134,6 +139,7 @@ export class Monument {
   private readonly sparkles = new SparklePool(24);
   private readonly tickTrail = new TickTrailPool(12);
   private readonly horizonPanel: HorizonBadgePanel | null;
+  private readonly newsPanel: NewsPanel | null;
   private readonly activeBodyHighlight: Mesh<RoundedBoxGeometry, MeshStandardMaterial>;
   private readonly activeWickHighlight: Mesh<CylinderGeometry, MeshStandardMaterial>;
   private readonly pulseRingMaterial: MeshBasicMaterial;
@@ -327,6 +333,8 @@ export class Monument {
     this.chartGroup.add(this.pulseRing);
 
     this.horizonPanel = this.kind === 'grand' ? new HorizonBadgePanel(options.fontUrl) : null;
+    this.newsPanel = this.kind === 'grand' ? new NewsPanel(options.fontUrl) : null;
+    if (this.newsPanel) this.chartGroup.add(this.newsPanel.root);
     this.buildShrine(options.fontUrl);
     this.configurePresentationOverlay(this.chartGroup, MONUMENT_OVERLAY_RENDER_ORDER);
     this.configurePresentationOverlay(this.billboardGroup, MONUMENT_OVERLAY_RENDER_ORDER + 1);
@@ -368,7 +376,50 @@ export class Monument {
     this.nightFactor = Math.min(1, Math.max(0, factor));
     for (const lamp of this.lamps) {
       lamp.mesh.material.emissiveIntensity = 0.25 + this.nightFactor * 2.5;
+      lamp.aura.visible = this.nightFactor > 0.025;
+      lamp.aura.material.opacity = this.nightFactor * this.nightFactor * 0.34;
     }
+  }
+
+  setNewsItems(items: readonly NewsItem[], now = Date.now()): void {
+    if (this.disposed) return;
+    this.newsPanel?.setItems(items, now);
+  }
+
+  getNewsInteractiveObjects(): readonly Object3D[] {
+    if (!this.active || this.disposed || !this.newsPanel) return [];
+    return this.newsPanel.getInteractiveObjects().filter((object) => {
+      let current: Object3D | null = object;
+      while (current) {
+        if (!current.visible) return false;
+        if (current === this.root) return true;
+        current = current.parent;
+      }
+      return false;
+    });
+  }
+
+  resolveNewsInteraction(object: Object3D | null): NewsInteraction | null {
+    if (!this.active || this.disposed) return null;
+    return this.newsPanel?.resolveInteraction(object) ?? null;
+  }
+
+  selectNewsItem(itemId: string): boolean {
+    if (!this.active || this.disposed) return false;
+    return this.newsPanel?.select(itemId) ?? false;
+  }
+
+  /** Returns a presentation-aware world point above the live chart marker. */
+  getFireworkOrigin(target = new Vector3()): Vector3 {
+    const liveY = this.livePriceMarker.visible
+      ? this.livePriceMarker.position.y
+      : CHART_HEIGHT * 0.5;
+    target.set(
+      LIVE_MARKER_X,
+      Math.max(liveY + 5, CHART_HEIGHT + 4),
+      0.35,
+    );
+    return this.chartGroup.localToWorld(target);
   }
 
   setAssetState(state: AssetState): void {
@@ -458,16 +509,19 @@ export class Monument {
     if (this.shuntProgress < 1) {
       this.shuntProgress = Math.min(1, this.shuntProgress + delta / MONUMENT_SHUNT_DURATION_SECONDS);
     }
-    this.updateChartInstances(delta);
+    const candleLayouts = this.updateChartInstances(delta);
     this.updatePulse(delta, elapsedSeconds);
     this.updateLivePrice(delta, elapsedSeconds);
     this.tickTrail.update(delta, this.displayedRange, CHART_HEIGHT, LIVE_MARKER_X);
     this.sparkles.update(delta);
     this.horizonPanel?.update(elapsedSeconds, Date.now(), this.feedMode);
+    this.newsPanel?.update(candleLayouts, Date.now());
 
     for (const lamp of this.lamps) {
       const shimmer = 1 + Math.sin(elapsedSeconds * 1.7 + lamp.phase) * 0.025 * this.nightFactor;
       lamp.mesh.scale.setScalar(shimmer);
+      const auraBreath = 1 + Math.sin(elapsedSeconds * 0.78 + lamp.phase) * 0.055;
+      lamp.aura.scale.setScalar(auraBreath);
     }
 
     if (camera) {
@@ -543,6 +597,10 @@ export class Monument {
     if (this.horizonPanel) {
       this.horizonPanel.root.removeFromParent();
       this.horizonPanel.dispose();
+    }
+    if (this.newsPanel) {
+      this.newsPanel.root.removeFromParent();
+      this.newsPanel.dispose();
     }
 
     const geometries = new Set<{ dispose(): void }>();
@@ -737,6 +795,15 @@ export class Monument {
       emissiveIntensity: 0.25,
       roughness: 0.38,
     });
+    const auraGeometry = new CircleGeometry(2.35, 24);
+    const auraMaterial = new MeshBasicMaterial({
+      color: COLORS.lamp,
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+      toneMapped: false,
+      blending: AdditiveBlending,
+    });
 
     const lampPositions: ReadonlyArray<readonly [number, number]> = [
       [-6.4, -4.5],
@@ -756,8 +823,14 @@ export class Monument {
       shade.name = `${this.symbol}-lamp-shade-${index + 1}`;
       shade.position.set(x, 4.38, z);
       shade.castShadow = true;
-      this.root.add(pole, bulb, shade);
-      this.lamps.push({ mesh: bulb, phase: index * 1.7 });
+      const aura = new Mesh(auraGeometry, auraMaterial);
+      aura.name = `${this.symbol}-lamp-aura-${index + 1}`;
+      aura.rotation.x = -Math.PI * 0.5;
+      aura.position.set(x, (sampleLocalStoneGround(x, z)?.height ?? 0.31) + 0.025, z);
+      aura.visible = false;
+      aura.renderOrder = 1;
+      this.root.add(pole, aura, bulb, shade);
+      this.lamps.push({ mesh: bulb, aura, phase: index * 1.7 });
     });
   }
 
@@ -817,7 +890,7 @@ export class Monument {
     });
   }
 
-  private updateChartInstances(deltaSeconds: number): void {
+  private updateChartInstances(deltaSeconds: number): CandleLayout[] {
     const spacing = CHART_WIDTH / MONUMENT_CANDLE_COUNT;
     const easedShunt = 1 - (1 - this.shuntProgress) ** 3;
     const xOffset = spacing * (1 - easedShunt);
@@ -889,6 +962,7 @@ export class Monument {
     ]) {
       pool.instanceMatrix.needsUpdate = true;
     }
+    return layouts;
   }
 
   private updatePulse(deltaSeconds: number, elapsedSeconds: number): void {

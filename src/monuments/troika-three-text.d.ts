@@ -9,6 +9,12 @@ declare module 'troika-three-text' {
     anchorX: number | string;
     anchorY: number | string;
     textAlign: string;
+    maxWidth: number;
+    lineHeight: number | string;
+    whiteSpace: string;
+    overflowWrap: string;
+    fontWeight: number | string;
+    colorRanges: Record<number, number | string> | null;
     outlineWidth: number | string;
     outlineColor: number | string;
     outlineOpacity: number;

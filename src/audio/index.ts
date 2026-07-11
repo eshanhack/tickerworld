@@ -13,10 +13,13 @@ export {
 export {
   ASSET_AUDIO_PROFILES,
   classifyMarketMove,
+  MARKET_AUDIO_FULL_RADIUS,
+  MARKET_AUDIO_MAX_RADIUS,
   MARKET_MOVE_THRESHOLDS,
   marketGestureFrequencies,
   marketMovePeakGain,
   marketMoveSeverity,
+  marketSourceProximityGain,
   normaliseMoveIntensity,
 } from './audioMath';
 export type {

@@ -21,3 +21,18 @@ export { TerrainSampler } from './terrain';
 export type { MonumentCoordinate, PondDescriptor, TerrainSamplerOptions } from './terrain';
 export { WorldSystem } from './WorldSystem';
 export type { WorldDebugStats, WorldPosition, WorldSystemOptions } from './WorldSystem';
+export {
+  WayfindingSystem,
+  bearingBetween,
+  createWayfindingLayouts,
+  createWayfindingPostLayout,
+  directionForBearing,
+  formatWayfindingDistance,
+  selectWayfindingDestinations,
+} from './WayfindingSystem';
+export type {
+  WayfindingCoordinate,
+  WayfindingDestination,
+  WayfindingPostLayout,
+  WayfindingSystemOptions,
+} from './WayfindingSystem';

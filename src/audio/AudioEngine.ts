@@ -15,10 +15,12 @@ import {
   ASSET_AUDIO_PROFILES,
   classifyMarketMove,
   clampUnit,
+  MARKET_AUDIO_MAX_RADIUS,
   MARKET_MOVE_THRESHOLDS,
   marketGestureFrequencies,
   marketMovePeakGain,
   marketMoveSeverity,
+  marketSourceProximityGain,
 } from './audioMath';
 import type {
   AudioEngineOptions,
@@ -52,11 +54,14 @@ const MARKET_ACCENT_UPGRADE_COOLDOWN_SECONDS = 0.38;
 const MARKET_ACCENT_REARM_COOLDOWN_SECONDS = 0.65;
 const MARKET_ACCENT_DIRECTION_CHANGE_COOLDOWN_SECONDS = 0.55;
 const MARKET_ACCENT_REARM_RATIO = MARKET_MOVE_THRESHOLDS.medium * 0.7;
+const NEWS_ALERT_COOLDOWN_SECONDS = 1.4;
+const NEWS_ALERT_VOICE_COUNT = 3;
 
 interface MonumentGraph {
   readonly descriptor: MonumentAudioSource;
   readonly input: GainNode;
   readonly panner: PannerNode;
+  proximityGain: number;
 }
 
 interface AmbientPadVoice {
@@ -231,6 +236,7 @@ export class AudioEngine {
     armed: boolean;
   }>();
   private lastGlobalMarketAccentAt = Number.NEGATIVE_INFINITY;
+  private lastNewsAlertAt = Number.NEGATIVE_INFINITY;
   private statusValue: AudioEngineState['status'];
   private reasonValue: string | undefined;
   private cachedListenerPose: AudioListenerPose = {
@@ -238,6 +244,8 @@ export class AudioEngine {
     forward: { x: 0, y: 0, z: -1 },
     up: { x: 0, y: 1, z: 0 },
   };
+  private proximityPosition: AudioPosition = { x: 0, y: 0, z: 0 };
+  private proximityPositionExplicit = false;
 
   public constructor(options: AudioEngineOptions = {}) {
     this.contextFactory = options.contextFactory ?? getDefaultContextFactory();
@@ -414,7 +422,23 @@ export class AudioEngine {
         up: this.normalisedPosition(camera.up ?? { x: 0, y: 1, z: 0 }, { x: 0, y: 1, z: 0 }),
       };
     }
+    if (!this.proximityPositionExplicit) {
+      this.proximityPosition = this.copyPosition(this.cachedListenerPose.position);
+      this.updateMonumentProximityGains();
+    }
     this.applyListenerPose(this.cachedListenerPose);
+  }
+
+  /**
+   * Updates the fox position used to gate market sounds. Keep calling
+   * updateListener(camera) for HRTF direction; this position deliberately does
+   * not follow the orbiting camera.
+   */
+  public updateProximityPosition(position: AudioPosition): void {
+    if (this.disposed) return;
+    this.proximityPosition = this.copyPosition(position);
+    this.proximityPositionExplicit = true;
+    this.updateMonumentProximityGains();
   }
 
   public playTick(sourceId: string, options: TickSoundOptions): void;
@@ -430,7 +454,7 @@ export class AudioEngine {
       : (optionsOrDirection.moveRatio ?? 0);
     if (direction === 'flat' || !this.canPlaySfx()) return;
     const graph = this.monumentGraphs.get(sourceId);
-    if (!graph || !this.context) return;
+    if (!graph || !this.context || !this.isMonumentGraphAudible(graph)) return;
 
     const profile = ASSET_AUDIO_PROFILES[graph.descriptor.symbol];
     const magnitude = Math.abs(Number.isFinite(moveRatio) ? moveRatio : 0);
@@ -492,7 +516,7 @@ export class AudioEngine {
   public playCandleClose(sourceId: string, intensity = 0.5): void {
     if (!this.canPlaySfx() || !this.context) return;
     const graph = this.monumentGraphs.get(sourceId);
-    if (!graph) return;
+    if (!graph || !this.isMonumentGraphAudible(graph)) return;
     const now = this.context.currentTime;
     const amount = clampUnit(intensity);
     this.playDampedResonator(graph.input, now, 196, 0.22, 0.025 + amount * 0.02);
@@ -559,6 +583,25 @@ export class AudioEngine {
     );
     this.playFootThump(this.sfxBus, now, settings.thumpFrequency * 1.12, 0.009 + amount * 0.018);
     this.playGentleNote(this.sfxBus, now + 0.035, 587.33, 0.3, 0.005 + amount * 0.006, -1.5);
+  }
+
+  /**
+   * A short non-positional newsroom chime for genuinely new headlines. It uses
+   * only rounded tonal voices—never the transient noise buffer—and shares the
+   * visible FX controls and global finite-voice budget.
+   */
+  public playNewsAlert(intensity = 0.65): void {
+    if (!this.canPlaySfx() || !this.context || !this.sfxBus) return;
+    if (this.scheduledSources.size > MAX_SCHEDULED_SOURCES - NEWS_ALERT_VOICE_COUNT) return;
+    const now = this.context.currentTime;
+    if (now - this.lastNewsAlertAt < NEWS_ALERT_COOLDOWN_SECONDS) return;
+    this.lastNewsAlertAt = now;
+
+    const amount = clampUnit(intensity);
+    const peak = 0.018 + amount * 0.018;
+    this.playGentleNote(this.sfxBus, now, 440, 0.42, peak * 0.74, -1.5);
+    this.playGentleNote(this.sfxBus, now + 0.105, 587.33, 0.54, peak, 1);
+    this.playGentleNote(this.sfxBus, now + 0.245, 739.99, 0.7, peak * 0.82, -0.5);
   }
 
   public setEnvironment(environment: AudioEnvironment): void {
@@ -770,11 +813,11 @@ export class AudioEngine {
   }
 
   private nearestMonumentSourceId(symbol: MonumentAudioSource['symbol']): string | null {
-    const listener = this.cachedListenerPose.position;
+    const listener = this.proximityPosition;
     let nearestId: string | null = null;
     let nearestDistanceSquared = Number.POSITIVE_INFINITY;
     for (const [id, graph] of this.monumentGraphs) {
-      if (graph.descriptor.symbol !== symbol || (graph.descriptor.gain ?? 1) <= 0.001) continue;
+      if (graph.descriptor.symbol !== symbol || !this.isMonumentGraphAudible(graph)) continue;
       const dx = graph.descriptor.position.x - listener.x;
       const dy = graph.descriptor.position.y - listener.y;
       const dz = graph.descriptor.position.z - listener.z;
@@ -810,15 +853,14 @@ export class AudioEngine {
       if (existing) this.disposeMonumentGraph(existing);
       const input = this.context.createGain();
       const panner = this.context.createPanner();
-      input.gain.value = descriptor.gain ?? 1;
       panner.panningModel = 'HRTF';
       panner.distanceModel = 'exponential';
-      panner.refDistance = 13;
-      panner.maxDistance = 96;
-      panner.rolloffFactor = 1.12;
+      panner.refDistance = 10;
+      panner.maxDistance = MARKET_AUDIO_MAX_RADIUS + 4;
+      panner.rolloffFactor = 1.9;
       input.connect(panner);
       panner.connect(this.sfxBus);
-      const graph = { descriptor, input, panner };
+      const graph = { descriptor, input, panner, proximityGain: 0 };
       this.monumentGraphs.set(descriptor.id, graph);
       this.positionMonumentGraph(graph);
     }
@@ -828,7 +870,12 @@ export class AudioEngine {
     if (!this.context) return;
     const now = this.context.currentTime;
     const { x, y, z } = graph.descriptor.position;
-    graph.input.gain.setTargetAtTime(graph.descriptor.gain ?? 1, now, 0.04);
+    graph.proximityGain = this.proximityGainFor(graph.descriptor);
+    graph.input.gain.setTargetAtTime(
+      (graph.descriptor.gain ?? 1) * graph.proximityGain,
+      now,
+      0.08,
+    );
     graph.panner.positionX.setTargetAtTime(x, now, 0.035);
     graph.panner.positionY.setTargetAtTime(y, now, 0.035);
     graph.panner.positionZ.setTargetAtTime(z, now, 0.035);
@@ -837,6 +884,29 @@ export class AudioEngine {
   private disposeMonumentGraph(graph: MonumentGraph): void {
     safeDisconnect(graph.input);
     safeDisconnect(graph.panner);
+  }
+
+  private proximityGainFor(descriptor: MonumentAudioSource): number {
+    const dx = descriptor.position.x - this.proximityPosition.x;
+    const dz = descriptor.position.z - this.proximityPosition.z;
+    return marketSourceProximityGain(Math.hypot(dx, dz));
+  }
+
+  private isMonumentGraphAudible(graph: MonumentGraph): boolean {
+    return (graph.descriptor.gain ?? 1) * graph.proximityGain > 0.001;
+  }
+
+  private updateMonumentProximityGains(): void {
+    if (!this.context) return;
+    const now = this.context.currentTime;
+    for (const graph of this.monumentGraphs.values()) {
+      graph.proximityGain = this.proximityGainFor(graph.descriptor);
+      graph.input.gain.setTargetAtTime(
+        (graph.descriptor.gain ?? 1) * graph.proximityGain,
+        now,
+        0.12,
+      );
+    }
   }
 
   private applyListenerPose(pose: AudioListenerPose): void {

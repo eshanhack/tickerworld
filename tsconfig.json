@@ -19,5 +19,5 @@
     "noImplicitOverride": true,
     "types": ["vite/client", "vitest/globals"]
   },
-  "include": ["src", "tests"]
+  "include": ["src", "api", "tests"]
 }

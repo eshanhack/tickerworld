@@ -49,6 +49,8 @@ export interface WorldDebugStats {
   activeEchoes: number;
   terrainDrawCalls: number;
   sharedPropDrawCalls: number;
+  activeLampAuras: number;
+  activeLampMotes: number;
 }
 
 interface QueuedChunk {
@@ -82,6 +84,9 @@ const DAY_SECONDS = 10 * 60;
 const LOAD_BUDGET = 3;
 const UNLOAD_BUDGET = 4;
 const LAMP_LIGHT_COUNT = 4;
+const LAMP_AMBIENCE_RADIUS = 34;
+const LAMP_MOTES_PER_LIGHT = 6;
+const LAMP_MOTE_CAPACITY = LAMP_LIGHT_COUNT * LAMP_MOTES_PER_LIGHT;
 
 function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value));
@@ -143,6 +148,11 @@ export class WorldSystem {
   private readonly sunLight: THREE.DirectionalLight;
   private readonly lampLights: THREE.PointLight[] = [];
   private readonly lampPositions: THREE.Vector3[] = [];
+  private readonly lampAuraMesh: THREE.InstancedMesh<THREE.CircleGeometry, THREE.MeshBasicMaterial>;
+  private readonly lampAuraMaterial: THREE.MeshBasicMaterial;
+  private readonly lampMotePoints: THREE.Points<THREE.BufferGeometry, THREE.PointsMaterial>;
+  private readonly lampMoteMaterial: THREE.PointsMaterial;
+  private readonly lampMotePositions: Float32Array;
   private readonly previousBackground: THREE.Scene['background'];
   private readonly previousFog: THREE.Scene['fog'];
   private readonly daySky = new THREE.Color(PALETTE.skyDay);
@@ -202,6 +212,62 @@ export class WorldSystem {
     }));
 
     this.pools = this.createPools();
+    const lampAuraGeometry = this.trackGeometry(new THREE.CircleGeometry(1, 24));
+    lampAuraGeometry.rotateX(-Math.PI * 0.5);
+    const auraColors = new Float32Array(lampAuraGeometry.getAttribute('position').count * 3);
+    const auraPosition = lampAuraGeometry.getAttribute('position');
+    for (let index = 0; index < auraPosition.count; index += 1) {
+      const radius = Math.hypot(auraPosition.getX(index), auraPosition.getZ(index));
+      const warmth = Math.max(0, 1 - radius);
+      const offset = index * 3;
+      auraColors[offset] = warmth;
+      auraColors[offset + 1] = warmth * 0.79;
+      auraColors[offset + 2] = warmth * 0.47;
+    }
+    lampAuraGeometry.setAttribute('color', new THREE.BufferAttribute(auraColors, 3));
+    this.lampAuraMaterial = this.trackMaterial(new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      vertexColors: true,
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      toneMapped: false,
+    }));
+    this.lampAuraMesh = new THREE.InstancedMesh(
+      lampAuraGeometry,
+      this.lampAuraMaterial,
+      LAMP_LIGHT_COUNT,
+    );
+    this.lampAuraMesh.name = 'LampGroundAuras';
+    this.lampAuraMesh.count = 0;
+    this.lampAuraMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.lampAuraMesh.frustumCulled = false;
+    this.lampAuraMesh.renderOrder = 1;
+    this.propRoot.add(this.lampAuraMesh);
+
+    const lampMoteGeometry = this.trackGeometry(new THREE.BufferGeometry());
+    this.lampMotePositions = new Float32Array(LAMP_MOTE_CAPACITY * 3);
+    const lampMotePositionAttribute = new THREE.BufferAttribute(this.lampMotePositions, 3);
+    lampMotePositionAttribute.setUsage(THREE.DynamicDrawUsage);
+    lampMoteGeometry.setAttribute('position', lampMotePositionAttribute);
+    lampMoteGeometry.setDrawRange(0, 0);
+    this.lampMoteMaterial = this.trackMaterial(new THREE.PointsMaterial({
+      color: 0xffedb8,
+      size: 0.16,
+      sizeAttenuation: true,
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      toneMapped: false,
+    }));
+    this.lampMotePoints = new THREE.Points(lampMoteGeometry, this.lampMoteMaterial);
+    this.lampMotePoints.name = 'LampFireflyMotes';
+    this.lampMotePoints.frustumCulled = false;
+    this.lampMotePoints.visible = false;
+    this.lampMotePoints.renderOrder = 2;
+    this.propRoot.add(this.lampMotePoints);
     this.previousBackground = scene.background;
     this.previousFog = scene.fog;
     this.skyColor.copy(this.daySky);
@@ -271,6 +337,8 @@ export class WorldSystem {
       activeEchoes: this.activeEchoes.length,
       terrainDrawCalls: this.chunks.size,
       sharedPropDrawCalls: propDrawCalls,
+      activeLampAuras: this.lampAuraMesh.count,
+      activeLampMotes: this.lampMotePoints.geometry.drawRange.count,
     };
   }
 
@@ -292,7 +360,7 @@ export class WorldSystem {
       this.rebuildSharedInstances();
     }
     this.updateDayNight(playerPosition, elapsedSeconds);
-    this.updateLampLights(playerPosition);
+    this.updateLampLights(playerPosition, elapsedSeconds);
   }
 
   private createPools(): Record<PoolName, InstancePool> {
@@ -786,15 +854,19 @@ export class WorldSystem {
     this.lampGlobeMaterial.emissiveIntensity = 0.25 + (1 - this.daylight) * 2.15;
   }
 
-  private updateLampLights(player: WorldPosition): void {
+  private updateLampLights(player: WorldPosition, elapsedSeconds: number): void {
     const nearest = this.lampPositions
       .map((position) => ({
         position,
         distanceSquared: (position.x - player.x) ** 2 + (position.z - player.z) ** 2,
       }))
+      .filter(({ distanceSquared }) => distanceSquared <= LAMP_AMBIENCE_RADIUS ** 2)
       .sort((a, b) => a.distanceSquared - b.distanceSquared)
       .slice(0, this.lampLights.length);
     const nightStrength = 1 - this.daylight;
+    const ambienceVisible = nightStrength >= 0.05;
+    let auraCount = 0;
+    let moteCount = 0;
 
     for (let index = 0; index < this.lampLights.length; index += 1) {
       const light = this.lampLights[index];
@@ -802,15 +874,51 @@ export class WorldSystem {
       if (!light) {
         continue;
       }
-      if (!nearby || nightStrength < 0.05) {
+      if (!nearby || !ambienceVisible) {
         light.visible = false;
         light.intensity = 0;
         continue;
       }
       light.visible = true;
       light.position.copy(nearby.position);
-      light.intensity = nightStrength * 3.2;
+      const shimmer = 1 + Math.sin(elapsedSeconds * 1.25 + index * 2.17) * 0.025;
+      light.intensity = nightStrength * 3.25 * shimmer;
+
+      this.tempPosition.set(
+        nearby.position.x,
+        this.heightAt(nearby.position.x, nearby.position.z) + 0.045,
+        nearby.position.z,
+      );
+      this.tempQuaternion.identity();
+      const auraScale = 4.6 + nightStrength * 0.85;
+      this.tempScale.set(auraScale, auraScale, auraScale);
+      this.tempMatrix.compose(this.tempPosition, this.tempQuaternion, this.tempScale);
+      this.lampAuraMesh.setMatrixAt(auraCount, this.tempMatrix);
+      auraCount += 1;
+
+      for (let moteIndex = 0; moteIndex < LAMP_MOTES_PER_LIGHT; moteIndex += 1) {
+        const phase = elapsedSeconds * (0.32 + moteIndex * 0.027)
+          + index * 2.61
+          + moteIndex * 1.047;
+        const radius = 0.65 + (moteIndex % 3) * 0.42;
+        const offset = moteCount * 3;
+        this.lampMotePositions[offset] = nearby.position.x + Math.cos(phase) * radius;
+        this.lampMotePositions[offset + 1] = nearby.position.y
+          - 0.58
+          + Math.sin(phase * 1.7 + moteIndex) * 0.72;
+        this.lampMotePositions[offset + 2] = nearby.position.z + Math.sin(phase) * radius;
+        moteCount += 1;
+      }
     }
+
+    this.lampAuraMesh.count = auraCount;
+    this.lampAuraMesh.instanceMatrix.needsUpdate = true;
+    this.lampAuraMesh.visible = auraCount > 0;
+    this.lampAuraMaterial.opacity = nightStrength * 0.2;
+    this.lampMotePoints.geometry.setDrawRange(0, moteCount);
+    this.lampMotePoints.geometry.getAttribute('position').needsUpdate = true;
+    this.lampMotePoints.visible = moteCount > 0;
+    this.lampMoteMaterial.opacity = nightStrength * 0.5;
   }
 
   dispose(): void {
@@ -829,6 +937,7 @@ export class WorldSystem {
     this.activeEchoes = [];
     this.onEchoPlacementsChanged?.([]);
     this.scene.remove(this.root);
+    this.lampAuraMesh.dispose();
 
     for (const geometry of this.sharedGeometries) {
       geometry.dispose();

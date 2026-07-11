@@ -28,3 +28,5 @@ export {
   mulberry32,
   stepSimulation,
 } from './simulator';
+export { MarketCelebrationGate } from './marketCelebration';
+export type { MarketCelebrationEvent, MarketCelebrationTier } from './marketCelebration';

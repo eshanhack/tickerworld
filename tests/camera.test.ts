@@ -39,6 +39,19 @@ function advance(
 }
 
 describe('ThirdPersonCamera chase motion', () => {
+  it('preserves the legacy default boom and fox framing', () => {
+    const camera = new THREE.PerspectiveCamera();
+    const controller = new ThirdPersonCamera({ camera, distance: 8 });
+
+    controller.update(1 / 60, TARGET, FLAT_GROUND);
+
+    expect(camera.position.x).toBeCloseTo(0, 8);
+    expect(camera.position.y).toBeCloseTo(3.59318, 4);
+    expect(camera.position.z).toBeCloseTo(7.51498, 4);
+    expect(camera.getWorldDirection(new THREE.Vector3()).y).toBeCloseTo(-Math.sin(0.35), 5);
+    controller.dispose();
+  });
+
   it('looks at the lean fox height by default', () => {
     const camera = new THREE.PerspectiveCamera();
     const controller = new ThirdPersonCamera({ camera, distance: 8 });
@@ -104,6 +117,43 @@ describe('ThirdPersonCamera chase motion', () => {
     expect(controller.yaw).toBeCloseTo(draggedYaw, 8);
     advance(controller, 30);
     expect(Math.abs(controller.yaw)).toBeLessThan(Math.abs(draggedYaw));
+    controller.dispose();
+  });
+
+  it('lets vertical pointer orbit aim about 55 degrees into the sky', () => {
+    const surface = new PointerSurface();
+    const camera = new THREE.PerspectiveCamera();
+    const controller = new ThirdPersonCamera({
+      camera,
+      domElement: surface as unknown as HTMLElement,
+      distance: 8,
+    });
+
+    surface.dispatchEvent(pointerEvent('pointerdown', 100, 240));
+    surface.dispatchEvent(pointerEvent('pointermove', 100, -120));
+    surface.dispatchEvent(pointerEvent('pointerup', 100, -120));
+    controller.update(1 / 60, TARGET, FLAT_GROUND);
+
+    const direction = camera.getWorldDirection(new THREE.Vector3());
+    expect(controller.pitch).toBeCloseTo(-0.96, 8);
+    expect(THREE.MathUtils.radToDeg(Math.asin(direction.y))).toBeCloseTo(55, 0);
+    expect(direction.z).toBeLessThan(0);
+    controller.dispose();
+  });
+
+  it('keeps the camera above uneven terrain while aiming fully upward', () => {
+    const camera = new THREE.PerspectiveCamera();
+    const controller = new ThirdPersonCamera({ camera, distance: 8 });
+    controller.setOrbit(0, -0.96);
+    let terrainHeight = 0;
+    const raisedGround = (): number => terrainHeight;
+
+    controller.update(1 / 60, TARGET, raisedGround);
+    terrainHeight = 2.5;
+    controller.update(1 / 60, TARGET, raisedGround);
+
+    expect(camera.position.y).toBeGreaterThanOrEqual(2.88 - 0.000001);
+    expect(camera.getWorldDirection(new THREE.Vector3()).y).toBeGreaterThan(0.81);
     controller.dispose();
   });
 

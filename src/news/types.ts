@@ -1,0 +1,61 @@
+export const NEWS_ITEM_TTL_MS = 10 * 60_000;
+export const NEWS_POLL_INTERVAL_MS = 20_000;
+export const NEWS_DEMO_INTERVAL_MS = 2 * 60_000;
+
+export type NewsSource = 'x' | 'simulation';
+export type NewsApiMode = 'live' | 'unconfigured' | 'unavailable';
+export type NewsFeedMode = 'connecting' | NewsApiMode | 'simulated';
+export type NewsLinkKind = 'url' | 'mention' | 'hashtag' | 'cashtag';
+
+export interface NewsLink {
+  kind: NewsLinkKind;
+  /** Inclusive start and exclusive end offsets supplied by X for the exact upstream text. */
+  start: number;
+  end: number;
+  /** Display label required by X, which can differ from the text inside the source range. */
+  label: string;
+  /** X destination. URL entities retain the original t.co URL from the API. */
+  href: string;
+}
+
+export interface NewsItem {
+  id: string;
+  source: NewsSource;
+  /** Exact upstream text for X items; demo copy is always explicitly labelled fictional. */
+  text: string;
+  /** Normalized X text entities, ordered by source range. Demo items always use an empty list. */
+  links: readonly NewsLink[];
+  createdAt: number;
+  expiresAt: number;
+  authorName: string;
+  authorHandle: string;
+  authorAvatarUrl: string | null;
+  permalink: string | null;
+  demo: boolean;
+}
+
+export interface NewsApiResponse {
+  mode: NewsApiMode;
+  items: readonly NewsItem[];
+  checkedAt: number;
+}
+
+export interface NewsFeedUpdate {
+  mode: NewsFeedMode;
+  /** Active items, ordered newest first. */
+  items: readonly NewsItem[];
+  /** Only genuinely new items from this event. Initial/backfill events always leave this empty. */
+  added: readonly NewsItem[];
+  updatedAt: number;
+}
+
+export type NewsFeedListener = (update: NewsFeedUpdate) => void;
+
+export interface NewsFeed {
+  start(): Promise<void>;
+  pause(): void;
+  resume(): void;
+  subscribe(listener: NewsFeedListener): () => void;
+  getSnapshot(): NewsFeedUpdate;
+  dispose(): void;
+}

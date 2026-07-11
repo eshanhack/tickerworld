@@ -1,18 +1,29 @@
 import * as THREE from 'three';
 import nunitoFontUrl from '@fontsource/nunito/files/nunito-latin-700-normal.woff?url';
-import { AudioEngine } from './audio';
+import { AudioEngine, MARKET_AUDIO_MAX_RADIUS } from './audio';
 import { DEBUG_MODE, GRAND_MONUMENTS, WORLD_SEED } from './config';
-import { HyperliquidMarketFeed } from './markets';
-import { Monument, MonumentSystem } from './monuments';
+import { HyperliquidMarketFeed, MarketCelebrationGate } from './markets';
+import { FireworkPool, Monument, MonumentSystem } from './monuments';
+import { BrowserNewsFeed, type NewsFeedMode, type NewsFeedUpdate } from './news';
 import { FoxPlayer, ThirdPersonCamera, type FootstepEvent, type FoxActionEvent } from './player';
 import type { AssetState, AssetSymbol } from './types';
 import { Hud } from './ui';
-import { WorldSystem, type EchoPlacementDescriptor } from './world';
+import { WayfindingSystem, WorldSystem, type EchoPlacementDescriptor } from './world';
 
 const DISCOVERY_KEY = 'tickerworld:v1:discoveries';
 const COMPASS_KEY = 'tickerworld:v1:compass';
 const QUALITY_KEY = 'tickerworld:v1:quality';
 const REDUCED_MOTION_KEY = 'tickerworld:v1:reduced-motion';
+const NEWS_RESUME_CLOCK_SKEW_GRACE_MS = 1_500;
+
+export function countFreshNewsAdditions(
+  added: readonly { readonly createdAt: number }[],
+  createdAtCutoff: number,
+): number {
+  return added.reduce((count, item) => (
+    Number.isFinite(item.createdAt) && item.createdAt >= createdAtCutoff ? count + 1 : count
+  ), 0);
+}
 
 function safeReadDiscoveries(): Set<AssetSymbol> {
   try {
@@ -59,8 +70,12 @@ export class Game {
   private readonly player: FoxPlayer;
   private readonly cameraRig: ThirdPersonCamera;
   private readonly market = new HyperliquidMarketFeed();
+  private readonly news = new BrowserNewsFeed();
   private readonly monuments: MonumentSystem;
   private readonly audio = new AudioEngine();
+  private readonly fireworks: FireworkPool;
+  private readonly celebrationGate = new MarketCelebrationGate();
+  private readonly wayfinding: WayfindingSystem;
   private readonly hud: Hud;
   private readonly grandMonuments = new Map<AssetSymbol, Monument>();
   private readonly echoMonuments = new Map<string, Monument>();
@@ -82,6 +97,9 @@ export class Game {
   private pixelRatio: number;
   private compassEnabled = true;
   private reducedMotion = false;
+  private newsMode: NewsFeedMode = 'connecting';
+  private activeNewsCount = 0;
+  private newsSoundCreatedAtCutoff = Number.NEGATIVE_INFINITY;
 
   constructor(container: HTMLElement) {
     this.container = container;
@@ -119,11 +137,23 @@ export class Game {
       reducedMotion: this.reducedMotion,
     });
 
-    this.monuments = new MonumentSystem({ parent: this.scene, camera: this.camera, fontUrl: nunitoFontUrl });
+    this.monuments = new MonumentSystem({
+      parent: this.scene,
+      camera: this.camera,
+      domElement: this.renderer.domElement,
+      fontUrl: nunitoFontUrl,
+    });
     this.world = new WorldSystem(this.scene, {
       seed: WORLD_SEED,
       onEchoPlacementsChanged: (placements) => this.syncEchoMonuments(placements),
     });
+    this.wayfinding = new WayfindingSystem({
+      parent: this.scene,
+      fontUrl: nunitoFontUrl,
+      heightAt: (x, z) => this.world.heightAt(x, z),
+    });
+    this.fireworks = new FireworkPool({ reducedMotion: this.reducedMotion });
+    this.scene.add(this.fireworks.points);
 
     const spawnZ = 21;
     this.player = new FoxPlayer({
@@ -165,6 +195,7 @@ export class Game {
         this.reducedMotion = enabled;
         this.player.setReducedMotion(enabled);
         this.cameraRig.setReducedMotion(enabled);
+        this.fireworks.setReducedMotion(enabled);
         safeWrite(REDUCED_MOTION_KEY, String(enabled));
       },
       onVirtualInput: (x, forward, sprint) => this.player.setVirtualInput(x, forward, sprint),
@@ -189,7 +220,9 @@ export class Game {
     });
 
     this.market.subscribe((state) => this.onMarketState(state));
+    this.news.subscribe((update) => this.onNewsUpdate(update));
     this.refreshAudioSources();
+    this.audio.updateProximityPosition(this.player.position);
     this.prewarmWorld();
     this.cameraRig.setChaseMotion(
       this.player.headingYaw,
@@ -205,6 +238,7 @@ export class Game {
     addEventListener('beforeunload', this.dispose);
 
     void this.market.start();
+    void this.news.start();
     this.clock.start();
     if (DEBUG_MODE) {
       Object.defineProperty(window, '__tickerworldDebug', {
@@ -216,8 +250,11 @@ export class Game {
           player: this.player,
           world: this.world,
           market: this.market,
+          news: this.news,
           monuments: this.monuments,
           audio: this.audio,
+          fireworks: this.fireworks,
+          wayfinding: this.wayfinding,
         },
         configurable: true,
       });
@@ -271,7 +308,9 @@ export class Game {
     );
     this.monuments.setNightFactor(this.world.nightFactor);
     this.monuments.update(delta, this.elapsed);
+    this.fireworks.update(delta);
     this.audio.setEnvironment({ nightFactor: this.world.nightFactor });
+    this.audio.updateProximityPosition(this.player.position);
     this.audio.updateListener(this.camera);
     this.updateHud();
     this.updatePerformance(delta);
@@ -321,6 +360,50 @@ export class Game {
       const id = this.monumentIds.get(monument);
       if (id) this.audio.playTick(id, soundDirection, moveRatio);
     }
+
+    if (!this.entered || !this.visible) return;
+    const nearbyMonument = this.nearestMonumentForSymbol(
+      state.symbol,
+      MARKET_AUDIO_MAX_RADIUS,
+    );
+    if (!nearbyMonument) return;
+    const celebration = this.celebrationGate.evaluate(
+      state.symbol,
+      soundDirection,
+      moveRatio,
+      performance.now() / 1_000,
+    );
+    if (!celebration) return;
+    this.fireworks.launch(
+      nearbyMonument.getFireworkOrigin(this.tempPosition),
+      celebration.direction,
+      celebration.tier,
+    );
+  }
+
+  private onNewsUpdate(update: NewsFeedUpdate): void {
+    this.newsMode = update.mode;
+    this.activeNewsCount = update.items.length;
+    this.monuments.setNewsItems(update.items, Date.now());
+    const freshAdditionCount = countFreshNewsAdditions(
+      update.added,
+      this.newsSoundCreatedAtCutoff,
+    );
+    if (this.entered && this.visible && freshAdditionCount > 0) {
+      this.audio.playNewsAlert(Math.min(1, 0.66 + (freshAdditionCount - 1) * 0.08));
+    }
+  }
+
+  private nearestMonumentForSymbol(symbol: AssetSymbol, maxDistance: number): Monument | null {
+    let nearest: Monument | null = null;
+    let distance = maxDistance;
+    for (const monument of this.monuments.getForSymbol(symbol)) {
+      const candidateDistance = monument.nearestDistance(this.player.position);
+      if (candidateDistance > distance) continue;
+      nearest = monument;
+      distance = candidateDistance;
+    }
+    return nearest;
   }
 
   private syncEchoMonuments(placements: readonly EchoPlacementDescriptor[]): void {
@@ -449,6 +532,7 @@ export class Game {
         `chunks ${world.loadedChunks}/${world.desiredChunks} · queued ${world.queuedLoads}`,
         `props ${world.propInstances} · echoes ${world.activeEchoes}`,
         `market ${btcMarket.mode} · tick ${btcMarket.presentationTick} · candles ${btcMarket.candles.length}`,
+        `news ${this.newsMode} · posts ${this.activeNewsCount} · fireworks ${this.fireworks.getDebugStats().activeParticles}`,
         `audio ${audioState.status} · music ${Math.round(audioState.musicVolume * 100)}${audioState.musicMuted ? 'x' : ''} · fx ${Math.round(audioState.sfxVolume * 100)}${audioState.sfxMuted ? 'x' : ''}`,
         `fox ${playerState.grounded ? 'grounded' : this.player.isGliding ? 'gliding' : 'airborne'} · jumps ${playerState.jumpsUsed}/2 · vy ${playerState.verticalSpeed.toFixed(2)}`,
         `pos ${this.player.position.x.toFixed(2)}, ${this.player.position.z.toFixed(2)} · yaw ${this.cameraRig.yaw.toFixed(2)}`,
@@ -485,9 +569,14 @@ export class Game {
     if (!this.visible) {
       cancelAnimationFrame(this.frameHandle);
       this.market.pause();
+      this.news.pause();
       return;
     }
     this.market.resume();
+    // The resumed fetch still restores every active card and candle pin, but
+    // posts published while the tab was hidden must not replay their chime.
+    this.newsSoundCreatedAtCutoff = Date.now() - NEWS_RESUME_CLOCK_SKEW_GRACE_MS;
+    this.news.resume();
     this.clock.getDelta();
     this.frameHandle = requestAnimationFrame(this.frame);
   };
@@ -500,9 +589,13 @@ export class Game {
     document.removeEventListener('visibilitychange', this.visibility);
     removeEventListener('beforeunload', this.dispose);
     this.market.dispose();
+    this.news.dispose();
     this.audio.dispose();
     this.hud.dispose();
     this.monuments.dispose();
+    this.fireworks.points.removeFromParent();
+    this.fireworks.dispose();
+    this.wayfinding.dispose();
     this.player.dispose();
     this.cameraRig.dispose();
     this.world.dispose();

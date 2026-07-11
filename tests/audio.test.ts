@@ -9,10 +9,13 @@ import {
   D_MAJOR_PENTATONIC_HZ,
   delayInRange,
   EMPTY_COLORED_NOISE_STATE,
+  MARKET_AUDIO_FULL_RADIUS,
+  MARKET_AUDIO_MAX_RADIUS,
   MARKET_MOVE_THRESHOLDS,
   marketGestureFrequencies,
   marketMovePeakGain,
   marketMoveSeverity,
+  marketSourceProximityGain,
   nextColoredNoiseSample,
   normaliseMoveIntensity,
   pickAmbientResponseIndex,
@@ -287,6 +290,17 @@ describe('AudioEngine preferences and fallback', () => {
 });
 
 describe('audio mapping', () => {
+  it('keeps market audio full nearby, fades smoothly, and reaches a hard local cutoff', () => {
+    expect(marketSourceProximityGain(0)).toBe(1);
+    expect(marketSourceProximityGain(MARKET_AUDIO_FULL_RADIUS)).toBe(1);
+    const fade = [14, 20, 26, 32].map(marketSourceProximityGain);
+    expect(fade).toEqual([...fade].sort((a, b) => b - a));
+    expect(fade.every((gain) => gain > 0 && gain < 1)).toBe(true);
+    expect(marketSourceProximityGain(MARKET_AUDIO_MAX_RADIUS)).toBe(0);
+    expect(marketSourceProximityGain(MARKET_AUDIO_MAX_RADIUS + 100)).toBe(0);
+    expect(marketSourceProximityGain(Number.NaN)).toBe(0);
+  });
+
   it('gives every asset a distinct ordered pitch identity', () => {
     const frequencies = Object.values(ASSET_AUDIO_PROFILES).map(({ frequency }) => frequency);
     expect(new Set(frequencies).size).toBe(8);
@@ -392,6 +406,116 @@ describe('ambient composition', () => {
 });
 
 describe('AudioEngine lifecycle', () => {
+  it('plays a bounded tonal news chime only when FX are active and visible', async () => {
+    vi.useFakeTimers();
+    const fake = makeFakeContext();
+    const engine = new AudioEngine({ contextFactory: () => fake.context, storage: null, random: () => 0.5 });
+
+    engine.playNewsAlert();
+    expect(fake.oscillators).toHaveLength(0);
+    await engine.unlock();
+    const baselineOscillators = fake.oscillators.length;
+    const baselineBuffers = fake.bufferSources.length;
+
+    engine.toggleSfxMuted(true);
+    engine.playNewsAlert();
+    expect(fake.oscillators).toHaveLength(baselineOscillators);
+    engine.toggleSfxMuted(false);
+
+    engine.setVisible(false);
+    engine.playNewsAlert();
+    expect(fake.oscillators).toHaveLength(baselineOscillators);
+    engine.setVisible(true);
+    await Promise.resolve();
+
+    engine.playNewsAlert(0.8);
+    expect(fake.oscillators.length - baselineOscillators).toBe(3);
+    // The news cue is purely tonal: it never spends a noise-buffer voice.
+    expect(fake.bufferSources).toHaveLength(baselineBuffers);
+    engine.playNewsAlert(1);
+    expect(fake.oscillators.length - baselineOscillators).toBe(3);
+
+    (fake.context as unknown as { currentTime: number }).currentTime = 1.5;
+    engine.playNewsAlert(1);
+    expect(fake.oscillators.length - baselineOscillators).toBe(6);
+
+    for (let index = 0; index < 14; index += 1) engine.playJump('double-jump');
+    const saturatedCount = fake.oscillators.length;
+    (fake.context as unknown as { currentTime: number }).currentTime = 3;
+    engine.playNewsAlert(1);
+    expect(fake.oscillators).toHaveLength(saturatedCount);
+
+    const beforeDispose = fake.oscillators.length;
+    engine.dispose();
+    engine.playNewsAlert();
+    expect(fake.oscillators).toHaveLength(beforeDispose);
+    vi.useRealTimers();
+  });
+
+  it('uses fox proximity to hard-gate market voices independently from camera listening', async () => {
+    vi.useFakeTimers();
+    const fake = makeFakeContext();
+    const engine = new AudioEngine({ contextFactory: () => fake.context, storage: null, random: () => 0.5 });
+    engine.setMonumentSources([{
+      id: 'grand:BTC',
+      symbol: 'BTC',
+      position: { x: 0, y: 2, z: 0 },
+    }]);
+    engine.updateListener({
+      position: { x: 0, y: 8, z: 4 },
+      forward: { x: 0, y: -0.2, z: -1 },
+    });
+    engine.updateProximityPosition({ x: 50, y: 0, z: 0 });
+    await engine.unlock();
+    const baselineOscillators = fake.oscillators.length;
+    const baselineBuffers = fake.bufferSources.length;
+
+    engine.playTick('grand:BTC', { direction: 'up', moveRatio: 0.0002 });
+    engine.playCandleClose('grand:BTC');
+    expect(fake.oscillators).toHaveLength(baselineOscillators);
+    expect(fake.bufferSources).toHaveLength(baselineBuffers);
+
+    // Camera stays put: moving only the fox proximity point makes this market audible.
+    engine.updateProximityPosition({ x: 0, y: 0, z: 0 });
+    engine.playTick('grand:BTC', { direction: 'up', moveRatio: 0.0002 });
+    engine.playCandleClose('grand:BTC');
+    expect(fake.oscillators.length).toBeGreaterThan(baselineOscillators);
+    expect(fake.bufferSources.length).toBeGreaterThan(baselineBuffers);
+
+    engine.dispose();
+    vi.useRealTimers();
+  });
+
+  it('selects the nearest audible source instead of an inaudible zero-gain graph', async () => {
+    vi.useFakeTimers();
+    const fake = makeFakeContext();
+    const engine = new AudioEngine({ contextFactory: () => fake.context, storage: null, random: () => 0.5 });
+    engine.setMonumentSources([{
+      id: 'muted:BTC',
+      symbol: 'BTC',
+      position: { x: 0, y: 2, z: 0 },
+      gain: 0,
+    }, {
+      id: 'audible:BTC',
+      symbol: 'BTC',
+      position: { x: 6, y: 2, z: 0 },
+    }]);
+    engine.updateProximityPosition({ x: 0, y: 0, z: 0 });
+    await engine.unlock();
+    const baselineOscillators = fake.oscillators.length;
+    const baselineBuffers = fake.bufferSources.length;
+
+    engine.playTick('audible:BTC', {
+      direction: 'up',
+      moveRatio: MARKET_MOVE_THRESHOLDS.large,
+    });
+    expect(fake.oscillators.length - baselineOscillators).toBe(4);
+    expect(fake.bufferSources.length - baselineBuffers).toBe(1);
+
+    engine.dispose();
+    vi.useRealTimers();
+  });
+
   it('schedules a deterministic bright piano call and pentatonic response', async () => {
     vi.useFakeTimers();
     const fake = makeFakeContext();

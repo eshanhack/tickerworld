@@ -1,4 +1,12 @@
-import { Group, Mesh, PerspectiveCamera, Points, Vector3 } from 'three';
+import {
+  CircleGeometry,
+  Group,
+  Mesh,
+  MeshBasicMaterial,
+  PerspectiveCamera,
+  Points,
+  Vector3,
+} from 'three';
 import { describe, expect, it, vi } from 'vitest';
 import { Text } from 'troika-three-text';
 import { ASSET_SYMBOLS, type AssetState, type Candle, type TickDirection } from '../src/types';
@@ -316,10 +324,19 @@ describe('monument chart math', () => {
       'btc-medallion-plinth',
       'BTC-bench-left',
       'BTC-lamp-pole-1',
+      'BTC-lamp-aura-1',
       'BTC-planter-1',
     ]) {
       expect(monument.root.getObjectByName(fixedName)?.parent).toBe(monument.root);
     }
+    const lampAura = monument.root.getObjectByName('BTC-lamp-aura-1') as Mesh<
+      CircleGeometry,
+      MeshBasicMaterial
+    >;
+    expect(lampAura.visible).toBe(false);
+    monument.setNightFactor(1);
+    expect(lampAura.visible).toBe(true);
+    expect(lampAura.material.opacity).toBeCloseTo(0.34, 5);
 
     const camera = new PerspectiveCamera();
     const pivot = presentation.getWorldPosition(new Vector3());

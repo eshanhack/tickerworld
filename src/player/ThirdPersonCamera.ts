@@ -22,6 +22,11 @@ const CHASE_RECENTER_RESPONSE = 1.65;
 const MAX_CHASE_BOOM_EXTENSION = 0.7;
 const MAX_CHASE_LOOK_AHEAD = 0.55;
 const CHASE_MOVEMENT_THRESHOLD = 0.08;
+/** Normal orbiting keeps the camera above the fox; sky aim pivots the lens below this value. */
+export const CAMERA_MIN_BOOM_PITCH = 0.12;
+/** About 55 degrees of upward view, enough to frame fireworks without burying the boom. */
+export const CAMERA_MIN_AIM_PITCH = -0.96;
+export const CAMERA_MAX_PITCH = 0.88;
 
 function damp(current: number, target: number, responsiveness: number, deltaSeconds: number): number {
   return THREE.MathUtils.lerp(current, target, 1 - Math.exp(-responsiveness * deltaSeconds));
@@ -50,6 +55,8 @@ export class ThirdPersonCamera {
   private readonly focus = new THREE.Vector3();
   private readonly desiredFocus = new THREE.Vector3();
   private readonly desiredPosition = new THREE.Vector3();
+  private readonly desiredLookTarget = new THREE.Vector3();
+  private readonly aimDirection = new THREE.Vector3();
   private readonly boomOffset = new THREE.Vector3();
   private readonly chaseLookAhead = new THREE.Vector3();
   private readonly desiredChaseLookAhead = new THREE.Vector3();
@@ -72,7 +79,11 @@ export class ThirdPersonCamera {
     this.camera = options.camera ?? new THREE.PerspectiveCamera(43, 1, 0.08, 360);
     this.domElement = options.domElement ?? null;
     this.yaw = options.yaw ?? 0;
-    this.pitch = THREE.MathUtils.clamp(options.pitch ?? 0.35, 0.12, 0.88);
+    this.pitch = THREE.MathUtils.clamp(
+      options.pitch ?? 0.35,
+      CAMERA_MIN_AIM_PITCH,
+      CAMERA_MAX_PITCH,
+    );
     this.minDistance = options.minDistance ?? 4.2;
     this.maxDistance = options.maxDistance ?? 12.5;
     this.distance = THREE.MathUtils.clamp(options.distance ?? 7.8, this.minDistance, this.maxDistance);
@@ -106,7 +117,7 @@ export class ThirdPersonCamera {
 
   public setOrbit(yaw: number, pitch: number, distance = this.distance): void {
     this.yaw = yaw;
-    this.pitch = THREE.MathUtils.clamp(pitch, 0.12, 0.88);
+    this.pitch = THREE.MathUtils.clamp(pitch, CAMERA_MIN_AIM_PITCH, CAMERA_MAX_PITCH);
     this.distance = THREE.MathUtils.clamp(distance, this.minDistance, this.maxDistance);
     this.chaseMoveSeconds = 0;
   }
@@ -165,10 +176,14 @@ export class ThirdPersonCamera {
     }
 
     const requestedDistance = Math.min(this.maxDistance, this.distance + this.chaseBoomExtension);
-    const horizontalDistance = Math.cos(this.pitch) * requestedDistance;
+    // Looking into the sky changes lens aim, not the boom path. Keeping a low,
+    // positive boom elevation preserves terrain/obstacle safety and leaves the
+    // fox framed at the bottom of the shot instead of forcing the camera underground.
+    const boomPitch = Math.max(this.pitch, CAMERA_MIN_BOOM_PITCH);
+    const horizontalDistance = Math.cos(boomPitch) * requestedDistance;
     this.boomOffset.set(
       Math.sin(this.yaw) * horizontalDistance,
-      Math.sin(this.pitch) * requestedDistance,
+      Math.sin(boomPitch) * requestedDistance,
       Math.cos(this.yaw) * horizontalDistance,
     );
 
@@ -186,7 +201,27 @@ export class ThirdPersonCamera {
       const positionResponse = safeDistance < this.resolvedDistance ? 20 : (this.reducedMotion ? 16 : 8.5);
       this.camera.position.lerp(this.desiredPosition, 1 - Math.exp(-positionResponse * delta));
     }
-    this.camera.lookAt(this.focus);
+    // Position smoothing must never lag through a newly rising terrain sample.
+    const cameraGround = sampledHeight(heightAt, this.camera.position.x, this.camera.position.z);
+    this.camera.position.y = Math.max(
+      this.camera.position.y,
+      cameraGround + this.collisionClearance,
+    );
+    if (this.pitch < CAMERA_MIN_BOOM_PITCH) {
+      const viewElevation = -this.pitch;
+      const horizontalAim = Math.cos(viewElevation);
+      this.aimDirection.set(
+        -Math.sin(this.yaw) * horizontalAim,
+        Math.sin(viewElevation),
+        -Math.cos(this.yaw) * horizontalAim,
+      );
+      this.desiredLookTarget
+        .copy(this.camera.position)
+        .addScaledVector(this.aimDirection, Math.max(10, requestedDistance));
+      this.camera.lookAt(this.desiredLookTarget);
+    } else {
+      this.camera.lookAt(this.focus);
+    }
     this.camera.updateMatrixWorld();
   }
 
@@ -285,7 +320,11 @@ export class ThirdPersonCamera {
     this.pointerY = event.clientY;
     this.chaseMoveSeconds = 0;
     this.yaw -= deltaX * 0.0062;
-    this.pitch = THREE.MathUtils.clamp(this.pitch + deltaY * 0.0045, 0.12, 0.88);
+    this.pitch = THREE.MathUtils.clamp(
+      this.pitch + deltaY * 0.0045,
+      CAMERA_MIN_AIM_PITCH,
+      CAMERA_MAX_PITCH,
+    );
     event.preventDefault();
   };
 

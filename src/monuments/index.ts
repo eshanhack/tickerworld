@@ -2,9 +2,19 @@ export { Monument, type MonumentKind, type MonumentOptions, type MonumentPositio
 export { HorizonBadgePanel } from './HorizonBadgePanel';
 export {
   MonumentSystem,
+  isSafeNewsPermalink,
+  type MonumentGroundSample,
   type MonumentSystemOptions,
   type NearestMonument,
+  type NewsWindowOpener,
 } from './MonumentSystem';
+export {
+  NewsPanel,
+  activeNewsItems,
+  findNewsCandleLayout,
+  newsMinute,
+  type NewsInteraction,
+} from './NewsPanel';
 export {
   MONUMENT_CANDLE_COUNT,
   MONUMENT_SHUNT_DURATION_SECONDS,
@@ -24,3 +34,11 @@ export {
   type SpringScalar,
 } from './chartMath';
 export { TickTrailPool } from './TickTrailPool';
+export {
+  FireworkPool,
+  type FireworkDirection,
+  type FireworkPoolDebugStats,
+  type FireworkPoolOptions,
+  type FireworkPosition,
+  type FireworkTier,
+} from './FireworkPool';

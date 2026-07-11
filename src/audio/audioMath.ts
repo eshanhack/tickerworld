@@ -1,6 +1,28 @@
 import type { AssetSymbol } from '../types';
 import type { AssetAudioProfile, MarketMoveClass } from './types';
 
+/** Market cues are intentionally local to the plaza the fox is visiting. */
+export const MARKET_AUDIO_FULL_RADIUS = 12;
+export const MARKET_AUDIO_MAX_RADIUS = 34;
+
+/**
+ * Player-proximity trim for positional market audio. Camera position remains
+ * responsible only for HRTF orientation, so orbiting away from the fox cannot
+ * make a distant market louder. The squared smoothstep gives the fade a short,
+ * soft tail before reaching a true zero at the outer radius.
+ */
+export function marketSourceProximityGain(distance: number): number {
+  if (!Number.isFinite(distance) || distance >= MARKET_AUDIO_MAX_RADIUS) return 0;
+  if (distance <= MARKET_AUDIO_FULL_RADIUS) return 1;
+  const progress = (
+    (distance - MARKET_AUDIO_FULL_RADIUS)
+    / (MARKET_AUDIO_MAX_RADIUS - MARKET_AUDIO_FULL_RADIUS)
+  );
+  const smooth = progress * progress * (3 - 2 * progress);
+  const remainder = 1 - smooth;
+  return remainder * remainder;
+}
+
 export const ASSET_AUDIO_PROFILES: Readonly<Record<AssetSymbol, AssetAudioProfile>> = {
   BTC: { frequency: 220, accent: 0 },
   ETH: { frequency: 246.94, accent: -4 },
