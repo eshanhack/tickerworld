@@ -36,8 +36,9 @@ function clampAxis(value: number): number {
 function isEditableTarget(target: EventTarget | null): boolean {
   if (typeof Element === 'undefined') return false;
   if (!(target instanceof Element)) return false;
-  const tagName = target.tagName.toLowerCase();
-  return tagName === 'input' || tagName === 'textarea' || tagName === 'select' || target.hasAttribute('contenteditable');
+  return target.closest(
+    'input, textarea, select, button, a, [contenteditable], [role="button"], [role="link"]',
+  ) !== null;
 }
 
 /**

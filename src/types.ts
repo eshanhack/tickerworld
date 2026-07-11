@@ -12,6 +12,7 @@ export const ASSET_SYMBOLS = [
 export type AssetSymbol = (typeof ASSET_SYMBOLS)[number];
 export type FeedMode = 'connecting' | 'live' | 'reconnecting' | 'simulated';
 export type MarketProvider = 'hyperliquid' | 'simulation';
+export type MarketUpdateKind = 'snapshot' | 'trade' | 'candle' | 'simulation';
 export type TickDirection = 'up' | 'down' | 'flat';
 export type SurfaceKind = 'grass' | 'sand' | 'stone';
 
@@ -45,6 +46,8 @@ export interface AssetState {
   previousPrice: number | null;
   direction: TickDirection;
   mode: FeedMode;
+  /** Identifies the event that produced this state so presentation side-effects stay truthful. */
+  updateKind: MarketUpdateKind;
   updatedAt: number;
   presentationTick: number;
   horizonChanges: readonly HorizonChange[];

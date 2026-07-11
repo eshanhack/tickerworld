@@ -37,6 +37,7 @@ export interface WorldSystemOptions {
   monuments?: readonly GrandMonumentCoordinate[];
   echoSuppressionRadius?: number;
   dayDurationSeconds?: number;
+  reducedMotion?: boolean;
   onEchoPlacementsChanged?: (placements: readonly EchoPlacementDescriptor[]) => void;
 }
 
@@ -51,7 +52,10 @@ export interface WorldDebugStats {
   sharedPropDrawCalls: number;
   activeLampAuras: number;
   activeLampMotes: number;
+  dropFlashIntensity: number;
 }
+
+export type DropFlashTier = 'large' | 'exceptional';
 
 interface QueuedChunk {
   x: number;
@@ -160,6 +164,11 @@ export class WorldSystem {
   private readonly sunsetSky = new THREE.Color(0xd99178);
   private readonly daySun = new THREE.Color(0xfff0cb);
   private readonly duskSun = new THREE.Color(0xe49a70);
+  private readonly dropSky = new THREE.Color(0xc85f68);
+  private readonly dropFog = new THREE.Color(0xb96570);
+  private readonly dropHemisphere = new THREE.Color(0xe28688);
+  private readonly dropGround = new THREE.Color(0x70464d);
+  private readonly dropSun = new THREE.Color(0xff8e86);
   private readonly tempMatrix = new THREE.Matrix4();
   private readonly tempPosition = new THREE.Vector3();
   private readonly tempQuaternion = new THREE.Quaternion();
@@ -170,6 +179,13 @@ export class WorldSystem {
   private centerChunkZ = Number.NaN;
   private totalPropInstances = 0;
   private daylight = 1;
+  private currentElapsedSeconds = 0;
+  private dropFlashStartedAt = Number.NEGATIVE_INFINITY;
+  private dropFlashDuration = 0;
+  private dropFlashPeak = 0;
+  private dropFlashStartIntensity = 0;
+  private dropFlashIntensity = 0;
+  private reducedMotion: boolean;
   private disposed = false;
 
   constructor(scene: THREE.Scene, options: WorldSystemOptions = {}) {
@@ -185,6 +201,7 @@ export class WorldSystem {
     this.echoSuppressionRadius = options.echoSuppressionRadius
       ?? ECHO_GRAND_SUPPRESSION_RADIUS;
     this.dayDurationSeconds = Math.max(60, options.dayDurationSeconds ?? DAY_SECONDS);
+    this.reducedMotion = options.reducedMotion ?? false;
     this.onEchoPlacementsChanged = options.onEchoPlacementsChanged;
     this.terrain = new TerrainSampler({
       seed: this.seed,
@@ -339,7 +356,28 @@ export class WorldSystem {
       sharedPropDrawCalls: propDrawCalls,
       activeLampAuras: this.lampAuraMesh.count,
       activeLampMotes: this.lampMotePoints.geometry.drawRange.count,
+      dropFlashIntensity: this.dropFlashIntensity,
     };
+  }
+
+  /** Briefly composes a nearby major-drop warning over the current time of day. */
+  triggerDropFlash(tier: DropFlashTier): void {
+    if (this.disposed) return;
+    const requestedPeak = tier === 'exceptional' ? 0.7 : 0.45;
+    const requestedDuration = tier === 'exceptional' ? 1.2 : 0.9;
+    const active = this.currentElapsedSeconds - this.dropFlashStartedAt < this.dropFlashDuration;
+    if (active && this.reducedMotion) return;
+    const peak = active ? Math.max(this.dropFlashPeak, requestedPeak) : requestedPeak;
+    const duration = active ? Math.max(this.dropFlashDuration, requestedDuration) : requestedDuration;
+    this.dropFlashStartIntensity = active ? this.dropFlashIntensity : 0;
+    this.dropFlashPeak = this.reducedMotion ? Math.min(0.22, peak) : peak;
+    this.dropFlashDuration = duration;
+    this.dropFlashStartedAt = this.currentElapsedSeconds;
+  }
+
+  setReducedMotion(reducedMotion: boolean): void {
+    this.reducedMotion = reducedMotion;
+    if (reducedMotion) this.dropFlashPeak = Math.min(this.dropFlashPeak, 0.22);
   }
 
   update(playerPosition: WorldPosition, elapsedSeconds: number): void {
@@ -347,6 +385,7 @@ export class WorldSystem {
       return;
     }
 
+    this.currentElapsedSeconds = elapsedSeconds;
     const chunkX = Math.floor((playerPosition.x + this.chunkSize * 0.5) / this.chunkSize);
     const chunkZ = Math.floor((playerPosition.z + this.chunkSize * 0.5) / this.chunkSize);
     if (chunkX !== this.centerChunkX || chunkZ !== this.centerChunkZ) {
@@ -844,6 +883,17 @@ export class WorldSystem {
     this.sunLight.color.copy(this.duskSun).lerp(this.daySun, this.daylight);
     this.sunLight.intensity = 0.12 + this.daylight * 1.43;
 
+    const dropFlash = this.computeDropFlash(elapsedSeconds);
+    if (dropFlash > 0) {
+      this.skyColor.lerp(this.dropSky, dropFlash);
+      this.fog.color.copy(this.skyColor).lerp(this.dropFog, dropFlash * 0.64);
+      this.hemisphereLight.color.lerp(this.dropHemisphere, dropFlash * 0.8);
+      this.hemisphereLight.groundColor.lerp(this.dropGround, dropFlash * 0.48);
+      this.hemisphereLight.intensity += dropFlash * 0.12;
+      this.sunLight.color.lerp(this.dropSun, dropFlash * 0.78);
+      this.sunLight.intensity += dropFlash * 0.28;
+    }
+
     this.sunLight.position.set(
       player.x + Math.sin(phase) * 72,
       24 + Math.max(0, solarAltitude) * 58,
@@ -852,6 +902,20 @@ export class WorldSystem {
     this.sunLight.target.position.set(player.x, this.heightAt(player.x, player.z), player.z);
     this.sunLight.target.updateMatrixWorld();
     this.lampGlobeMaterial.emissiveIntensity = 0.25 + (1 - this.daylight) * 2.15;
+  }
+
+  private computeDropFlash(elapsedSeconds: number): number {
+    const age = elapsedSeconds - this.dropFlashStartedAt;
+    if (!Number.isFinite(age) || age < 0 || age >= this.dropFlashDuration) {
+      this.dropFlashIntensity = 0;
+      return 0;
+    }
+    const attackSeconds = this.reducedMotion ? 0.12 : 0.055;
+    const attack = smoothstep(0, attackSeconds, age);
+    this.dropFlashIntensity = age < attackSeconds
+      ? THREE.MathUtils.lerp(this.dropFlashStartIntensity, this.dropFlashPeak, attack)
+      : this.dropFlashPeak * (1 - smoothstep(attackSeconds, this.dropFlashDuration, age));
+    return this.dropFlashIntensity;
   }
 
   private updateLampLights(player: WorldPosition, elapsedSeconds: number): void {

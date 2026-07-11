@@ -1,7 +1,11 @@
 import { Camera, Group, Object3D, Raycaster, Vector2, Vector3 } from 'three';
 import type { NewsItem } from '../news';
 import type { AssetState, AssetSymbol, GameSystem } from '../types';
-import { Monument, type MonumentOptions } from './Monument';
+import {
+  Monument,
+  type MonumentNewsOverlayState,
+  type MonumentOptions,
+} from './Monument';
 
 export type NewsWindowOpener = (
   url: string,
@@ -21,6 +25,11 @@ export interface MonumentSystemOptions {
 export interface NearestMonument {
   monument: Monument;
   distance: number;
+}
+
+export interface NearestNewsOverlay extends MonumentNewsOverlayState {
+  readonly monument: Monument;
+  readonly distance: number;
 }
 
 export interface MonumentGroundSample {
@@ -64,11 +73,12 @@ export class MonumentSystem implements GameSystem {
   private camera: Camera;
   private readonly fontUrl?: string;
   private readonly domElement: HTMLElement | null;
-  private readonly openWindow: NewsWindowOpener | null;
   private readonly interactionDragThreshold: number;
   private readonly raycaster = new Raycaster();
   private readonly pointerNdc = new Vector2();
   private readonly projectedPoint = new Vector3();
+  private readonly newsCandidateAnchor = new Vector3();
+  private readonly newsResultAnchor = new Vector3();
   private newsItems: NewsItem[] = [];
   private newsItemsTimestamp = 0;
   private pointerGesture: PointerGesture | null = null;
@@ -80,11 +90,6 @@ export class MonumentSystem implements GameSystem {
     this.camera = options.camera;
     this.fontUrl = options.fontUrl;
     this.domElement = options.domElement ?? null;
-    this.openWindow = options.openWindow ?? (
-      typeof window === 'undefined'
-        ? null
-        : (url, target, features) => window.open(url, target, features)
-    );
     this.interactionDragThreshold = Math.max(0, options.interactionDragThreshold ?? 7);
     this.root.name = 'tickerworld-monuments';
     options.parent.add(this.root);
@@ -137,6 +142,39 @@ export class MonumentSystem implements GameSystem {
     }
   }
 
+  getNearestNewsOverlay(
+    point: Vector3,
+    maxDistance = 48,
+  ): NearestNewsOverlay | null {
+    let nearest: NearestNewsOverlay | null = null;
+    for (const monument of this.monuments) {
+      if (!monument.discoverable) continue;
+      const distance = monument.nearestDistance(point);
+      if (distance > maxDistance || (nearest && distance >= nearest.distance)) continue;
+      const state = monument.getNewsOverlayState(this.newsCandidateAnchor);
+      if (!state) continue;
+      this.newsResultAnchor.copy(state.candleAnchor);
+      nearest = {
+        ...state,
+        candleAnchor: this.newsResultAnchor,
+        monument,
+        distance,
+      };
+    }
+    return nearest;
+  }
+
+  /** Minimizes the current post to its pins at every grand monument. */
+  dismissNewsOverlay(itemId: string): boolean {
+    let dismissed = false;
+    for (const monument of this.monuments) {
+      if (monument.discoverable) {
+        dismissed = monument.dismissNewsItem(itemId) || dismissed;
+      }
+    }
+    return dismissed;
+  }
+
   getForSymbol(symbol: AssetSymbol): readonly Monument[] {
     return [...this.monuments].filter((monument) => monument.symbol === symbol);
   }
@@ -183,7 +221,7 @@ export class MonumentSystem implements GameSystem {
     this.camera = camera;
   }
 
-  /** Activates the top-most news card/pin at a canvas client coordinate. */
+  /** Activates the top-most candle news pin at a canvas client coordinate. */
   activateNewsAt(clientX: number, clientY: number): boolean {
     if (!this.visible || this.disposed || !this.domElement) return false;
     const rect = this.domElement.getBoundingClientRect();
@@ -334,9 +372,6 @@ export class MonumentSystem implements GameSystem {
   private activateNewsObject(monument: Monument, object: Object3D): boolean {
     const interaction = monument.resolveNewsInteraction(object);
     if (!interaction) return false;
-    if (interaction.action === 'select') return monument.selectNewsItem(interaction.itemId);
-    if (!interaction.url || !isSafeNewsPermalink(interaction.url)) return false;
-    this.openWindow?.(interaction.url, '_blank', 'noopener,noreferrer');
-    return true;
+    return monument.selectNewsItem(interaction.itemId);
   }
 }

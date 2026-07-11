@@ -51,4 +51,63 @@ describe('WorldSystem lamp ambience', () => {
     expect(moteGeometryDispose).toHaveBeenCalledOnce();
     expect(scene.children).not.toContain(world.root);
   });
+
+  it('composes a bounded drop flash after day/night and returns to the identical baseline', () => {
+    const baselineScene = new THREE.Scene();
+    const flashedScene = new THREE.Scene();
+    const options = {
+      seed: 'drop-flash-test',
+      dayDurationSeconds: 600,
+      loadBudgetPerUpdate: 25,
+      unloadBudgetPerUpdate: 25,
+    } as const;
+    const baseline = new WorldSystem(baselineScene, options);
+    const flashed = new WorldSystem(flashedScene, options);
+    const player = { x: 0, z: 0 };
+
+    baseline.update(player, 120);
+    flashed.update(player, 120);
+    flashed.triggerDropFlash('large');
+    baseline.update(player, 120.055);
+    flashed.update(player, 120.055);
+
+    expect(flashed.getDebugStats().dropFlashIntensity).toBeCloseTo(0.45, 2);
+    expect(flashed.nightFactor).toBeCloseTo(baseline.nightFactor, 10);
+    expect((flashedScene.background as THREE.Color).equals(
+      baselineScene.background as THREE.Color,
+    )).toBe(false);
+    const baselineSun = baseline.root.getObjectByName('WorldSun') as THREE.DirectionalLight;
+    const flashedSun = flashed.root.getObjectByName('WorldSun') as THREE.DirectionalLight;
+    expect(flashedSun.color.equals(baselineSun.color)).toBe(false);
+
+    const beforeUpgrade = flashed.getDebugStats().dropFlashIntensity;
+    flashed.triggerDropFlash('exceptional');
+    flashed.update(player, 120.055);
+    expect(flashed.getDebugStats().dropFlashIntensity).toBeCloseTo(beforeUpgrade, 8);
+
+    baseline.update(player, 121.3);
+    flashed.update(player, 121.3);
+    expect(flashed.getDebugStats().dropFlashIntensity).toBe(0);
+    expect((flashedScene.background as THREE.Color).equals(
+      baselineScene.background as THREE.Color,
+    )).toBe(true);
+    expect((flashedScene.fog as THREE.Fog).color.equals(
+      (baselineScene.fog as THREE.Fog).color,
+    )).toBe(true);
+    expect(flashedSun.color.equals(baselineSun.color)).toBe(true);
+    expect(flashed.nightFactor).toBeCloseTo(baseline.nightFactor, 10);
+
+    flashed.setReducedMotion(true);
+    flashed.triggerDropFlash('exceptional');
+    flashed.update(player, 121.42);
+    const reducedPeak = flashed.getDebugStats().dropFlashIntensity;
+    expect(reducedPeak).toBeGreaterThan(0);
+    expect(reducedPeak).toBeLessThanOrEqual(0.22);
+    flashed.triggerDropFlash('large');
+    flashed.update(player, 121.43);
+    expect(flashed.getDebugStats().dropFlashIntensity).toBeGreaterThan(reducedPeak * 0.95);
+
+    baseline.dispose();
+    flashed.dispose();
+  });
 });

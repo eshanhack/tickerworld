@@ -20,19 +20,24 @@ export { createRandom, fbm2D, hashCoordinates, hashSeed, mix32, valueNoise2D } f
 export { TerrainSampler } from './terrain';
 export type { MonumentCoordinate, PondDescriptor, TerrainSamplerOptions } from './terrain';
 export { WorldSystem } from './WorldSystem';
-export type { WorldDebugStats, WorldPosition, WorldSystemOptions } from './WorldSystem';
+export type { DropFlashTier, WorldDebugStats, WorldPosition, WorldSystemOptions } from './WorldSystem';
+export { WayfindingSystem } from './WayfindingSystem';
+export type { WayfindingSystemOptions } from './WayfindingSystem';
 export {
-  WayfindingSystem,
+  ROAD_SIGN_PROP_CLEARANCE,
+  ROAD_SIGN_RADIAL_OFFSET,
+  ROAD_SIGN_SHOULDER_OFFSET,
   bearingBetween,
-  createWayfindingLayouts,
-  createWayfindingPostLayout,
+  createCanonicalRoadDescriptors,
+  createRoadSignDescriptors,
+  createRoadSignExclusionPoints,
   directionForBearing,
   formatWayfindingDistance,
-  selectWayfindingDestinations,
-} from './WayfindingSystem';
+} from './RoadSignLayout';
 export type {
+  CanonicalRoadDescriptor,
+  RoadSignDescriptor,
+  RoadSignExclusionPoint,
+  RoadVector,
   WayfindingCoordinate,
-  WayfindingDestination,
-  WayfindingPostLayout,
-  WayfindingSystemOptions,
-} from './WayfindingSystem';
+} from './RoadSignLayout';

@@ -1,8 +1,13 @@
 import * as THREE from 'three';
 import nunitoFontUrl from '@fontsource/nunito/files/nunito-latin-700-normal.woff?url';
-import { AudioEngine, MARKET_AUDIO_MAX_RADIUS } from './audio';
+import { AudioEngine, MARKET_AUDIO_MAX_RADIUS, MARKET_MOVE_THRESHOLDS } from './audio';
 import { DEBUG_MODE, GRAND_MONUMENTS, WORLD_SEED } from './config';
-import { HyperliquidMarketFeed, MarketCelebrationGate } from './markets';
+import {
+  HyperliquidMarketFeed,
+  MarketCelebrationGate,
+  type MarketCelebrationEvent,
+  type MarketCelebrationTier,
+} from './markets';
 import { FireworkPool, Monument, MonumentSystem } from './monuments';
 import { BrowserNewsFeed, type NewsFeedMode, type NewsFeedUpdate } from './news';
 import { FoxPlayer, ThirdPersonCamera, type FootstepEvent, type FoxActionEvent } from './player';
@@ -84,6 +89,8 @@ export class Game {
   private readonly discoveries = safeReadDiscoveries();
   private readonly clock = new THREE.Clock();
   private readonly tempPosition = new THREE.Vector3();
+  private readonly newsCameraSpace = new THREE.Vector3();
+  private readonly newsNdc = new THREE.Vector3();
   private readonly cameraTarget = new THREE.Vector3();
   private entered = false;
   private visible = true;
@@ -145,6 +152,7 @@ export class Game {
     });
     this.world = new WorldSystem(this.scene, {
       seed: WORLD_SEED,
+      reducedMotion: this.reducedMotion,
       onEchoPlacementsChanged: (placements) => this.syncEchoMonuments(placements),
     });
     this.wayfinding = new WayfindingSystem({
@@ -187,6 +195,7 @@ export class Game {
       onMusicVolumeChange: (value) => this.audio.setMusicVolume(value),
       onSfxMuteToggle: () => this.audio.toggleSfxMuted(),
       onSfxVolumeChange: (value) => this.audio.setSfxVolume(value),
+      onNewsDismiss: (itemId) => this.monuments.dismissNewsOverlay(itemId),
       onCompassToggle: (enabled) => {
         this.compassEnabled = enabled;
         safeWrite(COMPASS_KEY, String(enabled));
@@ -196,6 +205,7 @@ export class Game {
         this.player.setReducedMotion(enabled);
         this.cameraRig.setReducedMotion(enabled);
         this.fireworks.setReducedMotion(enabled);
+        this.world.setReducedMotion(enabled);
         safeWrite(REDUCED_MOTION_KEY, String(enabled));
       },
       onVirtualInput: (x, forward, sprint) => this.player.setVirtualInput(x, forward, sprint),
@@ -255,6 +265,10 @@ export class Game {
           audio: this.audio,
           fireworks: this.fireworks,
           wayfinding: this.wayfinding,
+          triggerLargeUp: () => this.triggerDebugMarketEvent('up', 'large'),
+          triggerExceptionalUp: () => this.triggerDebugMarketEvent('up', 'exceptional'),
+          triggerLargeDown: () => this.triggerDebugMarketEvent('down', 'large'),
+          triggerExceptionalDown: () => this.triggerDebugMarketEvent('down', 'exceptional'),
         },
         configurable: true,
       });
@@ -308,6 +322,7 @@ export class Game {
     );
     this.monuments.setNightFactor(this.world.nightFactor);
     this.monuments.update(delta, this.elapsed);
+    this.updateNewsOverlay();
     this.fireworks.update(delta);
     this.audio.setEnvironment({ nightFactor: this.world.nightFactor });
     this.audio.updateProximityPosition(this.player.position);
@@ -320,7 +335,13 @@ export class Game {
 
   private onFootstep(event: FootstepEvent): void {
     if (!this.entered) return;
-    this.audio.playFootstep({ surface: event.surface, sprinting: event.sprinting, side: event.side });
+    this.audio.playFootstep({
+      surface: event.surface,
+      sprinting: event.sprinting,
+      side: event.side,
+      leg: event.leg,
+      intensity: event.intensity,
+    });
   }
 
   private onFoxAction(event: FoxActionEvent): void {
@@ -339,46 +360,82 @@ export class Game {
 
     const previousOpen = previous?.candles.at(-1)?.openTime;
     const currentOpen = state.candles.at(-1)?.openTime;
-    if (previousOpen !== undefined && currentOpen !== undefined && previousOpen !== currentOpen) {
-      for (const monument of this.monuments.getForSymbol(state.symbol)) {
-        const id = this.monumentIds.get(monument);
-        if (id) this.audio.playCandleClose(id);
-      }
+    const isTradePresentation = state.updateKind === 'trade' || state.updateKind === 'simulation';
+    const focusedMarket = this.monuments.nearestTo(this.player.position, MARKET_AUDIO_MAX_RADIUS);
+    const isFocusedSymbol = focusedMarket?.monument.symbol === state.symbol;
+    if (
+      isTradePresentation
+      && isFocusedSymbol
+      && previousOpen !== undefined
+      && currentOpen !== undefined
+      && previousOpen !== currentOpen
+    ) {
+      const id = focusedMarket ? this.monumentIds.get(focusedMarket.monument) : undefined;
+      if (id) this.audio.playCandleClose(id);
     }
 
-    if (!previous || state.presentationTick <= previous.presentationTick || state.direction === 'flat') return;
+    if (!isTradePresentation || !previous || state.presentationTick <= previous.presentationTick) return;
     if (state.price === null || previous.price === null) return;
     const tickMoveRatio = previous.price > 0 ? Math.abs(state.price - previous.price) / previous.price : 0;
     const minuteChange = state.horizonChanges.find((change) => change.horizon === '1m');
     const minuteMoveRatio = Math.abs(minuteChange?.changeRatio ?? 0);
     const minuteDirection = minuteChange?.direction ?? 'flat';
-    const useMinuteDirection = minuteMoveRatio >= Math.max(0.00012, tickMoveRatio * 1.5)
-      && minuteDirection !== 'flat';
-    const soundDirection = useMinuteDirection ? minuteDirection : state.direction;
     const moveRatio = Math.max(tickMoveRatio, minuteMoveRatio);
-    for (const monument of this.monuments.getForSymbol(state.symbol)) {
-      const id = this.monumentIds.get(monument);
-      if (id) this.audio.playTick(id, soundDirection, moveRatio);
-    }
-
+    // Calm updates rearm the authoritative event gate even when the fox is far
+    // away; energetic distant updates are never consumed as local alerts.
+    this.celebrationGate.observe(state.symbol, minuteMoveRatio);
     if (!this.entered || !this.visible) return;
-    const nearbyMonument = this.nearestMonumentForSymbol(
-      state.symbol,
-      MARKET_AUDIO_MAX_RADIUS,
-    );
-    if (!nearbyMonument) return;
+    if (!focusedMarket || !isFocusedSymbol) return;
+    const nearbyMonument = focusedMarket.monument;
+    const sourceId = this.monumentIds.get(nearbyMonument);
+    if (!sourceId) return;
+    this.audio.playTradePulse(sourceId, state.direction, moveRatio);
+
     const celebration = this.celebrationGate.evaluate(
       state.symbol,
-      soundDirection,
-      moveRatio,
+      minuteDirection,
+      minuteMoveRatio,
       performance.now() / 1_000,
     );
     if (!celebration) return;
-    this.fireworks.launch(
-      nearbyMonument.getFireworkOrigin(this.tempPosition),
-      celebration.direction,
-      celebration.tier,
-    );
+    this.dispatchMarketAccent(nearbyMonument, sourceId, celebration);
+  }
+
+  private dispatchMarketAccent(
+    monument: Monument,
+    sourceId: string,
+    event: MarketCelebrationEvent,
+  ): void {
+    this.audio.playMarketAccent(sourceId, {
+      direction: event.direction,
+      tier: event.tier,
+      moveRatio: event.magnitude,
+    });
+    if (event.direction === 'up') {
+      this.fireworks.launch(monument.getFireworkOrigin(this.tempPosition), 'up', event.tier);
+      return;
+    }
+    this.world.triggerDropFlash(event.tier);
+  }
+
+  private triggerDebugMarketEvent(
+    direction: 'up' | 'down',
+    tier: MarketCelebrationTier,
+  ): void {
+    const nearest = this.monuments.nearestTo(this.player.position, MARKET_AUDIO_MAX_RADIUS)
+      ?? this.monuments.nearestTo(this.player.position, Number.POSITIVE_INFINITY);
+    if (!nearest) return;
+    const sourceId = this.monumentIds.get(nearest.monument);
+    if (!sourceId) return;
+    const magnitude = tier === 'exceptional'
+      ? MARKET_MOVE_THRESHOLDS.exceptional * 1.1
+      : MARKET_MOVE_THRESHOLDS.large * 1.1;
+    this.dispatchMarketAccent(nearest.monument, sourceId, {
+      symbol: nearest.monument.symbol,
+      direction,
+      tier,
+      magnitude,
+    });
   }
 
   private onNewsUpdate(update: NewsFeedUpdate): void {
@@ -392,18 +449,6 @@ export class Game {
     if (this.entered && this.visible && freshAdditionCount > 0) {
       this.audio.playNewsAlert(Math.min(1, 0.66 + (freshAdditionCount - 1) * 0.08));
     }
-  }
-
-  private nearestMonumentForSymbol(symbol: AssetSymbol, maxDistance: number): Monument | null {
-    let nearest: Monument | null = null;
-    let distance = maxDistance;
-    for (const monument of this.monuments.getForSymbol(symbol)) {
-      const candidateDistance = monument.nearestDistance(this.player.position);
-      if (candidateDistance > distance) continue;
-      nearest = monument;
-      distance = candidateDistance;
-    }
-    return nearest;
   }
 
   private syncEchoMonuments(placements: readonly EchoPlacementDescriptor[]): void {
@@ -484,6 +529,41 @@ export class Game {
       const relativeAngle = Math.atan2(dx, -dz) + this.cameraRig.yaw;
       this.hud.setCompass(relativeAngle, closest.symbol);
     }
+  }
+
+  private updateNewsOverlay(): void {
+    if (!this.entered) {
+      this.hud.setNewsOverlay(null);
+      return;
+    }
+    const overlay = this.monuments.getNearestNewsOverlay(this.player.position, 48);
+    if (!overlay) {
+      this.hud.setNewsOverlay(null);
+      return;
+    }
+
+    this.camera.updateMatrixWorld();
+    this.newsCameraSpace.copy(overlay.candleAnchor).applyMatrix4(this.camera.matrixWorldInverse);
+    if (this.newsCameraSpace.z >= 0) {
+      this.hud.setNewsOverlay(null);
+      return;
+    }
+
+    this.newsNdc.copy(overlay.candleAnchor).project(this.camera);
+    if (this.newsNdc.z < -1 || this.newsNdc.z > 1) {
+      this.hud.setNewsOverlay(null);
+      return;
+    }
+    const bounds = this.renderer.domElement.getBoundingClientRect();
+    this.hud.setNewsOverlay({
+      symbol: overlay.symbol,
+      item: overlay.item,
+      dismissed: overlay.dismissed,
+      anchor: {
+        x: bounds.left + (this.newsNdc.x + 1) * 0.5 * bounds.width,
+        y: bounds.top + (1 - this.newsNdc.y) * 0.5 * bounds.height,
+      },
+    });
   }
 
   private cameraObstacleAt(x: number, y: number, z: number): boolean {

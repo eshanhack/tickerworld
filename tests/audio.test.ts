@@ -12,6 +12,7 @@ import {
   MARKET_AUDIO_FULL_RADIUS,
   MARKET_AUDIO_MAX_RADIUS,
   MARKET_MOVE_THRESHOLDS,
+  marketBassFrequency,
   marketGestureFrequencies,
   marketMovePeakGain,
   marketMoveSeverity,
@@ -340,9 +341,12 @@ describe('audio mapping', () => {
       marketMovePeakGain(exceptional),
     ];
     expect(tierPeaks).toEqual([...tierPeaks].sort((a, b) => a - b));
-    expect(tierPeaks[2]).toBeGreaterThan((tierPeaks[1] ?? 0) * 1.6);
+    expect(tierPeaks[0]).toBeGreaterThanOrEqual(0.035);
+    expect(tierPeaks[2]).toBeGreaterThan(tierPeaks[1] ?? 0);
     expect(tierPeaks[3]).toBeGreaterThan(tierPeaks[2] ?? 0);
-    expect(tierPeaks[3]).toBeLessThanOrEqual(0.16);
+    expect(tierPeaks[3]).toBeLessThanOrEqual(0.12);
+    expect(marketBassFrequency(exceptional)).toBeLessThan(marketBassFrequency(medium));
+    expect(marketBassFrequency(0)).toBe(180);
   });
 
   it('keeps both notes of every market gesture between 220 and 587 Hz', () => {
@@ -470,14 +474,14 @@ describe('AudioEngine lifecycle', () => {
     const baselineOscillators = fake.oscillators.length;
     const baselineBuffers = fake.bufferSources.length;
 
-    engine.playTick('grand:BTC', { direction: 'up', moveRatio: 0.0002 });
+    engine.playTradePulse('grand:BTC', { direction: 'up', moveRatio: 0.0002 });
     engine.playCandleClose('grand:BTC');
     expect(fake.oscillators).toHaveLength(baselineOscillators);
     expect(fake.bufferSources).toHaveLength(baselineBuffers);
 
     // Camera stays put: moving only the fox proximity point makes this market audible.
     engine.updateProximityPosition({ x: 0, y: 0, z: 0 });
-    engine.playTick('grand:BTC', { direction: 'up', moveRatio: 0.0002 });
+    engine.playTradePulse('grand:BTC', { direction: 'up', moveRatio: 0.0002 });
     engine.playCandleClose('grand:BTC');
     expect(fake.oscillators.length).toBeGreaterThan(baselineOscillators);
     expect(fake.bufferSources.length).toBeGreaterThan(baselineBuffers);
@@ -486,7 +490,7 @@ describe('AudioEngine lifecycle', () => {
     vi.useRealTimers();
   });
 
-  it('selects the nearest audible source instead of an inaudible zero-gain graph', async () => {
+  it('hard-gates a zero-gain source and keeps HRTF free of second distance rolloff', async () => {
     vi.useFakeTimers();
     const fake = makeFakeContext();
     const engine = new AudioEngine({ contextFactory: () => fake.context, storage: null, random: () => 0.5 });
@@ -505,12 +509,21 @@ describe('AudioEngine lifecycle', () => {
     const baselineOscillators = fake.oscillators.length;
     const baselineBuffers = fake.bufferSources.length;
 
-    engine.playTick('audible:BTC', {
+    engine.playTradePulse('muted:BTC', {
       direction: 'up',
       moveRatio: MARKET_MOVE_THRESHOLDS.large,
     });
-    expect(fake.oscillators.length - baselineOscillators).toBe(4);
-    expect(fake.bufferSources.length - baselineBuffers).toBe(1);
+    expect(fake.oscillators).toHaveLength(baselineOscillators);
+    engine.playTradePulse('audible:BTC', {
+      direction: 'up',
+      moveRatio: MARKET_MOVE_THRESHOLDS.large,
+    });
+    expect(fake.oscillators.length - baselineOscillators).toBe(3);
+    expect(fake.bufferSources.length - baselineBuffers).toBe(0);
+    const panners = (fake.context.createPanner as unknown as {
+      mock: { results: Array<{ value?: PannerNode }> };
+    }).mock.results.flatMap((result) => result.value ? [result.value] : []);
+    expect(panners.every((panner) => panner.rolloffFactor === 0)).toBe(true);
 
     engine.dispose();
     vi.useRealTimers();
@@ -554,6 +567,33 @@ describe('AudioEngine lifecycle', () => {
     vi.useRealTimers();
   });
 
+  it('starts every sprint-footstep layer on the rendered contact time', async () => {
+    vi.useFakeTimers();
+    const fake = makeFakeContext();
+    const engine = new AudioEngine({ contextFactory: () => fake.context, storage: null, random: () => 0.5 });
+    await engine.unlock();
+    const baselineOscillators = fake.oscillators.length;
+    const baselineBuffers = fake.bufferSources.length;
+    (fake.context as unknown as { currentTime: number }).currentTime = 2.4;
+
+    engine.playFootstep({
+      surface: 'stone',
+      sprinting: true,
+      side: 'right',
+      leg: 'hindRight',
+      intensity: 0.86,
+    });
+
+    const thumps = fake.oscillators.slice(baselineOscillators);
+    const transients = fake.bufferSources.slice(baselineBuffers);
+    expect(thumps).toHaveLength(1);
+    expect(transients).toHaveLength(2);
+    expect(thumps[0]?.start).toHaveBeenCalledWith(2.4);
+    expect(transients.every((source) => source.start?.mock.calls[0]?.[0] === 2.4)).toBe(true);
+    engine.dispose();
+    vi.useRealTimers();
+  });
+
   it('makes every one-minute move tier audibly more distinct', async () => {
     vi.useFakeTimers();
     const renderTier = async (moveRatio: number): Promise<{
@@ -572,7 +612,7 @@ describe('AudioEngine lifecycle', () => {
       const baselineOscillators = fake.oscillators.length;
       const baselineBuffers = fake.bufferSources.length;
       const baselineNodes = fake.nodes.length;
-      engine.playTick('grand:BTC', { direction: 'up', moveRatio });
+      engine.playTradePulse('grand:BTC', { direction: 'up', moveRatio });
       const gains = fake.nodes.slice(baselineNodes).flatMap((node) => {
         const ramp = node.gain?.exponentialRampToValueAtTime as unknown as
           | ReturnType<typeof vi.fn>
@@ -593,61 +633,17 @@ describe('AudioEngine lifecycle', () => {
     const large = await renderTier(MARKET_MOVE_THRESHOLDS.large);
     const exceptional = await renderTier(MARKET_MOVE_THRESHOLDS.exceptional);
 
-    expect(small).toMatchObject({ oscillators: 2, buffers: 0 });
-    expect(medium).toMatchObject({ oscillators: 3, buffers: 0 });
-    expect(large).toMatchObject({ oscillators: 4, buffers: 1 });
-    expect(exceptional).toMatchObject({ oscillators: 5, buffers: 1 });
+    expect(small).toMatchObject({ oscillators: 3, buffers: 0 });
+    expect(medium).toMatchObject({ oscillators: 4, buffers: 0 });
+    expect(large).toMatchObject({ oscillators: 3, buffers: 0 });
+    expect(exceptional).toMatchObject({ oscillators: 3, buffers: 0 });
     expect(medium.maximumGain).toBeGreaterThan(small.maximumGain);
-    expect(large.maximumGain).toBeGreaterThan(medium.maximumGain * 1.6);
+    expect(large.maximumGain).toBeGreaterThan(medium.maximumGain);
     expect(exceptional.maximumGain).toBeGreaterThan(large.maximumGain);
     vi.useRealTimers();
   });
 
-  it('reserves the special accent for the nearest same-symbol monument', async () => {
-    vi.useFakeTimers();
-    const fake = makeFakeContext();
-    const engine = new AudioEngine({ contextFactory: () => fake.context, storage: null, random: () => 0.5 });
-    engine.setMonumentSources([{
-      id: 'echo:BTC:far',
-      symbol: 'BTC',
-      position: { x: 80, y: 2, z: 0 },
-      gain: 0.62,
-    }, {
-      id: 'grand:BTC:near',
-      symbol: 'BTC',
-      position: { x: 2, y: 2, z: 0 },
-    }]);
-    engine.updateListener({
-      position: { x: 0, y: 2, z: 0 },
-      forward: { x: 1, y: 0, z: 0 },
-    });
-    await engine.unlock();
-
-    // Leave room for exactly one large upward celebration. A distant source
-    // arriving first must not consume either the accent state or voice budget.
-    for (let index = 0; index < 14; index += 1) engine.playJump('double-jump');
-    const scheduled = (engine as unknown as {
-      scheduledSources: Set<AudioScheduledSourceNode>;
-    }).scheduledSources;
-    expect(scheduled.size).toBe(42);
-    const oscillatorCount = fake.oscillators.length;
-    const bufferCount = fake.bufferSources.length;
-
-    engine.playTick('echo:BTC:far', { direction: 'up', moveRatio: MARKET_MOVE_THRESHOLDS.large });
-    expect(fake.oscillators.length).toBe(oscillatorCount);
-    expect(fake.bufferSources.length).toBe(bufferCount);
-    expect(scheduled.size).toBe(42);
-
-    engine.playTick('grand:BTC:near', { direction: 'up', moveRatio: MARKET_MOVE_THRESHOLDS.large });
-    expect(fake.oscillators.length - oscillatorCount).toBe(4);
-    expect(fake.bufferSources.length - bufferCount).toBe(1);
-    expect(scheduled.size).toBe(47);
-
-    engine.dispose();
-    vi.useRealTimers();
-  });
-
-  it('rearms accents, preserves cooldown, and immediately honors meaningful changes', async () => {
+  it('plays one focused pulse for directional and flat trades', async () => {
     vi.useFakeTimers();
     const fake = makeFakeContext();
     const engine = new AudioEngine({ contextFactory: () => fake.context, storage: null, random: () => 0.5 });
@@ -658,51 +654,57 @@ describe('AudioEngine lifecycle', () => {
     }]);
     await engine.unlock();
     const baselineOscillators = fake.oscillators.length;
-    const baselineBuffers = fake.bufferSources.length;
 
-    engine.playTick('grand:BTC', { direction: 'up', moveRatio: MARKET_MOVE_THRESHOLDS.large });
-    expect(fake.oscillators.length - baselineOscillators).toBe(4);
-    expect(fake.bufferSources.length - baselineBuffers).toBe(1);
+    engine.playTradePulse('grand:BTC', { direction: 'up', moveRatio: 0.00002 });
+    (fake.context as unknown as { currentTime: number }).currentTime = 0.4;
+    engine.playTradePulse('grand:BTC', { direction: 'flat', moveRatio: 0 });
+    (fake.context as unknown as { currentTime: number }).currentTime = 0.8;
+    engine.playTradePulse('grand:BTC', { direction: 'down', moveRatio: 0.00002 });
 
-    // A sustained large return gets the normal two-note tick, not another fanfare.
-    (fake.context as unknown as { currentTime: number }).currentTime = 0.3;
-    engine.playTick('grand:BTC', { direction: 'up', moveRatio: MARKET_MOVE_THRESHOLDS.large });
-    expect(fake.oscillators.length - baselineOscillators).toBe(6);
-    expect(fake.bufferSources.length - baselineBuffers).toBe(1);
-
-    // Crossing into exceptional is an escalation and is not hidden by the long rearm path.
-    (fake.context as unknown as { currentTime: number }).currentTime = 0.7;
-    engine.playTick('grand:BTC', { direction: 'up', moveRatio: MARKET_MOVE_THRESHOLDS.exceptional });
-    expect(fake.oscillators.length - baselineOscillators).toBe(11);
-    expect(fake.bufferSources.length - baselineBuffers).toBe(2);
-
-    // A quiet moment rearms the next accent after a short anti-spam cooldown.
-    (fake.context as unknown as { currentTime: number }).currentTime = 0.95;
-    engine.playTick('grand:BTC', { direction: 'up', moveRatio: 0.00001 });
-    (fake.context as unknown as { currentTime: number }).currentTime = 1.4;
-    engine.playTick('grand:BTC', { direction: 'down', moveRatio: MARKET_MOVE_THRESHOLDS.large });
-    expect(fake.oscillators.length - baselineOscillators).toBe(16);
-    expect(fake.bufferSources.length - baselineBuffers).toBe(3);
-
-    // A direction reversal is itself meaningful and gets the celebration after 0.55s.
-    (fake.context as unknown as { currentTime: number }).currentTime = 2;
-    engine.playTick('grand:BTC', { direction: 'up', moveRatio: MARKET_MOVE_THRESHOLDS.large });
-    expect(fake.oscillators.length - baselineOscillators).toBe(20);
-    expect(fake.bufferSources.length - baselineBuffers).toBe(4);
-
-    // Even pathological tick bursts stay inside the shared finite voice budget.
-    for (let index = 0; index < 100; index += 1) {
-      (fake.context as unknown as { currentTime: number }).currentTime = 3 + index * 0.2;
-      engine.playTick('grand:BTC', { direction: 'down', moveRatio: 0.0003 });
-    }
-    expect(fake.oscillators.length - baselineOscillators).toBeLessThanOrEqual(48);
-
+    // Up and down are two-note gestures plus bass; a repeated print is a
+    // quieter neutral resonator plus bass rather than silence.
+    expect(fake.oscillators.length - baselineOscillators).toBe(8);
+    expect(fake.bufferSources).toHaveLength(1); // The looping ambient atmosphere only.
     engine.dispose();
-    expect(fake.nodes.slice(1).every((node) => node.disconnect.mock.calls.length > 0)).toBe(true);
     vi.useRealTimers();
   });
 
-  it('gives exceptional downward moves one bounded warning voice and respects FX mute', async () => {
+  it('keeps market accents explicit: fanfare only up and siren only down', async () => {
+    vi.useFakeTimers();
+    const render = async (direction: 'up' | 'down', tier: 'large' | 'exceptional') => {
+      const fake = makeFakeContext();
+      const engine = new AudioEngine({ contextFactory: () => fake.context, storage: null, random: () => 0.5 });
+      engine.setMonumentSources([{
+        id: 'grand:BTC',
+        symbol: 'BTC',
+        position: { x: 0, y: 2, z: 0 },
+      }]);
+      await engine.unlock();
+      const oscillators = fake.oscillators.length;
+      const buffers = fake.bufferSources.length;
+      engine.playMarketAccent('grand:BTC', {
+        direction,
+        tier,
+        moveRatio: tier === 'exceptional'
+          ? MARKET_MOVE_THRESHOLDS.exceptional
+          : MARKET_MOVE_THRESHOLDS.large,
+      });
+      const result = {
+        oscillators: fake.oscillators.length - oscillators,
+        buffers: fake.bufferSources.length - buffers,
+      };
+      engine.dispose();
+      return result;
+    };
+
+    await expect(render('up', 'large')).resolves.toEqual({ oscillators: 4, buffers: 1 });
+    await expect(render('up', 'exceptional')).resolves.toEqual({ oscillators: 5, buffers: 1 });
+    await expect(render('down', 'large')).resolves.toEqual({ oscillators: 2, buffers: 0 });
+    await expect(render('down', 'exceptional')).resolves.toEqual({ oscillators: 4, buffers: 0 });
+    vi.useRealTimers();
+  });
+
+  it('reserves alert voices so footsteps and ordinary effects cannot suppress a siren', async () => {
     vi.useFakeTimers();
     const fake = makeFakeContext();
     const engine = new AudioEngine({ contextFactory: () => fake.context, storage: null, random: () => 0.5 });
@@ -712,50 +714,28 @@ describe('AudioEngine lifecycle', () => {
       position: { x: 0, y: 2, z: 0 },
     }]);
     await engine.unlock();
-    const baselineOscillators = fake.oscillators.length;
-    const baselineBuffers = fake.bufferSources.length;
 
-    engine.playTick('grand:ETH', { direction: 'down', moveRatio: 0.004 });
-    expect(fake.oscillators.length - baselineOscillators).toBe(4);
-    expect(fake.bufferSources.length - baselineBuffers).toBe(1);
-
-    engine.toggleSfxMuted(true);
-    (fake.context as unknown as { currentTime: number }).currentTime = 10;
-    engine.playTick('grand:ETH', { direction: 'down', moveRatio: 0.004 });
-    engine.playJump('double-jump');
-    expect(fake.oscillators.length - baselineOscillators).toBe(4);
-    expect(fake.bufferSources.length - baselineBuffers).toBe(1);
-
-    engine.dispose();
-    vi.useRealTimers();
-  });
-
-  it('retries a saturated exceptional accent without spending its cooldown', async () => {
-    vi.useFakeTimers();
-    const fake = makeFakeContext();
-    const engine = new AudioEngine({ contextFactory: () => fake.context, storage: null, random: () => 0.5 });
-    engine.setMonumentSources([{
-      id: 'grand:BTC',
-      symbol: 'BTC',
-      position: { x: 0, y: 2, z: 0 },
-    }]);
-    await engine.unlock();
-
-    for (let index = 0; index < 15; index += 1) engine.playJump('double-jump');
+    for (let index = 0; index < 30; index += 1) engine.playJump('double-jump');
     const scheduled = (engine as unknown as {
       scheduledSources: Set<AudioScheduledSourceNode>;
     }).scheduledSources;
-    expect(scheduled.size).toBeGreaterThanOrEqual(44);
+    expect(scheduled.size).toBe(36);
+    const baselineOscillators = fake.oscillators.length;
+    engine.playMarketAccent('grand:ETH', {
+      direction: 'down',
+      tier: 'exceptional',
+      moveRatio: MARKET_MOVE_THRESHOLDS.exceptional,
+    });
+    expect(fake.oscillators.length - baselineOscillators).toBe(4);
+    expect(scheduled.size).toBe(40);
 
-    engine.playTick('grand:BTC', { direction: 'up', moveRatio: 0.004 });
-    scheduled.clear();
-    (fake.context as unknown as { currentTime: number }).currentTime = 0.3;
-    const oscillatorCount = fake.oscillators.length;
-    const bufferCount = fake.bufferSources.length;
-    engine.playTick('grand:BTC', { direction: 'up', moveRatio: 0.004 });
-
-    expect(fake.oscillators.length - oscillatorCount).toBe(5);
-    expect(fake.bufferSources.length - bufferCount).toBe(1);
+    engine.toggleSfxMuted(true);
+    engine.playMarketAccent('grand:ETH', {
+      direction: 'down',
+      tier: 'exceptional',
+      moveRatio: MARKET_MOVE_THRESHOLDS.exceptional,
+    });
+    expect(fake.oscillators.length - baselineOscillators).toBe(4);
     engine.dispose();
     vi.useRealTimers();
   });

@@ -55,7 +55,11 @@ import {
 import { SparklePool } from './SparklePool';
 import { TickTrailPool } from './TickTrailPool';
 import { HorizonBadgePanel } from './HorizonBadgePanel';
-import { NewsPanel, type NewsInteraction } from './NewsPanel';
+import {
+  NewsPanel,
+  type NewsInteraction,
+  type NewsPanelSelection,
+} from './NewsPanel';
 
 export type { MonumentKind } from './medallions';
 
@@ -72,6 +76,11 @@ export interface MonumentOptions {
   scale?: number;
   fontUrl?: string;
   initialState?: AssetState;
+}
+
+export interface MonumentNewsOverlayState extends NewsPanelSelection {
+  readonly symbol: AssetSymbol;
+  readonly candleAnchor: Vector3;
 }
 
 const COLORS = {
@@ -407,6 +416,25 @@ export class Monument {
   selectNewsItem(itemId: string): boolean {
     if (!this.active || this.disposed) return false;
     return this.newsPanel?.select(itemId) ?? false;
+  }
+
+  dismissNewsItem(itemId?: string): boolean {
+    if (!this.active || this.disposed) return false;
+    return this.newsPanel?.dismiss(itemId) ?? false;
+  }
+
+  getNewsOverlayState(target = new Vector3()): MonumentNewsOverlayState | null {
+    if (!this.active || this.disposed || !this.newsPanel) return null;
+    const selection = this.newsPanel.getSelection();
+    const localAnchor = this.newsPanel.getSelectedCandleAnchor(target);
+    if (!selection || !localAnchor) return null;
+    this.chartGroup.localToWorld(localAnchor);
+    return {
+      symbol: this.symbol,
+      item: selection.item,
+      dismissed: selection.dismissed,
+      candleAnchor: localAnchor,
+    };
   }
 
   /** Returns a presentation-aware world point above the live chart marker. */

@@ -2,16 +2,22 @@ import * as THREE from 'three';
 import { Text } from 'troika-three-text';
 import { describe, expect, it, vi } from 'vitest';
 
-import { GRAND_MONUMENTS } from '../src/config';
+import { CHUNK_SIZE, GRAND_MONUMENTS, WORLD_SEED } from '../src/config';
+import { generateChunkLayout, TerrainSampler } from '../src/world';
 import {
-  WayfindingSystem,
+  ROAD_SIGN_PROP_CLEARANCE,
+  ROAD_SIGN_RADIAL_OFFSET,
+  ROAD_SIGN_SHOULDER_OFFSET,
   bearingBetween,
-  createWayfindingPostLayout,
+  createCanonicalRoadDescriptors,
+  createRoadSignDescriptors,
+  createRoadSignExclusionPoints,
+  directionForBearing,
   formatWayfindingDistance,
-  selectWayfindingDestinations,
-} from '../src/world/WayfindingSystem';
+} from '../src/world/RoadSignLayout';
+import { WayfindingSystem } from '../src/world/WayfindingSystem';
 
-describe('wayfinding layout helpers', () => {
+describe('canonical road-sign layout', () => {
   it('uses true -Z-forward world bearings in all cardinal directions', () => {
     const origin = { x: 0, z: 0 };
     expect(bearingBetween(origin, { x: 0, z: -10 })).toBeCloseTo(0, 8);
@@ -20,85 +26,167 @@ describe('wayfinding layout helpers', () => {
     expect(bearingBetween(origin, { x: -10, z: 0 })).toBeCloseTo(-Math.PI / 2, 8);
   });
 
-  it('shows all seven destinations at BTC and the nearest three elsewhere', () => {
-    const btc = GRAND_MONUMENTS.find((market) => market.symbol === 'BTC');
-    const eth = GRAND_MONUMENTS.find((market) => market.symbol === 'ETH');
-    expect(btc).toBeDefined();
-    expect(eth).toBeDefined();
-    if (!btc || !eth) return;
-
-    const fromBtc = selectWayfindingDestinations(btc);
-    expect(fromBtc).toHaveLength(7);
-    expect(new Set(fromBtc.map((destination) => destination.symbol)).size).toBe(7);
-
-    const fromEth = selectWayfindingDestinations(eth);
-    const independentlySorted = GRAND_MONUMENTS
-      .filter((candidate) => candidate.symbol !== 'ETH')
-      .sort((left, right) => (
-        Math.hypot(left.x - eth.x, left.z - eth.z)
-        - Math.hypot(right.x - eth.x, right.z - eth.z)
-      ))
-      .slice(0, 3)
-      .map((candidate) => candidate.symbol);
-    expect(fromEth.map((destination) => destination.symbol)).toEqual(independentlySorted);
-    expect(fromEth.every((destination) => destination.label.includes(' · '))).toBe(true);
-  });
-
-  it('rounds distances and places outer posts precisely on their BTC-facing edge', () => {
+  it('rounds friendly road distances to the nearest ten metres', () => {
     expect(formatWayfindingDistance(202.48)).toBe('200m');
     expect(formatWayfindingDistance(207.1)).toBe('210m');
+    expect(formatWayfindingDistance(Number.NaN)).toBe('0m');
+  });
 
-    const eth = GRAND_MONUMENTS.find((market) => market.symbol === 'ETH');
-    const btc = GRAND_MONUMENTS.find((market) => market.symbol === 'BTC');
-    expect(eth).toBeDefined();
-    expect(btc).toBeDefined();
-    if (!eth || !btc) return;
+  it('maps exactly fourteen directed signs onto the seven real BTC spokes', () => {
+    const roads = createCanonicalRoadDescriptors();
+    const signs = createRoadSignDescriptors();
+    expect(roads).toHaveLength(7);
+    expect(signs).toHaveLength(14);
+    expect(new Set(signs.map((sign) => sign.id)).size).toBe(14);
+    expect(new Set(signs.map((sign) => sign.roadId))).toEqual(
+      new Set(roads.map((road) => road.id)),
+    );
 
-    const layout = createWayfindingPostLayout(eth);
-    const postDirection = new THREE.Vector2(layout.x - eth.x, layout.z - eth.z).normalize();
-    const btcDirection = new THREE.Vector2(btc.x - eth.x, btc.z - eth.z).normalize();
-    expect(postDirection.dot(btcDirection)).toBeCloseTo(1, 8);
-    expect(Math.hypot(layout.x - eth.x, layout.z - eth.z)).toBeCloseTo(10.85, 8);
+    const outbound = signs.filter((sign) => sign.origin.symbol === 'BTC');
+    const returns = signs.filter((sign) => sign.destination.symbol === 'BTC');
+    expect(outbound).toHaveLength(7);
+    expect(returns).toHaveLength(7);
+    expect(new Set(outbound.map((sign) => sign.destination.symbol)).size).toBe(7);
+    expect(returns.every((sign) => sign.origin.symbol !== 'BTC')).toBe(true);
+    expect(signs.every((sign) => (
+      sign.label === `↑ ${sign.destination.symbol} · ${formatWayfindingDistance(sign.distance)}`
+    ))).toBe(true);
+  });
+
+  it('places each sign beside its sand road entrance with matched world shoulders', () => {
+    const signs = createRoadSignDescriptors();
+    for (const sign of signs) {
+      const direction = directionForBearing(sign.bearing);
+      const tangent = { x: -direction.z, z: direction.x };
+      const offsetX = sign.x - sign.origin.x;
+      const offsetZ = sign.z - sign.origin.z;
+      expect(offsetX * direction.x + offsetZ * direction.z).toBeCloseTo(
+        ROAD_SIGN_RADIAL_OFFSET,
+        8,
+      );
+      expect(Math.abs(offsetX * tangent.x + offsetZ * tangent.z)).toBeCloseTo(
+        ROAD_SIGN_SHOULDER_OFFSET,
+        8,
+      );
+      expect(Math.hypot(offsetX, offsetZ)).toBeCloseTo(
+        Math.hypot(ROAD_SIGN_RADIAL_OFFSET, ROAD_SIGN_SHOULDER_OFFSET),
+        8,
+      );
+    }
+
+    for (const roadId of new Set(signs.map((sign) => sign.roadId))) {
+      const [outbound, returning] = signs.filter((sign) => sign.roadId === roadId);
+      expect(outbound).toBeDefined();
+      expect(returning).toBeDefined();
+      if (!outbound || !returning) continue;
+      const btcToMarket = directionForBearing(outbound.bearing);
+      const worldTangent = { x: -btcToMarket.z, z: btcToMarket.x };
+      const outboundSide = (outbound.x - outbound.origin.x) * worldTangent.x
+        + (outbound.z - outbound.origin.z) * worldTangent.z;
+      const returnSide = (returning.x - returning.origin.x) * worldTangent.x
+        + (returning.z - returning.origin.z) * worldTangent.z;
+      expect(Math.sign(outboundSide)).toBe(Math.sign(returnSide));
+    }
+  });
+
+  it('deterministically separates the clustered BTC signs and exposes prop clearances', () => {
+    const first = createRoadSignDescriptors();
+    const second = createRoadSignDescriptors();
+    expect(second).toEqual(first);
+
+    const btcSigns = first.filter((sign) => sign.origin.symbol === 'BTC');
+    let minimumPairDistance = Number.POSITIVE_INFINITY;
+    for (let left = 0; left < btcSigns.length; left += 1) {
+      for (let right = left + 1; right < btcSigns.length; right += 1) {
+        const a = btcSigns[left];
+        const b = btcSigns[right];
+        if (!a || !b) continue;
+        minimumPairDistance = Math.min(minimumPairDistance, Math.hypot(a.x - b.x, a.z - b.z));
+      }
+    }
+    expect(minimumPairDistance).toBeGreaterThan(8.5);
+    expect(new Set(btcSigns.map((sign) => sign.shoulder))).toEqual(new Set([-1, 1]));
+
+    const exclusions = createRoadSignExclusionPoints();
+    expect(exclusions).toHaveLength(14);
+    expect(exclusions.every((point) => point.radius === ROAD_SIGN_PROP_CLEARANCE)).toBe(true);
+    expect(exclusions.map(({ x, z }) => ({ x, z }))).toEqual(
+      first.map(({ x, z }) => ({ x, z })),
+    );
+  });
+
+  it('supports the same graph for an explicitly supplied monument list', () => {
+    const cloned = GRAND_MONUMENTS.map((monument) => ({ ...monument }));
+    expect(createRoadSignDescriptors(cloned)).toEqual(createRoadSignDescriptors());
+  });
+
+  it('keeps generated lamps and benches outside every sign clearance', () => {
+    const terrain = new TerrainSampler({
+      seed: WORLD_SEED,
+      chunkSize: CHUNK_SIZE,
+      monuments: GRAND_MONUMENTS,
+    });
+    const exclusions = createRoadSignExclusionPoints();
+    const chunks = new Map(exclusions.map((point) => {
+      const chunkX = Math.floor((point.x + CHUNK_SIZE * 0.5) / CHUNK_SIZE);
+      const chunkZ = Math.floor((point.z + CHUNK_SIZE * 0.5) / CHUNK_SIZE);
+      return [`${chunkX}:${chunkZ}`, { chunkX, chunkZ }] as const;
+    }));
+
+    for (const { chunkX, chunkZ } of chunks.values()) {
+      for (let seedIndex = 0; seedIndex < 20; seedIndex += 1) {
+        const layout = generateChunkLayout({
+          seed: `${WORLD_SEED}:sign-clearance:${seedIndex}`,
+          chunkX,
+          chunkZ,
+          chunkSize: CHUNK_SIZE,
+          terrain,
+          monuments: GRAND_MONUMENTS,
+        });
+        for (const prop of layout.props.filter(({ kind }) => kind === 'lamp' || kind === 'bench')) {
+          expect(exclusions.every((point) => (
+            Math.hypot(prop.x - point.x, prop.z - point.z) >= point.radius
+          ))).toBe(true);
+        }
+      }
+    }
   });
 });
 
 describe('WayfindingSystem presentation', () => {
-  it('builds eight low-poly posts, 28 fixed blades, and two labels per blade', () => {
+  it('builds fourteen low, fixed, double-sided one-destination signs', () => {
     const parent = new THREE.Group();
     const system = new WayfindingSystem({
       parent,
       heightAt: () => 4.25,
     });
 
-    const posts = system.root.children.filter((child) => child.name.startsWith('wayfinding-'));
-    const bladeGroups: THREE.Object3D[] = [];
+    const signs = system.root.children.filter((child) => child.name.startsWith('road-sign-'));
     const boards: THREE.Mesh[] = [];
     const labels: Text[] = [];
+    const caps: THREE.Object3D[] = [];
     system.root.traverse((object) => {
-      if (object.name.includes('-sign-to-')) bladeGroups.push(object);
-      if (object.name.endsWith('-blade') && object instanceof THREE.Mesh) boards.push(object);
+      if (object.name.endsWith('-board') && object instanceof THREE.Mesh) boards.push(object);
+      if (object.name.endsWith('-cap')) caps.push(object);
       if (object instanceof Text) labels.push(object);
     });
 
     expect(parent.children).toContain(system.root);
-    expect(posts).toHaveLength(8);
-    expect(posts.every((post) => post.position.y === 4.25)).toBe(true);
-    expect(bladeGroups).toHaveLength(28);
-    expect(boards).toHaveLength(28);
-    expect(labels).toHaveLength(56);
+    expect(system.descriptors).toHaveLength(14);
+    expect(signs).toHaveLength(14);
+    expect(signs.every((sign) => sign.position.y === 4.25)).toBe(true);
+    expect(boards).toHaveLength(14);
+    expect(labels).toHaveLength(28);
+    expect(caps).toHaveLength(28);
     expect(new Set(boards.map((board) => board.geometry)).size).toBe(1);
     expect(new Set(boards.map((board) => board.material)).size).toBeLessThanOrEqual(4);
-
-    const ethLayout = createWayfindingPostLayout(
-      GRAND_MONUMENTS.find((market) => market.symbol === 'ETH')!,
+    expect(labels.every((label) => label.position.y < 2.2)).toBe(true);
+    expect(labels.map((label) => label.text)).toEqual(
+      system.descriptors.flatMap((descriptor) => [descriptor.label, descriptor.label]),
     );
-    const firstEthBlade = system.root.getObjectByName(
-      `ETH-sign-to-${ethLayout.destinations[0]?.symbol ?? ''}`,
-    );
-    expect(firstEthBlade?.rotation.y).toBeCloseTo(
-      Math.PI * 0.5 - (ethLayout.destinations[0]?.bearing ?? 0),
-      8,
-    );
+    signs.forEach((sign, index) => {
+      expect(sign.rotation.y).toBeCloseTo(-(system.descriptors[index]?.bearing ?? 0), 8);
+    });
 
     system.dispose();
   });

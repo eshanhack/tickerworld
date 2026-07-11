@@ -37,6 +37,24 @@ export interface FoxRigLegDebugPose {
   readonly hock: number;
   readonly paw: number;
   readonly contact: boolean;
+  readonly clearance: number;
+  readonly plantWeight: number;
+  readonly downwardImpact: number;
+}
+
+/** Same-frame state measured from the rendered paw after damping and planting. */
+export interface FoxRigRenderedPawState {
+  readonly leg: FoxLegKey;
+  /** Distance from the rendered paw sole to its sampled floor, in world units. */
+  readonly clearance: number;
+  /** How strongly the current gait pose is trying to plant this paw, in 0..1. */
+  readonly plantWeight: number;
+  /** World-space position of the rendered paw sole. */
+  readonly position: THREE.Vector3;
+  /** Contact latch using separate enter and exit clearances. */
+  readonly contact: boolean;
+  /** Downward sole speed measured on the contact frame, in world units/second. */
+  readonly downwardImpact: number;
 }
 
 export interface FoxRigDebugSnapshot {
@@ -72,6 +90,16 @@ interface LegRig {
   readonly restPaw: number;
 }
 
+interface MutableRenderedPawState {
+  readonly leg: FoxLegKey;
+  clearance: number;
+  plantWeight: number;
+  readonly position: THREE.Vector3;
+  contact: boolean;
+  downwardImpact: number;
+  previousClearance: number;
+}
+
 interface TailRig {
   readonly pivot: THREE.Group;
   readonly restPitch: number;
@@ -103,6 +131,23 @@ const BODY_REST = {
   neckPitch: -0.02,
   headPitch: -0.12,
 } as const;
+
+const PAW_CONTACT_ENTER_CLEARANCE = 0.06;
+const PAW_CONTACT_EXIT_CLEARANCE = 0.1;
+const PAW_CONTACT_ENTER_WEIGHT = 0.08;
+const PAW_CONTACT_EXIT_WEIGHT = 0.02;
+
+function makeRenderedPawState(leg: FoxLegKey): MutableRenderedPawState {
+  return {
+    leg,
+    clearance: Number.POSITIVE_INFINITY,
+    plantWeight: 0,
+    position: new THREE.Vector3(),
+    contact: false,
+    downwardImpact: 0,
+    previousClearance: Number.POSITIVE_INFINITY,
+  };
+}
 
 function clamp01(value: number): number {
   if (!Number.isFinite(value)) return 0;
@@ -179,6 +224,7 @@ export class FoxRig {
   public readonly head = new THREE.Group();
 
   private readonly legs: Readonly<Record<FoxLegKey, LegRig>>;
+  private readonly renderedPaws: Record<FoxLegKey, MutableRenderedPawState>;
   private readonly tail: TailRig[] = [];
   private readonly plantBounds = new THREE.Box3();
   private readonly plantFloor = new THREE.Vector3();
@@ -231,6 +277,12 @@ export class FoxRig {
       frontRight: this.buildLeg('frontRight', materials),
       hindLeft: this.buildLeg('hindLeft', materials),
       hindRight: this.buildLeg('hindRight', materials),
+    };
+    this.renderedPaws = {
+      frontLeft: makeRenderedPawState('frontLeft'),
+      frontRight: makeRenderedPawState('frontRight'),
+      hindLeft: makeRenderedPawState('hindLeft'),
+      hindRight: makeRenderedPawState('hindRight'),
     };
     this.buildTail(materials);
   }
@@ -375,12 +427,16 @@ export class FoxRig {
     const size = bounds.getSize(new THREE.Vector3());
     const legDebug = (key: FoxLegKey): FoxRigLegDebugPose => {
       const leg = this.legs[key];
+      const rendered = this.renderedPaws[key];
       return {
         hip: leg.hip.rotation.x,
         knee: leg.knee.rotation.x,
         hock: leg.hock.rotation.x,
         paw: leg.paw.rotation.x,
-        contact: sampleFoxLegMotion(key, this.lastPose.gaitPhase, this.lastPose.runBlend).contact,
+        contact: rendered.contact,
+        clearance: rendered.clearance,
+        plantWeight: rendered.plantWeight,
+        downwardImpact: rendered.downwardImpact,
       };
     };
 
@@ -408,6 +464,14 @@ export class FoxRig {
         },
       },
     };
+  }
+
+  /**
+   * Returns stable same-frame views of the four rendered paw contacts. Callers
+   * that retain a position beyond the frame should clone its Vector3.
+   */
+  public getRenderedPawStates(): Readonly<Record<FoxLegKey, FoxRigRenderedPawState>> {
+    return this.renderedPaws;
   }
 
   private createMaterials(): RigMaterials {
@@ -563,6 +627,11 @@ export class FoxRig {
         const leg = this.legs[key];
         leg.hip.position.y = damp(leg.hip.position.y, leg.restHipY, response, delta);
       }
+      this.root.updateMatrixWorld(true);
+      for (const key of FOX_LEG_KEYS) {
+        const legFloorY = this.plantFloor.y + finiteOr(groundOffsets?.[key]);
+        this.captureRenderedPaw(key, legFloorY, 0, false, this.lastPose.deltaSeconds);
+      }
       return;
     }
 
@@ -583,6 +652,8 @@ export class FoxRig {
             0.14,
           );
         }
+        this.root.updateMatrixWorld(true);
+        this.captureRenderedPaw(key, legFloorY, plantWeight, true, this.lastPose.deltaSeconds);
         continue;
       }
 
@@ -608,6 +679,44 @@ export class FoxRig {
         const plantResponse = localCorrection > 0 ? 60 : 38;
         leg.hip.position.y = damp(leg.hip.position.y, plantedTarget, plantResponse, delta);
       }
+      this.root.updateMatrixWorld(true);
+      this.captureRenderedPaw(key, legFloorY, plantWeight, true, this.lastPose.deltaSeconds);
+    }
+  }
+
+  private captureRenderedPaw(
+    key: FoxLegKey,
+    floorY: number,
+    plantWeight: number,
+    allowContact: boolean,
+    deltaSeconds: number,
+  ): void {
+    const state = this.renderedPaws[key];
+    const paw = this.legs[key].paw;
+    const pawBottom = this.plantBounds.setFromObject(paw).min.y;
+    paw.getWorldPosition(state.position);
+    state.position.y = pawBottom;
+    const clearance = pawBottom - floorY;
+    state.downwardImpact = Number.isFinite(state.previousClearance) && deltaSeconds > 0
+      ? Math.max(0, (state.previousClearance - clearance) / deltaSeconds)
+      : 0;
+    state.previousClearance = clearance;
+    state.clearance = clearance;
+    state.plantWeight = THREE.MathUtils.clamp(plantWeight, 0, 1);
+
+    if (!allowContact) {
+      state.contact = false;
+      return;
+    }
+    if (state.contact) {
+      if (clearance >= PAW_CONTACT_EXIT_CLEARANCE || state.plantWeight <= PAW_CONTACT_EXIT_WEIGHT) {
+        state.contact = false;
+      }
+    } else if (
+      clearance <= PAW_CONTACT_ENTER_CLEARANCE
+      && state.plantWeight >= PAW_CONTACT_ENTER_WEIGHT
+    ) {
+      state.contact = true;
     }
   }
 

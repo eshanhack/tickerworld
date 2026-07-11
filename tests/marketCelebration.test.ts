@@ -29,6 +29,20 @@ describe('MarketCelebrationGate', () => {
     expect(gate.evaluate('SOL', 'up', 0.00042, 3.7)).toMatchObject({ tier: 'large' });
   });
 
+  it('observes distant calm updates without consuming a distant large move', () => {
+    const gate = new MarketCelebrationGate();
+    expect(gate.evaluate('LINK', 'up', 0.0005, 5)).not.toBeNull();
+    gate.observe('LINK', 0.00001);
+    expect(gate.evaluate('LINK', 'up', 0.00052, 5.7)).not.toBeNull();
+
+    const fresh = new MarketCelebrationGate();
+    fresh.observe('AVAX', 0.0012);
+    expect(fresh.evaluate('AVAX', 'down', 0.0012, 8)).toMatchObject({
+      direction: 'down',
+      tier: 'exceptional',
+    });
+  });
+
   it('uses a short global guard so simultaneous feeds do not create a flash wall', () => {
     const gate = new MarketCelebrationGate();
     expect(gate.evaluate('BTC', 'up', 0.0005, 20)).not.toBeNull();

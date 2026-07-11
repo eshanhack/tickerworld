@@ -56,6 +56,7 @@ function state(
     previousPrice: price,
     direction,
     mode: 'live',
+    updateKind: 'trade',
     updatedAt: Date.now(),
     presentationTick,
     horizonChanges: createEmptyHorizonChanges(),

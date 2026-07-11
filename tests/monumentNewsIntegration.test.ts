@@ -91,6 +91,7 @@ function state(candles: readonly Candle[], presentationTick = 1): AssetState {
     mode: 'live',
     updatedAt: Date.now(),
     presentationTick,
+    updateKind: 'trade',
     horizonChanges: createEmptyHorizonChanges(),
   };
 }
@@ -160,15 +161,16 @@ describe('grand monument news integration', () => {
     const shuntedEndX = link.geometry.getAttribute('position').getX(1);
     expect(shuntedEndX).toBeLessThan(firstEndX);
 
-    const cardHitbox = grand.root.getObjectByName('news-card-interaction') as Mesh;
-    const disposeCardGeometry = vi.spyOn(cardHitbox.geometry, 'dispose');
+    expect(grand.root.getObjectByName('news-card-interaction')).toBeUndefined();
+    const newestPin = grand.root.getObjectByName('news-pin-hit-newest') as Mesh;
+    const disposePinGeometry = vi.spyOn(newestPin.geometry, 'dispose');
     grand.dispose();
     grand.dispose();
     echo.dispose();
-    expect(disposeCardGeometry).toHaveBeenCalledTimes(1);
+    expect(disposePinGeometry).toHaveBeenCalledTimes(1);
   });
 
-  it('selects older pins, opens only safe X cards with noopener, and rejects orbit drags', () => {
+  it('selects older pins, exposes a candle anchor, minimizes, reopens, and rejects orbit drags', () => {
     const minute = Math.floor(Date.now() / 60_000) * 60_000;
     const candles = Array.from({ length: 30 }, (_, index) => (
       candle(minute - (29 - index) * 60_000, 100 + index, index < 29)
@@ -189,12 +191,10 @@ describe('grand monument news integration', () => {
     const parent = new Group();
     const camera = createCamera();
     const surface = new FakeInteractionSurface();
-    const openWindow = vi.fn();
     const system = new MonumentSystem({
       parent,
       camera,
       domElement: surface as unknown as HTMLElement,
-      openWindow,
     });
     const grand = system.add({ symbol: 'BTC', kind: 'grand' });
     system.updateAsset(state(candles));
@@ -203,33 +203,33 @@ describe('grand monument news integration', () => {
     parent.updateMatrixWorld(true);
     camera.updateMatrixWorld(true);
 
-    const entityHitbox = grand.root.getObjectByName('news-entity-url') as Mesh;
-    expect(grand.resolveNewsInteraction(entityHitbox)?.url).toBe('https://t.co/abc123');
-    const entityPoint = screenPoint(entityHitbox, camera);
-    expect(system.activateNewsAt(entityPoint.x, entityPoint.y)).toBe(true);
-    expect(openWindow).toHaveBeenCalledWith('https://t.co/abc123', '_blank', 'noopener,noreferrer');
-    openWindow.mockClear();
-
     const olderPin = grand.root.getObjectByName('news-pin-hit-older') as Mesh;
     const olderPoint = screenPoint(olderPin, camera);
     expect(system.activateNewsAt(olderPoint.x, olderPoint.y)).toBe(true);
-    const cardHitbox = grand.root.getObjectByName('news-card-interaction') as Mesh;
-    expect(grand.resolveNewsInteraction(cardHitbox)?.url).toBe(olderUrl);
+    const playerPoint = new Vector3(0, 0, 0);
+    const selected = system.getNearestNewsOverlay(playerPoint);
+    expect(selected?.item.id).toBe('older');
+    expect(selected?.dismissed).toBe(false);
+    expect(selected?.candleAnchor).toBeInstanceOf(Vector3);
 
-    const cardPoint = screenPoint(cardHitbox, camera);
-    surface.dispatch('pointerdown', { clientX: cardPoint.x, clientY: cardPoint.y, timeStamp: 100 });
-    surface.dispatch('pointermove', { clientX: cardPoint.x + 30, clientY: cardPoint.y, timeStamp: 150 });
-    surface.dispatch('pointerup', { clientX: cardPoint.x, clientY: cardPoint.y, timeStamp: 200 });
-    expect(openWindow).not.toHaveBeenCalled();
+    expect(system.dismissNewsOverlay('older')).toBe(true);
+    expect(system.getNearestNewsOverlay(playerPoint)?.dismissed).toBe(true);
+    expect(system.activateNewsAt(olderPoint.x, olderPoint.y)).toBe(true);
+    expect(system.getNearestNewsOverlay(playerPoint)?.dismissed).toBe(false);
 
-    surface.dispatch('pointerdown', { clientX: cardPoint.x, clientY: cardPoint.y, timeStamp: 300 });
-    surface.dispatch('pointerup', { clientX: cardPoint.x, clientY: cardPoint.y, timeStamp: 340 });
-    expect(openWindow).toHaveBeenCalledWith(olderUrl, '_blank', 'noopener,noreferrer');
+    const newestPin = grand.root.getObjectByName('news-pin-hit-newest') as Mesh;
+    const newestPoint = screenPoint(newestPin, camera);
+    surface.dispatch('pointerdown', { clientX: newestPoint.x, clientY: newestPoint.y, timeStamp: 100 });
+    surface.dispatch('pointermove', { clientX: newestPoint.x + 30, clientY: newestPoint.y, timeStamp: 150 });
+    surface.dispatch('pointerup', { clientX: newestPoint.x, clientY: newestPoint.y, timeStamp: 200 });
+    expect(system.getNearestNewsOverlay(playerPoint)?.item.id).toBe('older');
+
     expect(isSafeNewsPermalink('javascript:alert(1)')).toBe(false);
     expect(isSafeNewsPermalink('https://example.com/not-x')).toBe(false);
     expect(isSafeNewsPermalink('https://t.co/abc123')).toBe(true);
     expect(isSafeNewsPermalink('https://evil.t.co.example/abc123')).toBe(false);
     expect(isSafeNewsPermalink(newestUrl)).toBe(true);
+    expect(isSafeNewsPermalink(olderUrl)).toBe(true);
 
     expect(surface.listenerCount()).toBe(5);
     system.dispose();

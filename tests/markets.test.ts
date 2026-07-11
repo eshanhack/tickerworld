@@ -117,7 +117,7 @@ describe('market candle helpers', () => {
     const price = candles.at(-1)!.close;
     const state: AssetState = {
       symbol: 'BTC', instrument: 'BTC', provider: 'simulation', candles, price, previousPrice: price,
-      direction: 'flat', mode: 'simulated', updatedAt: 1_800_000, presentationTick: 0,
+      direction: 'flat', mode: 'simulated', updateKind: 'simulation', updatedAt: 1_800_000, presentationTick: 0,
       horizonChanges: createEmptyHorizonChanges(),
     };
     const first = stepSimulation(state, mulberry32(42), 1_800_400);
@@ -125,6 +125,7 @@ describe('market candle helpers', () => {
     expect(first.price).toBe(second.price);
     expect(first.price).not.toBeNull();
     expect(first.candles.at(-1)?.high).toBeGreaterThanOrEqual(first.price!);
+    expect(first.updateKind).toBe('simulation');
   });
 
   it('keeps a combined socket healthy when any stream is active', () => {
@@ -157,6 +158,7 @@ describe('market candle helpers', () => {
       price: null,
       previousPrice: null,
       mode: 'connecting',
+      updateKind: 'snapshot',
     });
   });
 
@@ -183,6 +185,7 @@ describe('market candle helpers', () => {
       previousPrice: 64_120,
       direction: 'up',
       mode: 'live',
+      updateKind: 'trade',
       updatedAt: 65_000,
       presentationTick: 7,
       horizonChanges: createEmptyHorizonChanges(),
@@ -192,12 +195,68 @@ describe('market candle helpers', () => {
 
     expect(feed.getState('BTC')).toMatchObject({
       mode: 'reconnecting',
+      updateKind: 'snapshot',
       provider: 'hyperliquid',
       price: 64_123,
       previousPrice: 64_120,
       candles: [candle],
       presentationTick: 7,
     });
+  });
+
+  it('labels coalesced trades and authoritative candles at their source', () => {
+    const feed = new HyperliquidMarketFeed();
+    const candle: Candle = {
+      openTime: 60_000,
+      open: 100,
+      high: 101,
+      low: 99,
+      close: 100,
+      closed: false,
+    };
+    const internals = feed as unknown as {
+      states: Map<string, AssetState>;
+      minuteHistories: Map<string, Candle[]>;
+      presentTrade(symbol: 'BTC', trade: { price: number; time: number }, presentedAt: number): void;
+      handleCandlePayload(payload: unknown): void;
+    };
+    internals.states.set('BTC', {
+      symbol: 'BTC',
+      instrument: 'BTC',
+      provider: 'hyperliquid',
+      candles: [candle],
+      price: 100,
+      previousPrice: 100,
+      direction: 'flat',
+      mode: 'live',
+      updateKind: 'snapshot',
+      updatedAt: 60_000,
+      presentationTick: 0,
+      horizonChanges: createEmptyHorizonChanges(),
+    });
+    internals.minuteHistories.set('BTC', [candle]);
+
+    internals.presentTrade('BTC', { price: 100, time: 65_000 }, 65_400);
+    expect(feed.getState('BTC')).toMatchObject({
+      updateKind: 'trade',
+      direction: 'flat',
+      presentationTick: 1,
+    });
+
+    internals.handleCandlePayload({
+      s: 'BTC',
+      t: 120_000,
+      o: '100',
+      h: '102',
+      l: '99',
+      c: '101',
+    });
+    expect(feed.getState('BTC')).toMatchObject({
+      updateKind: 'candle',
+      price: 101,
+      presentationTick: 2,
+    });
+    feed.dispose();
   });
 
   it('derives signed direction ratios for every requested timeframe', () => {

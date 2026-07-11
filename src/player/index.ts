@@ -12,7 +12,7 @@ export type {
   SurfaceSampler,
 } from './FoxPlayer';
 export { FoxRig, FOX_RIG_PROPORTIONS } from './FoxRig';
-export type { FoxRigDebugSnapshot, FoxRigPoseInput } from './FoxRig';
+export type { FoxRigDebugSnapshot, FoxRigPoseInput, FoxRigRenderedPawState } from './FoxRig';
 export {
   FOX_LEG_KEYS,
   isFoxLegInContact,

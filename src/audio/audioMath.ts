@@ -65,7 +65,10 @@ export function normaliseMoveIntensity(moveRatio: number): number {
 export function marketMoveSeverity(moveRatio: number): number {
   if (!Number.isFinite(moveRatio)) return 0;
   const magnitude = Math.abs(moveRatio);
-  return clampUnit(Math.log1p(magnitude / 0.000025) / Math.log1p(0.003 / 0.000025));
+  return clampUnit(
+    Math.log1p(magnitude / 0.000025)
+    / Math.log1p(MARKET_MOVE_THRESHOLDS.exceptional / 0.000025),
+  );
 }
 
 /** Classifies an absolute or signed current one-minute return. */
@@ -83,16 +86,12 @@ export function classifyMarketMove(moveRatio: number): MarketMoveClass {
  */
 export function marketMovePeakGain(moveRatio: number): number {
   const severity = marketMoveSeverity(moveRatio);
-  switch (classifyMarketMove(moveRatio)) {
-    case 'exceptional':
-      return 0.12 + severity * 0.04;
-    case 'large':
-      return 0.085 + severity * 0.035;
-    case 'medium':
-      return 0.036 + severity * 0.024;
-    case 'small':
-      return 0.016 + severity * 0.022;
-  }
+  return Math.min(0.12, 0.035 + severity * 0.085);
+}
+
+/** A larger move adds a lower, weightier chart heartbeat without harsh sub-bass. */
+export function marketBassFrequency(moveRatio: number): number {
+  return 180 - marketMoveSeverity(moveRatio) * 85;
 }
 
 /** Keeps both notes of a market gesture inside the calm midrange. */

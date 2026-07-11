@@ -318,6 +318,7 @@ export class HyperliquidMarketFeed implements MarketFeed {
         previousPrice: price,
         direction: 'flat',
         mode: FORCE_SIMULATION ? 'simulated' : 'connecting',
+        updateKind: FORCE_SIMULATION ? 'simulation' : 'snapshot',
         updatedAt: now,
         presentationTick: 0,
         horizonChanges: FORCE_SIMULATION
@@ -446,6 +447,7 @@ export class HyperliquidMarketFeed implements MarketFeed {
           previousPrice: price,
           direction: 'flat',
           mode: initial ? 'connecting' : 'reconnecting',
+          updateKind: 'snapshot',
           updatedAt: now,
           horizonChanges: computeHorizonChanges(
             price,
@@ -608,6 +610,7 @@ export class HyperliquidMarketFeed implements MarketFeed {
       price: trade.price,
       direction,
       mode: 'live',
+      updateKind: 'trade',
       updatedAt: trade.time,
       presentationTick: previous.presentationTick + 1,
       horizonChanges: computeHorizonChanges(
@@ -659,6 +662,7 @@ export class HyperliquidMarketFeed implements MarketFeed {
         price: nextPrice,
         direction,
         mode: 'live',
+        updateKind: 'candle',
         updatedAt: Date.now(),
         presentationTick: rolled ? previous.presentationTick + 1 : previous.presentationTick,
         horizonChanges: computeHorizonChanges(
@@ -727,7 +731,7 @@ export class HyperliquidMarketFeed implements MarketFeed {
     for (const symbol of ASSET_SYMBOLS) {
       const previous = this.getState(symbol);
       if (previous.mode === mode) continue;
-      const state: AssetState = { ...previous, mode };
+      const state: AssetState = { ...previous, mode, updateKind: 'snapshot' };
       this.states.set(symbol, state);
       this.emit(state);
     }

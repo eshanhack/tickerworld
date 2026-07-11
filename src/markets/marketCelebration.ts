@@ -39,10 +39,8 @@ export class MarketCelebrationGate {
     nowSeconds: number,
   ): MarketCelebrationEvent | null {
     const magnitude = Math.abs(Number.isFinite(moveRatio) ? moveRatio : 0);
+    this.observe(symbol, magnitude);
     const previous = this.accents.get(symbol);
-    if (magnitude < REARM_RATIO && previous && !previous.armed) {
-      this.accents.set(symbol, { ...previous, armed: true });
-    }
 
     const moveClass = classifyMarketMove(magnitude);
     if (
@@ -83,6 +81,15 @@ export class MarketCelebrationGate {
     this.accents.set(symbol, { ...event, at: nowSeconds, armed: false });
     this.lastGlobalAccentAt = nowSeconds;
     return event;
+  }
+
+  /** Rearms a prior alert during calm updates without consuming far-away large moves. */
+  observe(symbol: AssetSymbol, moveRatio: number): void {
+    const magnitude = Math.abs(Number.isFinite(moveRatio) ? moveRatio : 0);
+    const previous = this.accents.get(symbol);
+    if (magnitude < REARM_RATIO && previous && !previous.armed) {
+      this.accents.set(symbol, { ...previous, armed: true });
+    }
   }
 
   clear(): void {

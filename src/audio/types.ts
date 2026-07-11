@@ -67,16 +67,29 @@ export interface AudioEnvironment {
 
 export type AudioStateListener = (state: AudioEngineState) => void;
 
-export interface TickSoundOptions {
+export interface TradePulseSoundOptions {
   readonly direction: TickDirection;
   /** Signed or absolute current one-minute return. For example, 0.001 means 0.1%. */
   readonly moveRatio?: number;
+}
+
+/** @deprecated Use TradePulseSoundOptions. */
+export type TickSoundOptions = TradePulseSoundOptions;
+
+export type MarketAccentTier = 'large' | 'exceptional';
+
+export interface MarketAccentSoundOptions {
+  readonly direction: 'up' | 'down';
+  readonly tier: MarketAccentTier;
+  readonly moveRatio: number;
 }
 
 export interface FootstepSoundOptions {
   readonly surface: SurfaceKind;
   readonly sprinting?: boolean;
   readonly side?: 'left' | 'right';
+  readonly leg?: 'frontLeft' | 'frontRight' | 'hindLeft' | 'hindRight';
+  readonly intensity?: number;
 }
 
 export type JumpSoundKind = 'jump' | 'double-jump';

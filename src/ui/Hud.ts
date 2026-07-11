@@ -1,5 +1,9 @@
 import type { AssetSymbol, FeedMode } from '../types';
 import { formatPrice } from '../monuments';
+import {
+  NewsOverlayView,
+  type NewsOverlayViewState,
+} from './NewsOverlayView';
 
 export interface HudCallbacks {
   onEnter: () => void | Promise<void>;
@@ -14,6 +18,7 @@ export interface HudCallbacks {
   onVirtualInput: (x: number, forward: number, sprint: boolean) => void;
   onJump: () => void;
   onGlideChange: (held: boolean) => void;
+  onNewsDismiss?: (itemId: string) => void;
 }
 
 interface NearbyView {
@@ -47,6 +52,7 @@ export class Hud {
   private readonly joystick: HTMLElement;
   private readonly joystickKnob: HTMLElement;
   private readonly jumpButton: HTMLButtonElement;
+  private readonly newsOverlay: NewsOverlayView;
   private readonly activeJumpPointers = new Set<number>();
   private joystickPointer: number | null = null;
   private joystickCenter = { x: 0, y: 0 };
@@ -145,6 +151,9 @@ export class Hud {
     this.joystick = this.required('[data-joystick]');
     this.joystickKnob = this.required('[data-joystick-knob]');
     this.jumpButton = this.required<HTMLButtonElement>('[data-jump]');
+    this.newsOverlay = new NewsOverlayView(this.root, {
+      onDismiss: (itemId) => this.callbacks.onNewsDismiss?.(itemId),
+    });
 
     this.enterButton.addEventListener('click', this.enter);
     this.musicMuteButton.addEventListener('click', this.musicMute);
@@ -266,6 +275,10 @@ export class Hud {
     if (text !== null) this.debug.textContent = text;
   }
 
+  setNewsOverlay(state: NewsOverlayViewState | null): void {
+    this.newsOverlay.setState(state);
+  }
+
   dispose(): void {
     this.enterButton.removeEventListener('click', this.enter);
     this.musicMuteButton.removeEventListener('click', this.musicMute);
@@ -285,6 +298,7 @@ export class Hud {
     document.removeEventListener('keydown', this.keydown);
     this.releaseAllJumps();
     if (this.pricePulseTimer !== undefined) window.clearTimeout(this.pricePulseTimer);
+    this.newsOverlay.dispose();
     this.root.remove();
   }
 

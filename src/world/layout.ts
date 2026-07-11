@@ -1,6 +1,7 @@
 import { ASSET_SYMBOLS } from '../types';
 import type { AssetSymbol, ChunkDescriptor } from '../types';
 import { createRandom, hashSeed } from './random';
+import { createRoadSignExclusionPoints } from './RoadSignLayout';
 import type { MonumentCoordinate, PondDescriptor } from './terrain';
 import { TerrainSampler } from './terrain';
 
@@ -175,6 +176,7 @@ export function generateChunkLayout(options: ChunkLayoutOptions): ChunkLayout {
     echoSuppressionRadius,
   );
   const half = chunkSize * 0.5;
+  const roadSignExclusions = createRoadSignExclusionPoints(monuments);
 
   const candidateIsClear = (x: number, z: number, spacing: number): boolean => {
     if (echo && Math.hypot(x - echo.x, z - echo.z) < 22) {
@@ -224,6 +226,7 @@ export function generateChunkLayout(options: ChunkLayoutOptions): ChunkLayout {
       const surface = terrain.surfaceAt(x, z);
       if (surface === 'grass'
         || tooCloseTo(x, z, monuments, 11)
+        || roadSignExclusions.some((point) => Math.hypot(x - point.x, z - point.z) < point.radius)
         || !candidateIsClear(x, z, kind === 'lamp' ? 7 : 5)) {
         continue;
       }

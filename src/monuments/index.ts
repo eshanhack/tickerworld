@@ -1,4 +1,10 @@
-export { Monument, type MonumentKind, type MonumentOptions, type MonumentPosition } from './Monument';
+export {
+  Monument,
+  type MonumentKind,
+  type MonumentNewsOverlayState,
+  type MonumentOptions,
+  type MonumentPosition,
+} from './Monument';
 export { HorizonBadgePanel } from './HorizonBadgePanel';
 export {
   MonumentSystem,
@@ -6,6 +12,7 @@ export {
   type MonumentGroundSample,
   type MonumentSystemOptions,
   type NearestMonument,
+  type NearestNewsOverlay,
   type NewsWindowOpener,
 } from './MonumentSystem';
 export {
@@ -14,6 +21,7 @@ export {
   findNewsCandleLayout,
   newsMinute,
   type NewsInteraction,
+  type NewsPanelSelection,
 } from './NewsPanel';
 export {
   MONUMENT_CANDLE_COUNT,

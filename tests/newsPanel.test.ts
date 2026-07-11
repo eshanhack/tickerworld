@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { NewsItem } from '../src/news';
-import { activeNewsItems, findNewsCandleLayout, newsMinute } from '../src/monuments/NewsPanel';
+import {
+  NewsPanel,
+  activeNewsItems,
+  findNewsCandleLayout,
+  newsMinute,
+} from '../src/monuments/NewsPanel';
 import type { CandleLayout } from '../src/monuments/chartMath';
 
 function item(id: string, createdAt: number, expiresAt = createdAt + 600_000): NewsItem {
@@ -73,5 +78,46 @@ describe('news chart presentation helpers', () => {
     const active = activeNewsItems(items, now, 5);
     expect(active).toHaveLength(5);
     expect(active.map(({ id }) => id)).toEqual(['item-0', 'item-1', 'item-2', 'item-4', 'item-5']);
+  });
+
+  it('keeps dismissal session-only while pin selection and a new post reopen it', () => {
+    const now = Math.floor(Date.now() / 60_000) * 60_000 + 30_000;
+    const first = item('first', now - 70_000);
+    const second = item('second', now - 5_000);
+    const panel = new NewsPanel();
+
+    panel.setItems([first], now);
+    panel.update([layout(newsMinute(first.createdAt), 1)], now);
+    expect(panel.getSelection()?.item.id).toBe('first');
+    expect(panel.dismiss('first')).toBe(true);
+    expect(panel.getSelection()?.dismissed).toBe(true);
+
+    expect(panel.select('first')).toBe(true);
+    expect(panel.getSelection()?.dismissed).toBe(false);
+    panel.dismiss('first');
+    panel.setItems([second, first], now);
+    panel.update([
+      layout(newsMinute(first.createdAt), 1),
+      layout(newsMinute(second.createdAt), 2),
+    ], now);
+    expect(panel.getSelection()?.item.id).toBe('second');
+    expect(panel.getSelection()?.dismissed).toBe(false);
+    expect(panel.getSelectedCandleAnchor()?.x).toBe(2);
+    panel.dispose();
+  });
+
+  it('stays minimized when a dismissed older selection expires', () => {
+    const now = Math.floor(Date.now() / 60_000) * 60_000 + 30_000;
+    const older = item('older', now - 120_000, now + 500);
+    const newer = item('newer', now - 20_000, now + 600_000);
+    const panel = new NewsPanel();
+    panel.setItems([newer, older], now);
+    expect(panel.select('older')).toBe(true);
+    expect(panel.dismiss('older')).toBe(true);
+
+    panel.setItems([newer, older], now + 1_000);
+    expect(panel.getSelection()?.item.id).toBe('newer');
+    expect(panel.getSelection()?.dismissed).toBe(true);
+    panel.dispose();
   });
 });

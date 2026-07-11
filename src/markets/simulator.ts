@@ -160,6 +160,7 @@ export function stepSimulation(
     price: nextPrice,
     direction: nextPrice > currentPrice ? 'up' : nextPrice < currentPrice ? 'down' : 'flat',
     mode: 'simulated',
+    updateKind: 'simulation',
     updatedAt: now,
     presentationTick: state.presentationTick + 1,
   };

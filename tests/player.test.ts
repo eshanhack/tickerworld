@@ -91,7 +91,8 @@ describe('FoxPlayer', () => {
     expect(Math.max(...beatIntervals)).toBeLessThanOrEqual(24);
     expect(footsteps.every((event) => event.surface === 'stone')).toBe(true);
     expect(footsteps.every((event) => !event.sprinting)).toBe(true);
-    expect(footsteps.every((event) => Math.abs(event.position.y - 2) < 0.005)).toBe(true);
+    expect(footsteps.every((event) => event.position.y >= 2.01 && event.position.y <= 2.065)).toBe(true);
+    expect(footsteps.every((event) => event.leg.endsWith(event.side === 'left' ? 'Left' : 'Right'))).toBe(true);
     expect(footsteps.every((event) => event.intensity >= 0.2 && event.intensity <= 1)).toBe(true);
     fox.dispose();
   });
@@ -118,24 +119,81 @@ describe('FoxPlayer', () => {
     sprinter.dispose();
   });
 
-  it('merges the staggered sprint front contacts into one audible lope beat', () => {
+  it('emits every staggered sprint paw instead of suppressing the clustered strike', () => {
     const input = new PlayerInputController({ target: null, document: null });
     const fox = new FoxPlayer({ input });
     const footfallFrames: number[] = [];
+    const legs = new Set<string>();
+    const clusteredIntensities: number[] = [];
     input.setVirtualInput(0, 1, true);
 
     for (let frame = 0; frame < 360; frame += 1) {
-      fox.update(1 / 60, 0, () => 0, () => 'grass', () => {
-        if (frame >= 150) footfallFrames.push(frame);
+      fox.update(1 / 60, 0, () => 0, () => 'grass', (event) => {
+        if (frame >= 150) {
+          footfallFrames.push(frame);
+          legs.add(event.leg);
+          clusteredIntensities.push(event.intensity);
+        }
       });
     }
 
     const intervals = footfallFrames.slice(1).map((frame, index) => frame - footfallFrames[index]!);
-    expect(footfallFrames.length).toBeGreaterThan(8);
-    // The two visually staggered front paws are only ~22ms apart at full lope;
-    // they must read as one landing rather than an audible double-tap.
-    expect(Math.min(...intervals)).toBeGreaterThanOrEqual(5);
+    expect(footfallFrames.length).toBeGreaterThan(14);
+    expect([...legs].sort()).toEqual(['frontLeft', 'frontRight', 'hindLeft', 'hindRight']);
+    // The visible paired strike remains two events at full lope.
+    expect(Math.min(...intervals)).toBeLessThanOrEqual(3);
     expect(Math.max(...intervals)).toBeLessThanOrEqual(24);
+    expect(Math.min(...clusteredIntensities)).toBeLessThan(Math.max(...clusteredIntensities));
+    fox.dispose();
+  });
+
+  it.each([30, 60])('fires footsteps on the same rendered contact frame at %ifps', (fps) => {
+    const input = new PlayerInputController({ target: null, document: null });
+    const fox = new FoxPlayer({ input });
+    const contacts: Array<{ contact: boolean; clearance: number; plantWeight: number }> = [];
+    const legs = new Set<string>();
+    input.setVirtualInput(0.24, 1, true);
+
+    for (let frame = 0; frame < fps * 6; frame += 1) {
+      fox.update(1 / fps, 0, () => 0, () => 'grass', (event) => {
+        const paw = fox.getMotionDebugSnapshot().rig.pose.legs[event.leg];
+        contacts.push(paw);
+        legs.add(event.leg);
+      });
+    }
+
+    expect(contacts.length).toBeGreaterThan(14);
+    expect([...legs].sort()).toEqual(['frontLeft', 'frontRight', 'hindLeft', 'hindRight']);
+    expect(contacts.every((paw) => paw.contact)).toBe(true);
+    expect(contacts.every((paw) => paw.clearance <= 0.061)).toBe(true);
+    expect(contacts.every((paw) => paw.plantWeight >= 0.08)).toBe(true);
+    fox.dispose();
+  });
+
+  it('suppresses cadence through anticipation, flight, and landing recovery', () => {
+    const input = new PlayerInputController({ target: null, document: null });
+    const fox = new FoxPlayer({ input });
+    const footfallStates: string[] = [];
+    const actionFrames: number[] = [];
+    input.setVirtualInput(0, 1, true);
+
+    for (let frame = 0; frame < 270; frame += 1) {
+      if (frame === 70) fox.requestJump();
+      fox.update(
+        1 / 60,
+        0,
+        () => 0,
+        () => 'grass',
+        () => footfallStates.push(fox.getMotionDebugSnapshot().locomotionState),
+        (event) => {
+          if (event.type === 'land') actionFrames.push(frame);
+        },
+      );
+    }
+
+    expect(actionFrames).toHaveLength(1);
+    expect(footfallStates.length).toBeGreaterThan(8);
+    expect(footfallStates.every((state) => state === 'walk' || state === 'run')).toBe(true);
     fox.dispose();
   });
 

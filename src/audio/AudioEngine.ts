@@ -16,7 +16,7 @@ import {
   classifyMarketMove,
   clampUnit,
   MARKET_AUDIO_MAX_RADIUS,
-  MARKET_MOVE_THRESHOLDS,
+  marketBassFrequency,
   marketGestureFrequencies,
   marketMovePeakGain,
   marketMoveSeverity,
@@ -32,8 +32,9 @@ import type {
   AudioStateListener,
   FootstepSoundOptions,
   JumpSoundKind,
+  MarketAccentSoundOptions,
   MonumentAudioSource,
-  TickSoundOptions,
+  TradePulseSoundOptions,
 } from './types';
 
 const VOLUME_KEY = 'tickerworld:audio:volume';
@@ -45,15 +46,9 @@ const SFX_MUTED_KEY = 'tickerworld:audio:sfx-muted';
 const SFX_FULL_DEFAULT_MIGRATION_KEY = 'tickerworld:audio:sfx-full-default-v1';
 const MAX_MONUMENT_SOURCES = 24;
 const MAX_SCHEDULED_SOURCES = 48;
+const MARKET_ALERT_RESERVED_VOICES = 12;
 const DEFAULT_VOLUME = 0.72;
 const DEFAULT_SFX_VOLUME = 1;
-const MARKET_TICK_COOLDOWN_SECONDS = 0.18;
-const MARKET_ACCENT_COOLDOWN_SECONDS = 1.8;
-const MARKET_ACCENT_GLOBAL_COOLDOWN_SECONDS = 0.22;
-const MARKET_ACCENT_UPGRADE_COOLDOWN_SECONDS = 0.38;
-const MARKET_ACCENT_REARM_COOLDOWN_SECONDS = 0.65;
-const MARKET_ACCENT_DIRECTION_CHANGE_COOLDOWN_SECONDS = 0.55;
-const MARKET_ACCENT_REARM_RATIO = MARKET_MOVE_THRESHOLDS.medium * 0.7;
 const NEWS_ALERT_COOLDOWN_SECONDS = 1.4;
 const NEWS_ALERT_VOICE_COUNT = 3;
 
@@ -227,15 +222,6 @@ export class AudioEngine {
   private musicMutedValue: boolean;
   private sfxVolumeValue: number;
   private sfxMutedValue: boolean;
-  private readonly lastMarketTickAt = new Map<string, number>();
-  private readonly marketAccentState = new Map<string, {
-    tier: 'large' | 'exceptional';
-    direction: 'up' | 'down';
-    magnitude: number;
-    at: number;
-    armed: boolean;
-  }>();
-  private lastGlobalMarketAccentAt = Number.NEGATIVE_INFINITY;
   private lastNewsAlertAt = Number.NEGATIVE_INFINITY;
   private statusValue: AudioEngineState['status'];
   private reasonValue: string | undefined;
@@ -441,75 +427,99 @@ export class AudioEngine {
     this.updateMonumentProximityGains();
   }
 
-  public playTick(sourceId: string, options: TickSoundOptions): void;
-  public playTick(sourceId: string, direction: TickDirection, moveRatio?: number): void;
-  public playTick(
+  /** One pulse for one coalesced trade. Flat prints intentionally remain audible. */
+  public playTradePulse(sourceId: string, options: TradePulseSoundOptions): void;
+  public playTradePulse(sourceId: string, direction: TickDirection, moveRatio?: number): void;
+  public playTradePulse(
     sourceId: string,
-    optionsOrDirection: TickSoundOptions | TickDirection,
+    optionsOrDirection: TradePulseSoundOptions | TickDirection,
     legacyMoveRatio = 0,
   ): void {
     const direction = typeof optionsOrDirection === 'string' ? optionsOrDirection : optionsOrDirection.direction;
     const moveRatio = typeof optionsOrDirection === 'string'
       ? legacyMoveRatio
       : (optionsOrDirection.moveRatio ?? 0);
-    if (direction === 'flat' || !this.canPlaySfx()) return;
+    if (!this.canPlaySfx()) return;
     const graph = this.monumentGraphs.get(sourceId);
     if (!graph || !this.context || !this.isMonumentGraphAudible(graph)) return;
 
     const profile = ASSET_AUDIO_PROFILES[graph.descriptor.symbol];
-    const magnitude = Math.abs(Number.isFinite(moveRatio) ? moveRatio : 0);
     const moveClass = classifyMarketMove(moveRatio);
-    const accentTier = moveClass === 'large' || moveClass === 'exceptional' ? moveClass : null;
-    // Game dispatches the same asset event to its grand shrine and any loaded
-    // echoes. Reserve the one special gesture for the source the player can
-    // actually hear best, independent of iteration order, and save its voices.
-    if (accentTier && this.nearestMonumentSourceId(graph.descriptor.symbol) !== sourceId) return;
-
     const now = this.context.currentTime;
-    const lastTick = this.lastMarketTickAt.get(sourceId) ?? Number.NEGATIVE_INFINITY;
-    if (now - lastTick < MARKET_TICK_COOLDOWN_SECONDS) return;
-    this.lastMarketTickAt.set(sourceId, now);
-
-    if (Math.abs(moveRatio) < MARKET_ACCENT_REARM_RATIO) {
-      const accent = this.marketAccentState.get(graph.descriptor.symbol);
-      if (accent && !accent.armed) {
-        this.marketAccentState.set(graph.descriptor.symbol, { ...accent, armed: true });
-      }
+    const severity = marketMoveSeverity(moveRatio);
+    const directionalPeak = marketMovePeakGain(moveRatio);
+    const peak = direction === 'flat'
+      ? Math.min(0.048, 0.035 + severity * 0.016)
+      : directionalPeak;
+    if (direction === 'flat') {
+      this.playDampedResonator(graph.input, now, profile.frequency, 0.28, peak * 0.52);
+    } else {
+      const [first, second] = marketGestureFrequencies(profile.frequency, direction);
+      const spacing = moveClass === 'small' ? 0.075 : 0.06;
+      this.playGentleNote(graph.input, now, first, 0.25, peak * 0.62, profile.accent);
+      this.playGentleNote(graph.input, now + spacing, second, 0.38, peak, profile.accent);
     }
-
-    const exceptional = accentTier === 'exceptional';
-    const accentVoiceCount = direction === 'up'
-      ? (exceptional ? 6 : 5)
-      : (exceptional ? 5 : 4);
-    const hasAccentCapacity = this.scheduledSources.size <= MAX_SCHEDULED_SOURCES - accentVoiceCount;
-    if (
-      accentTier
-      && hasAccentCapacity
-      && this.shouldPlayMarketAccent(graph.descriptor.symbol, direction, accentTier, magnitude, now)
-    ) {
-      if (direction === 'up') {
-        this.playMarketCelebration(graph.input, now, profile.frequency, moveRatio, exceptional);
-      } else {
-        this.playMarketWarning(graph.input, now, profile.frequency, moveRatio, exceptional);
-      }
-      return;
-    }
-
-    const [first, second] = marketGestureFrequencies(profile.frequency, direction);
-    const peak = marketMovePeakGain(moveRatio);
-    const spacing = moveClass === 'small' ? 0.12 : 0.095;
-    this.playGentleNote(graph.input, now, first, 0.3, peak * 0.62, profile.accent);
-    this.playGentleNote(graph.input, now + spacing, second, 0.48, peak * 0.86, profile.accent);
-    if (moveClass === 'medium') {
+    this.playDampedResonator(
+      graph.input,
+      now,
+      marketBassFrequency(moveRatio),
+      0.34 + severity * 0.2,
+      peak * (0.2 + severity * 0.3),
+    );
+    if (moveClass === 'medium' && direction !== 'flat') {
+      const [, second] = marketGestureFrequencies(profile.frequency, direction);
       const answer = direction === 'up' ? second * 1.12246 : second * 0.94387;
       this.playGentleNote(
         graph.input,
-        now + spacing * 2,
+        now + 0.13,
         Math.min(740, Math.max(196, answer)),
-        0.58,
-        peak,
+        0.42,
+        peak * 0.72,
         profile.accent * 0.5,
       );
+    }
+  }
+
+  /** Priority fanfare/siren selected by Game's single authoritative event gate. */
+  public playMarketAccent(sourceId: string, options: MarketAccentSoundOptions): void {
+    if (!this.canPlaySfx(true) || !this.context) return;
+    const graph = this.monumentGraphs.get(sourceId);
+    if (!graph || !this.isMonumentGraphAudible(graph)) return;
+    const exceptional = options.tier === 'exceptional';
+    const requiredVoices = options.direction === 'up' ? (exceptional ? 6 : 5) : (exceptional ? 4 : 2);
+    if (this.scheduledSources.size > MAX_SCHEDULED_SOURCES - requiredVoices) return;
+    const profile = ASSET_AUDIO_PROFILES[graph.descriptor.symbol];
+    if (options.direction === 'up') {
+      this.playMarketCelebration(
+        graph.input,
+        this.context.currentTime,
+        profile.frequency,
+        options.moveRatio,
+        exceptional,
+      );
+      return;
+    }
+    this.playMarketWarning(
+      graph.input,
+      this.context.currentTime,
+      profile.frequency,
+      options.moveRatio,
+      exceptional,
+    );
+  }
+
+  /** Compatibility alias for older integrations; event accents are intentionally excluded. */
+  public playTick(sourceId: string, options: TradePulseSoundOptions): void;
+  public playTick(sourceId: string, direction: TickDirection, moveRatio?: number): void;
+  public playTick(
+    sourceId: string,
+    optionsOrDirection: TradePulseSoundOptions | TickDirection,
+    legacyMoveRatio = 0,
+  ): void {
+    if (typeof optionsOrDirection === 'string') {
+      this.playTradePulse(sourceId, optionsOrDirection, legacyMoveRatio);
+    } else {
+      this.playTradePulse(sourceId, optionsOrDirection);
     }
   }
 
@@ -536,20 +546,38 @@ export class AudioEngine {
       ? legacySprinting
       : (optionsOrSurface.sprinting ?? false);
     const side = typeof optionsOrSurface === 'string' ? undefined : optionsOrSurface.side;
+    const intensity = typeof optionsOrSurface === 'string'
+      ? 0.72
+      : clampUnit(optionsOrSurface.intensity ?? 0.72);
+    const leg = typeof optionsOrSurface === 'string' ? undefined : optionsOrSurface.leg;
     const now = this.context.currentTime;
     const settings = this.footstepSettings(surface);
     const sideVariation = side === 'left' ? -0.035 : side === 'right' ? 0.035 : 0;
+    const intensityGain = 0.58 + intensity * 0.62;
+    const legPitch = leg?.startsWith('front') ? 1.025 : leg?.startsWith('hind') ? 0.975 : 1;
     this.playNoiseBurst(
       this.sfxBus,
       now,
       settings.duration,
       settings.filter,
-      settings.frequency * (1 + sideVariation),
-      settings.gain * (sprinting ? 1.18 : 1),
+      settings.frequency * (1 + sideVariation) * legPitch,
+      settings.gain * (sprinting ? 1.18 : 1) * intensityGain,
     );
-    this.playFootThump(this.sfxBus, now, settings.thumpFrequency, sprinting ? 0.03 : 0.022);
+    this.playFootThump(
+      this.sfxBus,
+      now,
+      settings.thumpFrequency * legPitch,
+      (sprinting ? 0.03 : 0.022) * intensityGain,
+    );
     if (sprinting) {
-      this.playNoiseBurst(this.sfxBus, now + 0.035, 0.13, 'bandpass', settings.frequency * 0.72, 0.011);
+      this.playNoiseBurst(
+        this.sfxBus,
+        now,
+        0.13,
+        'bandpass',
+        settings.frequency * 0.72,
+        0.011 * intensityGain,
+      );
     }
   }
 
@@ -735,8 +763,6 @@ export class AudioEngine {
     for (const graph of this.monumentGraphs.values()) this.disposeMonumentGraph(graph);
     this.monumentGraphs.clear();
     this.desiredSources.clear();
-    this.lastMarketTickAt.clear();
-    this.marketAccentState.clear();
     for (const node of [this.ambientBus, this.sfxBus, this.masterBus, this.outputCompressor]) {
       if (node) safeDisconnect(node);
     }
@@ -812,34 +838,12 @@ export class AudioEngine {
     this.sfxBus?.gain.setTargetAtTime(sfxLevel, now, 0.025);
   }
 
-  private nearestMonumentSourceId(symbol: MonumentAudioSource['symbol']): string | null {
-    const listener = this.proximityPosition;
-    let nearestId: string | null = null;
-    let nearestDistanceSquared = Number.POSITIVE_INFINITY;
-    for (const [id, graph] of this.monumentGraphs) {
-      if (graph.descriptor.symbol !== symbol || !this.isMonumentGraphAudible(graph)) continue;
-      const dx = graph.descriptor.position.x - listener.x;
-      const dy = graph.descriptor.position.y - listener.y;
-      const dz = graph.descriptor.position.z - listener.z;
-      const distanceSquared = dx * dx + dy * dy + dz * dz;
-      if (
-        distanceSquared < nearestDistanceSquared
-        || (distanceSquared === nearestDistanceSquared && (nearestId === null || id < nearestId))
-      ) {
-        nearestId = id;
-        nearestDistanceSquared = distanceSquared;
-      }
-    }
-    return nearestId;
-  }
-
   private syncMonumentGraphs(): void {
     if (!this.context || !this.sfxBus) return;
     for (const [id, graph] of this.monumentGraphs) {
       if (!this.desiredSources.has(id)) {
         this.disposeMonumentGraph(graph);
         this.monumentGraphs.delete(id);
-        this.lastMarketTickAt.delete(id);
       }
     }
     for (const descriptor of this.desiredSources.values()) {
@@ -854,10 +858,12 @@ export class AudioEngine {
       const input = this.context.createGain();
       const panner = this.context.createPanner();
       panner.panningModel = 'HRTF';
-      panner.distanceModel = 'exponential';
-      panner.refDistance = 10;
+      // The explicit fox-proximity curve owns distance. HRTF supplies only
+      // direction, preventing the previous second exponential attenuation.
+      panner.distanceModel = 'inverse';
+      panner.refDistance = 1;
       panner.maxDistance = MARKET_AUDIO_MAX_RADIUS + 4;
-      panner.rolloffFactor = 1.9;
+      panner.rolloffFactor = 0;
       input.connect(panner);
       panner.connect(this.sfxBus);
       const graph = { descriptor, input, panner, proximityGain: 0 };
@@ -1198,37 +1204,6 @@ export class AudioEngine {
     this.trackFiniteVoice(sources, nodes);
   }
 
-  private shouldPlayMarketAccent(
-    symbol: string,
-    direction: 'up' | 'down',
-    tier: 'large' | 'exceptional',
-    magnitude: number,
-    now: number,
-  ): boolean {
-    const previous = this.marketAccentState.get(symbol);
-    const isUpgrade = tier === 'exceptional'
-      && previous?.tier === 'large'
-      && now - previous.at >= MARKET_ACCENT_UPGRADE_COOLDOWN_SECONDS;
-    const isDirectionChange = previous
-      && previous.direction !== direction
-      && now - previous.at >= MARKET_ACCENT_DIRECTION_CHANGE_COOLDOWN_SECONDS;
-    const isMeaningfulEscalation = previous
-      && previous.tier === tier
-      && magnitude >= previous.magnitude * 1.5
-      && now - previous.at >= MARKET_ACCENT_COOLDOWN_SECONDS;
-    const isRearmed = !previous
-      || (previous.armed && now - previous.at >= MARKET_ACCENT_REARM_COOLDOWN_SECONDS);
-    if (
-      (!isUpgrade && !isDirectionChange && !isMeaningfulEscalation && !isRearmed)
-      || now - this.lastGlobalMarketAccentAt < MARKET_ACCENT_GLOBAL_COOLDOWN_SECONDS
-    ) {
-      return false;
-    }
-    this.marketAccentState.set(symbol, { direction, tier, magnitude, at: now, armed: false });
-    this.lastGlobalMarketAccentAt = now;
-    return true;
-  }
-
   /** A short original rising fanfare for statistically unusual upward moves. */
   private playMarketCelebration(
     destination: AudioNode,
@@ -1251,7 +1226,7 @@ export class AudioEngine {
     }
   }
 
-  /** A rounded descending warning gesture: noticeable, positional, and never alarm-level. */
+  /** A clear positional siren for a genuinely large one-minute drop. */
   private playMarketWarning(
     destination: AudioNode,
     at: number,
@@ -1259,20 +1234,19 @@ export class AudioEngine {
     moveRatio: number,
     exceptional: boolean,
   ): void {
-    if (!this.context || this.scheduledSources.size > MAX_SCHEDULED_SOURCES - (exceptional ? 5 : 4)) return;
-    const upper = Math.min(587.33, Math.max(329.63, baseFrequency * 1.26));
-    const severity = marketMoveSeverity(moveRatio);
-    const peak = marketMovePeakGain(moveRatio);
-    this.playMarketSiren(destination, at, upper, upper * 0.56, 1.08, peak);
-    this.playMagicalSweep(destination, at + 0.28, upper * 0.9, upper * 0.5, 0.92, peak * 0.82);
-    this.playDampedResonator(destination, at + 0.05, 146.83, 0.58, peak * 0.74);
-    this.playNoiseBurst(destination, at, 0.23, 'lowpass', 520, 0.012 + severity * 0.012);
+    if (!this.context || this.scheduledSources.size > MAX_SCHEDULED_SOURCES - (exceptional ? 4 : 2)) return;
+    const upper = Math.min(587.33, Math.max(349.23, baseFrequency * 1.32));
+    const peak = Math.min(0.16, Math.max(0.105, marketMovePeakGain(moveRatio) * 1.16));
+    const duration = exceptional ? 1.5 : 1.05;
+    this.playMarketSiren(destination, at, upper, upper * 0.48, duration, peak);
+    this.playDampedResonator(destination, at + 0.025, 110, duration * 0.72, peak * 0.62);
     if (exceptional) {
-      this.playMarketSiren(destination, at + 0.54, upper * 0.82, upper * 0.43, 1.22, peak * 0.8);
+      this.playMarketSiren(destination, at + 0.5, upper * 0.88, upper * 0.42, 1, peak * 0.9);
+      this.playDampedResonator(destination, at + 0.52, 92, 0.86, peak * 0.48);
     }
   }
 
-  /** A rounded, musical warning sweep with one return pulse rather than a harsh alarm. */
+  /** A rounded but unmistakable two-sweep warning voice. */
   private playMarketSiren(
     destination: AudioNode,
     at: number,
@@ -1495,17 +1469,20 @@ export class AudioEngine {
     for (const source of sources) source.addEventListener('ended', release, { once: true });
   }
 
-  private canPlayEffect(): boolean {
+  private canPlayEffect(priority = false): boolean {
+    const voiceLimit = priority
+      ? MAX_SCHEDULED_SOURCES
+      : MAX_SCHEDULED_SOURCES - MARKET_ALERT_RESERVED_VOICES;
     return !this.disposed
       && this.visible
       && this.context?.state === 'running'
-      && this.scheduledSources.size < MAX_SCHEDULED_SOURCES;
+      && this.scheduledSources.size < voiceLimit;
   }
 
-  private canPlaySfx(): boolean {
+  private canPlaySfx(priority = false): boolean {
     return !this.sfxMutedValue
       && this.sfxVolumeValue > 0.001
-      && this.canPlayEffect();
+      && this.canPlayEffect(priority);
   }
 
   private footstepSettings(surface: SurfaceKind): {

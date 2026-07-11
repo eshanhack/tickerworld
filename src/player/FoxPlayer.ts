@@ -3,7 +3,6 @@ import type { PlayerSnapshot, SurfaceKind } from '../types';
 import { FoxRig, type FoxRigDebugSnapshot } from './FoxRig';
 import {
   FOX_LEG_KEYS,
-  sampleFoxLegMotion,
   type FoxAirPose,
   type FoxLegKey,
 } from './foxMotion';
@@ -14,6 +13,7 @@ export type SurfaceSampler = (x: number, z: number) => SurfaceKind;
 
 export interface FootstepEvent {
   readonly position: THREE.Vector3;
+  readonly leg: FoxLegKey;
   readonly side: 'left' | 'right';
   readonly surface: SurfaceKind;
   readonly sprinting: boolean;
@@ -90,7 +90,7 @@ const WALK_TURN_RESPONSE = 9.2;
 const RUN_TURN_RESPONSE = 5.4;
 const AIR_TURN_RESPONSE = 3.2;
 const GLIDE_TURN_RESPONSE = 5.1;
-const SPRINT_CONTACT_MERGE_SECONDS = 0.072;
+const SPRINT_CLUSTER_SECONDS = 0.08;
 
 function damp(current: number, target: number, responsiveness: number, deltaSeconds: number): number {
   return THREE.MathUtils.lerp(current, target, 1 - Math.exp(-responsiveness * deltaSeconds));
@@ -160,6 +160,7 @@ export class FoxPlayer {
   private turnLean = 0;
   private accelerationLean = 0;
   private lastFootfallAt = Number.NEGATIVE_INFINITY;
+  private footfallsArmed = false;
   private grounded = false;
   private groundInitialized = false;
   private verticalVelocity = 0;
@@ -202,9 +203,8 @@ export class FoxPlayer {
       movementBlend: 0,
       runBlend: 0,
     });
-    for (const leg of FOX_LEG_KEYS) {
-      this.previousContacts[leg] = sampleFoxLegMotion(leg, this.gaitPhase, this.runBlend).contact;
-    }
+    const renderedPaws = this.rig.getRenderedPawStates();
+    for (const leg of FOX_LEG_KEYS) this.previousContacts[leg] = renderedPaws[leg].contact;
   }
 
   public get position(): THREE.Vector3 {
@@ -426,7 +426,7 @@ export class FoxPlayer {
       pawGroundOffsets: this.pawGroundOffsets,
       reducedMotion: this.reducedMotion,
     });
-    this.emitFootfalls(this.horizontalSpeed > 0.12, onFootstep);
+    this.emitFootfalls(this.horizontalSpeed > 0.12, surfaceAt, onFootstep);
 
     this.frameDisplacement.copy(this.group.position).sub(this.frameStart);
     this.updateMagic(delta, this.frameDisplacement, this.horizontalSpeed);
@@ -676,24 +676,48 @@ export class FoxPlayer {
     }
   }
 
-  private emitFootfalls(moving: boolean, onFootstep?: FootstepListener): void {
+  private emitFootfalls(
+    moving: boolean,
+    surfaceAt: SurfaceSampler,
+    onFootstep?: FootstepListener,
+  ): void {
+    const renderedPaws = this.rig.getRenderedPawStates();
+    const canEmit = this.grounded
+      && this.airPose === 'grounded'
+      && this.anticipationRemaining === 0
+      && this.landingRemaining === 0
+      && moving;
+
+    if (!canEmit || !this.footfallsArmed) {
+      for (const leg of FOX_LEG_KEYS) this.previousContacts[leg] = renderedPaws[leg].contact;
+      this.footfallsArmed = canEmit;
+      return;
+    }
+
     for (const leg of FOX_LEG_KEYS) {
-      const contact = sampleFoxLegMotion(leg, this.gaitPhase, this.runBlend).contact;
-      if (this.grounded && moving && !this.previousContacts[leg] && contact) {
-        const clusteredRunContact = this.runBlend > 0.52
-          && this.elapsed - this.lastFootfallAt < SPRINT_CONTACT_MERGE_SECONDS;
-        if (!clusteredRunContact) {
-          this.lastFootfallAt = this.elapsed;
-          onFootstep?.({
-            position: this.group.position.clone(),
-            side: leg.endsWith('Left') ? 'left' : 'right',
-            surface: this.currentSurface,
-            sprinting: this.runBlend > 0.52,
-            intensity: THREE.MathUtils.clamp(this.horizontalSpeed / this.sprintSpeed, 0.2, 1),
-          });
-        }
+      const rendered = renderedPaws[leg];
+      if (!this.previousContacts[leg] && rendered.contact) {
+        const sprinting = this.runBlend > 0.52;
+        const clusteredRunContact = sprinting
+          && this.elapsed - this.lastFootfallAt < SPRINT_CLUSTER_SECONDS;
+        const movementIntensity = THREE.MathUtils.clamp(this.horizontalSpeed / this.sprintSpeed, 0.2, 1);
+        const impactWeight = THREE.MathUtils.clamp(rendered.downwardImpact / 1.8, 0, 1);
+        const clusterGain = clusteredRunContact ? 0.78 : 1;
+        this.lastFootfallAt = this.elapsed;
+        onFootstep?.({
+          position: rendered.position.clone(),
+          leg,
+          side: leg.endsWith('Left') ? 'left' : 'right',
+          surface: surfaceAt(rendered.position.x, rendered.position.z),
+          sprinting,
+          intensity: THREE.MathUtils.clamp(
+            movementIntensity * THREE.MathUtils.lerp(0.86, 1, impactWeight) * clusterGain,
+            0.15,
+            1,
+          ),
+        });
       }
-      this.previousContacts[leg] = contact;
+      this.previousContacts[leg] = rendered.contact;
     }
   }
 
