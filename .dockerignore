@@ -1,0 +1,12 @@
+.git
+.github
+.vercel
+.colyseus-cloud.json
+**/.colyseus-cloud.json
+**/node_modules
+**/dist
+**/coverage
+**/data
+**/.env
+**/.env.*
+*.log

@@ -1,0 +1,35 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: tickerworld
+      POSTGRES_USER: tickerworld
+      POSTGRES_PASSWORD: tickerworld-local
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tickerworld"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - tickerworld-postgres:/var/lib/postgresql/data
+
+  multiplayer:
+    build:
+      context: ..
+      dockerfile: server/Dockerfile
+    environment:
+      NODE_ENV: development
+      PORT: 2567
+      DATABASE_URL: postgres://tickerworld:tickerworld-local@postgres:5432/tickerworld
+      PUBLIC_ORIGIN: http://localhost:4173
+      SERVER_HMAC_SECRET: local-compose-server-secret-change-before-sharing
+      IP_HMAC_SECRET: local-compose-ip-secret-change-before-sharing
+      SOLANA_CLUSTER: devnet
+    ports:
+      - "2567:2567"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  tickerworld-postgres:

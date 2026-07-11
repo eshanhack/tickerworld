@@ -4,13 +4,21 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite --host 127.0.0.1",
+    "dev": "vite --host 127.0.0.1 --port 4173 --strictPort",
     "build": "tsc -b && vite build",
-    "preview": "vite preview --host 127.0.0.1",
+    "preview": "vite preview --host 127.0.0.1 --port 4173 --strictPort",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "build:server": "npm --prefix server run build",
+    "test:server": "npm --prefix server test",
+    "test:all": "npm run test && npm run test:server",
+    "audit:release": "npm audit --audit-level=high && npm --prefix server audit --audit-level=high",
+    "verify:release": "npm run test:all && npm run build && npm run build:server && npm run audit:release",
+    "smoke:production": "node scripts/smoke-production.mjs"
   },
   "dependencies": {
+    "@colyseus/sdk": "^0.17.43",
+    "@solana/client": "^1.7.0",
     "three": "^0.179.1",
     "troika-three-text": "^0.52.4"
   },

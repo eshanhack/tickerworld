@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import type { AnimalKind, SkinId } from '../../shared/src/index.js';
 import type { PlayerSnapshot, SurfaceKind } from '../types';
 import { FoxRig, type FoxRigDebugSnapshot } from './FoxRig';
 import {
@@ -10,6 +11,22 @@ import { PlayerInputController } from './InputController';
 
 export type HeightSampler = (x: number, z: number) => number;
 export type SurfaceSampler = (x: number, z: number) => SurfaceKind;
+
+export interface HorizontalMovementResult {
+  readonly x: number;
+  readonly z: number;
+}
+
+/**
+ * Optional post-integration guard for non-physical world rules such as the
+ * sacred podium and bounded market edge. Normal locomotion never needs one.
+ */
+export type HorizontalMovementResolver = (
+  previousX: number,
+  previousZ: number,
+  nextX: number,
+  nextZ: number,
+) => HorizontalMovementResult;
 
 export interface FootstepEvent {
   readonly position: THREE.Vector3;
@@ -41,6 +58,8 @@ export interface FoxPlayerOptions {
   readonly reducedMotion?: boolean;
   readonly walkSpeed?: number;
   readonly sprintSpeed?: number;
+  readonly animal?: AnimalKind;
+  readonly skin?: SkinId;
 }
 
 export type FoxLocomotionState = 'idle' | 'walk' | 'run' | 'anticipating' | 'airborne' | 'landing';
@@ -203,12 +222,21 @@ export class FoxPlayer {
       movementBlend: 0,
       runBlend: 0,
     });
+    this.rig.setAnimal(options.animal ?? 'fox', options.skin ?? 'base');
     const renderedPaws = this.rig.getRenderedPawStates();
     for (const leg of FOX_LEG_KEYS) this.previousContacts[leg] = renderedPaws[leg].contact;
   }
 
   public get position(): THREE.Vector3 {
     return this.group.position;
+  }
+
+  public get animal(): AnimalKind {
+    return this.rig.animal;
+  }
+
+  public get skin(): SkinId {
+    return this.rig.skin;
   }
 
   /** World-space heading in radians. Zero faces world -Z. */
@@ -273,6 +301,12 @@ export class FoxPlayer {
     this.reducedMotion = reducedMotion;
   }
 
+  /** Changes appearance without resetting movement, gait phase, or paw contacts. */
+  public setAnimal(animal: AnimalKind, skin: SkinId = 'base'): void {
+    if (this.disposed) return;
+    this.rig.setAnimal(animal, skin);
+  }
+
   public setPosition(x: number, y: number, z: number): void {
     this.group.position.set(x, y, z);
     this.velocity.set(0, 0, 0);
@@ -292,6 +326,12 @@ export class FoxPlayer {
     this.airPose = 'grounded';
     this.airProgress = 1;
     for (const particle of this.magicParticles) particle.mesh.visible = false;
+  }
+
+  public setHeadingYaw(yaw: number): void {
+    if (!Number.isFinite(yaw)) return;
+    this.facingYaw = Math.atan2(Math.sin(yaw), Math.cos(yaw));
+    this.headingPivot.rotation.y = this.facingYaw;
   }
 
   public setVirtualInput(moveX: number, moveForward: number, sprint = false): void {
@@ -319,6 +359,7 @@ export class FoxPlayer {
     surfaceAt: SurfaceSampler = DEFAULT_SURFACE,
     onFootstep?: FootstepListener,
     onAction?: FoxActionListener,
+    resolveHorizontal?: HorizontalMovementResolver,
   ): PlayerSnapshot {
     if (this.disposed) return this.snapshot;
     const delta = Math.min(Math.max(deltaSeconds, 0), 0.05);
@@ -402,6 +443,18 @@ export class FoxPlayer {
 
     this.group.position.x += this.velocity.x * delta;
     this.group.position.z += this.velocity.z * delta;
+    if (resolveHorizontal) {
+      const resolved = resolveHorizontal(
+        this.frameStart.x,
+        this.frameStart.z,
+        this.group.position.x,
+        this.group.position.z,
+      );
+      if (Number.isFinite(resolved.x) && Number.isFinite(resolved.z)) {
+        this.group.position.x = resolved.x;
+        this.group.position.z = resolved.z;
+      }
+    }
     const groundY = safeHeight(heightAt, this.group.position.x, this.group.position.z, this.group.position.y);
     this.currentSurface = surfaceAt(this.group.position.x, this.group.position.z);
     this.updateGrounding(delta, groundY);

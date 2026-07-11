@@ -632,6 +632,25 @@ export class AudioEngine {
     this.playGentleNote(this.sfxBus, now + 0.245, 739.99, 0.7, peak * 0.82, -0.5);
   }
 
+  /** A separate soft cue for portal channel start, cancellation, and arrival. */
+  public playPortalChime(stage: 'start' | 'cancel' | 'complete'): void {
+    if (!this.canPlaySfx() || !this.context || !this.sfxBus) return;
+    const now = this.context.currentTime;
+    if (stage === 'cancel') {
+      this.playGentleNote(this.sfxBus, now, 440, 0.3, 0.011, -1.2);
+      this.playGentleNote(this.sfxBus, now + 0.08, 369.99, 0.38, 0.009, 1.2);
+      return;
+    }
+    if (stage === 'start') {
+      this.playGentleNote(this.sfxBus, now, 369.99, 0.55, 0.012, -0.8);
+      this.playGentleNote(this.sfxBus, now + 0.13, 493.88, 0.68, 0.014, 0.8);
+      return;
+    }
+    this.playGentleNote(this.sfxBus, now, 440, 0.5, 0.014, -1.3);
+    this.playGentleNote(this.sfxBus, now + 0.11, 587.33, 0.62, 0.018, 1.3);
+    this.playGentleNote(this.sfxBus, now + 0.24, 739.99, 0.82, 0.016, 0);
+  }
+
   public setEnvironment(environment: AudioEnvironment): void {
     if (this.disposed) return;
     const next = clampUnit(environment.nightFactor);

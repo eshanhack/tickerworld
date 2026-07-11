@@ -1,9 +1,11 @@
 export {
   Monument,
+  type MonumentChartOcclusionBounds,
   type MonumentKind,
   type MonumentNewsOverlayState,
   type MonumentOptions,
   type MonumentPosition,
+  type MonumentScreenViewport,
 } from './Monument';
 export { HorizonBadgePanel } from './HorizonBadgePanel';
 export {

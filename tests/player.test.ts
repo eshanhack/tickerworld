@@ -64,6 +64,26 @@ describe('PlayerInputController', () => {
 });
 
 describe('FoxPlayer', () => {
+  it('switches local animal appearance without changing movement state', () => {
+    const input = new PlayerInputController({ target: null, document: null });
+    const player = new FoxPlayer({ input, animal: 'penguin', skin: 'bluebell-penguin' });
+    input.setVirtualInput(0.3, 1, true);
+    for (let frame = 0; frame < 90; frame += 1) player.update(1 / 60, 0);
+    const before = player.snapshot;
+    const motionBefore = player.getMotionDebugSnapshot();
+
+    player.setAnimal('axolotl', 'aurora-axolotl');
+
+    expect(player.animal).toBe('axolotl');
+    expect(player.skin).toBe('aurora-axolotl');
+    expect(player.snapshot).toEqual(before);
+    const motionAfter = player.getMotionDebugSnapshot();
+    expect(motionAfter.gaitPhase).toBe(motionBefore.gaitPhase);
+    expect(motionAfter.horizontalSpeed).toBe(motionBefore.horizontalSpeed);
+    expect(player.group.getObjectByName('AxolotlGillLeft1')).toBeInstanceOf(THREE.Mesh);
+    player.dispose();
+  });
+
   it('moves forward relative to a south-facing camera and emits a lateral four-beat cadence', () => {
     const input = new PlayerInputController({ target: null, document: null });
     const fox = new FoxPlayer({ input });

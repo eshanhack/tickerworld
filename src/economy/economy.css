@@ -1,0 +1,74 @@
+.tickerworld-economy {
+  position: absolute;
+  inset: 0;
+  z-index: 73;
+  pointer-events: none;
+  color: #31373d;
+  font-family: Nunito, ui-rounded, system-ui, sans-serif;
+}
+.tickerworld-economy button, .tickerworld-economy input, .tickerworld-economy select,
+.tickerworld-economy section, .tickerworld-economy form { pointer-events: auto; font: inherit; }
+.tickerworld-economy .is-hidden { display: none !important; }
+.economy-toggle {
+  position: absolute;
+  right: calc(max(18px, env(safe-area-inset-right)) + 12rem);
+  bottom: max(18px, env(safe-area-inset-bottom));
+  display: flex; align-items: center; gap: 7px;
+  border: 1px solid rgba(255,241,207,.72); border-radius: 999px; padding: 10px 15px;
+  color: #31373d; background: rgba(255,241,207,.86); box-shadow: 0 9px 28px rgba(49,55,61,.16);
+  backdrop-filter: blur(14px); cursor: pointer;
+}
+.economy-toggle span { color: #5f9b91; }
+.economy-panel {
+  position: absolute; right: max(18px, env(safe-area-inset-right));
+  bottom: max(68px, calc(env(safe-area-inset-bottom) + 58px));
+  width: min(410px, calc(100vw - 36px)); max-height: min(680px, calc(100vh - 98px));
+  overflow: auto; box-sizing: border-box; padding: 18px;
+  border: 1px solid rgba(255,241,207,.72); border-radius: 24px;
+  background: rgba(255,241,207,.94); box-shadow: 0 20px 60px rgba(36,47,50,.28);
+  backdrop-filter: blur(20px) saturate(1.08); scrollbar-width: thin;
+}
+.economy-panel header { display: flex; justify-content: space-between; gap: 14px; align-items: flex-start; }
+.economy-panel h2 { margin: 2px 0 8px; font-size: 20px; }
+.economy-panel h3 { margin: 15px 0 8px; font-size: 13px; }
+.economy-panel h3 small, .economy-panel header small { font-size: 8px; letter-spacing: .1em; text-transform: uppercase; opacity: .58; }
+.economy-panel header button { width: 29px; height: 29px; border: 0; border-radius: 50%; background: rgba(49,55,61,.1); cursor: pointer; }
+.economy-connection { display: grid; grid-template-columns: 1fr auto; gap: 7px; align-items: center; padding: 11px; border-radius: 15px; background: rgba(95,155,145,.12); }
+.economy-connection > div { display: grid; gap: 2px; }
+.economy-connection small { font-size: 9px; opacity: .65; }
+.economy-connection button, .economy-connection select { border: 0; border-radius: 999px; padding: 8px 11px; color: #fff1cf; background: #5f9b91; cursor: pointer; }
+.economy-connection select { grid-column: 1 / -1; width: 100%; }
+.economy-animal-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 7px; }
+.economy-animal-grid button, .economy-skin-grid button {
+  display: grid; place-items: center; gap: 5px; min-width: 0; border: 1px solid rgba(49,55,61,.1);
+  border-radius: 13px; padding: 9px 5px; color: #31373d; background: rgba(255,255,255,.5); cursor: pointer;
+}
+.economy-animal-grid button:disabled, .economy-skin-grid button:disabled { cursor: default; opacity: .58; }
+.economy-animal-grid button.is-selected, .economy-skin-grid button.is-selected { border-color: #5f9b91; box-shadow: 0 0 0 2px rgba(95,155,145,.2); }
+.economy-animal-grid strong, .economy-skin-grid strong { overflow: hidden; max-width: 100%; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.animal-sigil { width: 25px; height: 21px; border-radius: 55% 55% 45% 45%; background: #c9795c; box-shadow: inset 0 -5px rgba(49,55,61,.08); }
+.animal-sigil.penguin { background: #526a78; }.animal-sigil.frog { background: #79ad79; }.animal-sigil.duck { background: #e2b95f; }
+.animal-sigil.bear { background: #9b765e; }.animal-sigil.rabbit { background: #c0a5c8; }.animal-sigil.cat { background: #b88671; }.animal-sigil.axolotl { background: #d99aa8; }
+.economy-skin-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 7px; }
+.economy-skin-grid button { grid-template-columns: 30px 1fr auto; justify-items: start; text-align: left; }
+.skin-swatch { width: 25px; height: 25px; border-radius: 50%; background: linear-gradient(135deg, var(--skin-a), var(--skin-b) 52%, var(--skin-c)); box-shadow: inset 0 -4px rgba(49,55,61,.08); }
+.economy-skin-grid small { font-size: 8px; letter-spacing: .08em; }
+.economy-username div { display: flex; gap: 7px; }
+.economy-username input { min-width: 0; flex: 1; border: 1px solid rgba(49,55,61,.15); border-radius: 999px; padding: 9px 12px; color: #31373d; background: white; }
+.economy-username button { border: 0; border-radius: 999px; padding: 9px 13px; color: #fff1cf; background: #c9795c; cursor: pointer; }
+.economy-status { min-height: 2.4em; margin: 13px 2px 5px; font-size: 10px; line-height: 1.35; color: #75675c; }
+.economy-panel footer { padding-top: 9px; border-top: 1px solid rgba(49,55,61,.1); font-size: 8px; letter-spacing: .07em; text-align: center; text-transform: uppercase; opacity: .5; }
+@media (max-height: 520px) and (orientation: landscape) { .economy-panel { max-height: calc(100vh - 78px); bottom: 62px; } }
+@media (hover: none), (pointer: coarse) {
+  .economy-toggle {
+    top: calc(max(12px, env(safe-area-inset-top)) + 4.5rem);
+    right: max(18px, env(safe-area-inset-right));
+    bottom: auto;
+  }
+  .economy-panel {
+    top: max(10px, env(safe-area-inset-top));
+    /* Match the chat safe zone so the panel never covers Jump/Glide. */
+    bottom: calc(max(12px, env(safe-area-inset-bottom)) + 8.8rem);
+    max-height: none;
+  }
+}

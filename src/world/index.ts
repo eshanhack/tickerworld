@@ -29,6 +29,7 @@ export {
   ROAD_SIGN_SHOULDER_OFFSET,
   bearingBetween,
   createCanonicalRoadDescriptors,
+  createMarketRoadSignDescriptors,
   createRoadSignDescriptors,
   createRoadSignExclusionPoints,
   directionForBearing,
@@ -41,3 +42,15 @@ export type {
   RoadVector,
   WayfindingCoordinate,
 } from './RoadSignLayout';
+export {
+  PODIUM_EXCLUSION_RADIUS,
+  WORLD_BOUNDARY_RADIUS,
+  WorldGuard,
+  isForbiddenWorldXZ,
+  resolveWorldXZ,
+} from './WorldGuard';
+export type {
+  WorldGuardOptions,
+  WorldGuardResolution,
+  WorldXZ,
+} from './WorldGuard';

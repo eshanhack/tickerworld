@@ -2,7 +2,14 @@ import type { AssetSymbol } from './types';
 
 const SEARCH_PARAMS = new URLSearchParams(typeof location === 'undefined' ? '' : location.search);
 
-export const WORLD_SEED = SEARCH_PARAMS.get('seed') ?? 'tickerworld-v1';
+export const CANONICAL_WORLD_SEED = 'tickerworld-v1';
+
+export function multiplayerAllowedForSeed(seed: string): boolean {
+  return seed === CANONICAL_WORLD_SEED;
+}
+
+export const WORLD_SEED = SEARCH_PARAMS.get('seed') ?? CANONICAL_WORLD_SEED;
+export const MULTIPLAYER_ALLOWED = multiplayerAllowedForSeed(WORLD_SEED);
 export const FORCE_SIMULATION = SEARCH_PARAMS.get('data') === 'sim';
 export const DEBUG_MODE = SEARCH_PARAMS.get('debug') === '1';
 

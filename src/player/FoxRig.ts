@@ -1,5 +1,10 @@
 import * as THREE from 'three';
+import type { AnimalKind, SkinId } from '../../shared/src/index.js';
 import { PALETTE } from '../config';
+import {
+  resolveAnimalAppearance,
+  type AnimalAppearanceProfile,
+} from './animalAppearance';
 import {
   FOX_LEG_KEYS,
   sampleFoxAirLegPose,
@@ -110,6 +115,14 @@ interface RigMaterials {
   readonly cream: THREE.MeshStandardMaterial;
   readonly ink: THREE.MeshStandardMaterial;
   readonly innerEar: THREE.MeshStandardMaterial;
+}
+
+interface AppearanceMaterials {
+  readonly primary: THREE.MeshStandardMaterial;
+  readonly secondary: THREE.MeshStandardMaterial;
+  readonly dark: THREE.MeshStandardMaterial;
+  readonly accent: THREE.MeshStandardMaterial;
+  readonly highlight: THREE.MeshStandardMaterial;
 }
 
 export const FOX_RIG_PROPORTIONS = Object.freeze({
@@ -226,6 +239,8 @@ export class FoxRig {
   private readonly legs: Readonly<Record<FoxLegKey, LegRig>>;
   private readonly renderedPaws: Record<FoxLegKey, MutableRenderedPawState>;
   private readonly tail: TailRig[] = [];
+  private readonly materials: RigMaterials;
+  private readonly appearanceRoots: THREE.Group[] = [];
   private readonly plantBounds = new THREE.Box3();
   private readonly plantFloor = new THREE.Vector3();
   private readonly plantScale = new THREE.Vector3();
@@ -254,9 +269,12 @@ export class FoxRig {
     reducedMotion: false,
   };
   private strideExtension = 0;
+  private currentAnimal: AnimalKind = 'fox';
+  private currentSkin: SkinId = 'base';
 
   public constructor() {
     const materials = this.createMaterials();
+    this.materials = materials;
     this.root.name = 'FoxModel';
     this.pelvis.name = 'FoxPelvis';
     this.spine.name = 'FoxSpine';
@@ -285,6 +303,32 @@ export class FoxRig {
       hindRight: makeRenderedPawState('hindRight'),
     };
     this.buildTail(materials);
+  }
+
+  public get animal(): AnimalKind {
+    return this.currentAnimal;
+  }
+
+  public get skin(): SkinId {
+    return this.currentSkin;
+  }
+
+  /**
+   * Changes only the visual layer. The articulated hierarchy, leg geometry,
+   * planted-paw state, and animation inputs remain exactly the same.
+   */
+  public setAnimal(animal: AnimalKind, skin: SkinId = 'base'): void {
+    const appearance = resolveAnimalAppearance(animal, skin);
+    if (appearance.animal === this.currentAnimal && appearance.skin === this.currentSkin) return;
+
+    this.disposeAppearanceRoots();
+    this.currentAnimal = appearance.animal;
+    this.currentSkin = appearance.skin;
+    this.applyAppearancePalette(appearance);
+    this.applyFoxFeatureVisibility(appearance.animal);
+    if (appearance.animal !== 'fox' || appearance.premium) {
+      this.buildAppearanceAttachments(appearance);
+    }
   }
 
   public updatePose(input: FoxRigPoseInput): void {
@@ -481,6 +525,262 @@ export class FoxRig {
       ink: new THREE.MeshStandardMaterial({ color: PALETTE.ink, roughness: 0.9, flatShading: true }),
       innerEar: new THREE.MeshStandardMaterial({ color: PALETTE.pink, roughness: 0.94, flatShading: true }),
     };
+  }
+
+  private applyAppearancePalette(appearance: AnimalAppearanceProfile): void {
+    this.materials.fur.color.setHex(appearance.palette.primary);
+    this.materials.cream.color.setHex(appearance.palette.secondary);
+    this.materials.ink.color.setHex(appearance.palette.dark);
+    this.materials.innerEar.color.setHex(appearance.palette.accent);
+  }
+
+  private applyFoxFeatureVisibility(animal: AnimalKind): void {
+    const earsVisible = animal === 'fox' || animal === 'cat';
+    const tailVisible = animal === 'fox' || animal === 'cat' || animal === 'axolotl';
+    const muzzleVisible = animal === 'fox' || animal === 'bear' || animal === 'rabbit' || animal === 'cat';
+    const leftEar = this.root.getObjectByName('FoxEarLeft');
+    const rightEar = this.root.getObjectByName('FoxEarRight');
+    const tailRoot = this.root.getObjectByName('FoxTailJoint1');
+    const muzzle = this.root.getObjectByName('FoxMuzzle');
+    const nose = this.root.getObjectByName('FoxNose');
+    if (leftEar) leftEar.visible = earsVisible;
+    if (rightEar) rightEar.visible = earsVisible;
+    if (tailRoot) tailRoot.visible = tailVisible;
+    if (muzzle) muzzle.visible = muzzleVisible;
+    if (nose) nose.visible = muzzleVisible;
+  }
+
+  private buildAppearanceAttachments(appearance: AnimalAppearanceProfile): void {
+    const materials = this.createAppearanceMaterials();
+    const head = this.createAppearanceRoot('Head');
+    const body = this.createAppearanceRoot('Body');
+    const rump = this.createAppearanceRoot('Rump');
+    this.head.add(head);
+    this.chest.add(body);
+    this.pelvis.add(rump);
+    this.appearanceRoots.push(head, body, rump);
+
+    switch (appearance.animal) {
+      case 'fox':
+        break;
+      case 'penguin':
+        this.addPenguinFeatures(head, body, materials);
+        break;
+      case 'frog':
+        this.addFrogFeatures(head, materials);
+        break;
+      case 'duck':
+        this.addDuckFeatures(head, body, materials);
+        break;
+      case 'bear':
+        this.addBearFeatures(head, rump, materials);
+        break;
+      case 'rabbit':
+        this.addRabbitFeatures(head, rump, materials);
+        break;
+      case 'cat':
+        this.addCatFeatures(head, materials);
+        break;
+      case 'axolotl':
+        this.addAxolotlFeatures(head, rump, materials);
+        break;
+    }
+
+    if (appearance.premium) this.addPremiumCrest(head, materials);
+  }
+
+  private createAppearanceRoot(part: string): THREE.Group {
+    const root = new THREE.Group();
+    root.name = `AnimalAppearance${part}`;
+    return root;
+  }
+
+  private createAppearanceMaterials(): AppearanceMaterials {
+    // Appearance geometry shares the four baseline rig materials. This keeps
+    // switching allocation-free for materials and lets FoxPlayer own and
+    // dispose the complete material set once with its ordinary traversal.
+    return {
+      primary: this.materials.fur,
+      secondary: this.materials.cream,
+      dark: this.materials.ink,
+      accent: this.materials.innerEar,
+      highlight: this.materials.innerEar,
+    };
+  }
+
+  private addPenguinFeatures(
+    head: THREE.Group,
+    body: THREE.Group,
+    materials: AppearanceMaterials,
+  ): void {
+    const cap = makeEllipsoid('PenguinHeadCap', materials.dark, new THREE.Vector3(0.255, 0.19, 0.3), 9);
+    cap.position.set(0, 0.04, 0.025);
+    head.add(cap);
+    const beak = makeEllipsoid('PenguinBeak', materials.accent, new THREE.Vector3(0.13, 0.055, 0.2), 7);
+    beak.position.set(0, -0.035, -0.5);
+    head.add(beak);
+    for (const side of [-1, 1] as const) {
+      const flipper = makeEllipsoid(
+        side < 0 ? 'PenguinFlipperLeft' : 'PenguinFlipperRight',
+        materials.dark,
+        new THREE.Vector3(0.08, 0.31, 0.2),
+        8,
+      );
+      flipper.position.set(side * 0.36, -0.01, -0.02);
+      flipper.rotation.z = side * -0.42;
+      body.add(flipper);
+    }
+  }
+
+  private addFrogFeatures(head: THREE.Group, materials: AppearanceMaterials): void {
+    for (const side of [-1, 1] as const) {
+      const eyeBulb = makeEllipsoid(
+        side < 0 ? 'FrogEyeBulbLeft' : 'FrogEyeBulbRight',
+        materials.secondary,
+        new THREE.Vector3(0.115, 0.115, 0.105),
+        8,
+      );
+      eyeBulb.position.set(side * 0.17, 0.19, -0.15);
+      const pupil = makeEllipsoid(
+        side < 0 ? 'FrogPupilLeft' : 'FrogPupilRight',
+        materials.dark,
+        new THREE.Vector3(0.045, 0.055, 0.028),
+        7,
+      );
+      pupil.position.set(side * 0.17, 0.2, -0.245);
+      head.add(eyeBulb, pupil);
+    }
+  }
+
+  private addDuckFeatures(
+    head: THREE.Group,
+    body: THREE.Group,
+    materials: AppearanceMaterials,
+  ): void {
+    const bill = makeEllipsoid('DuckBill', materials.accent, new THREE.Vector3(0.2, 0.055, 0.23), 7);
+    bill.position.set(0, -0.05, -0.5);
+    head.add(bill);
+    for (const side of [-1, 1] as const) {
+      const wing = makeEllipsoid(
+        side < 0 ? 'DuckWingLeft' : 'DuckWingRight',
+        materials.highlight,
+        new THREE.Vector3(0.075, 0.25, 0.31),
+        8,
+      );
+      wing.position.set(side * 0.36, -0.02, 0.02);
+      wing.rotation.z = side * -0.22;
+      body.add(wing);
+    }
+  }
+
+  private addBearFeatures(
+    head: THREE.Group,
+    body: THREE.Group,
+    materials: AppearanceMaterials,
+  ): void {
+    for (const side of [-1, 1] as const) {
+      const ear = makeEllipsoid(
+        side < 0 ? 'BearEarLeft' : 'BearEarRight',
+        materials.primary,
+        new THREE.Vector3(0.13, 0.13, 0.085),
+        8,
+      );
+      ear.position.set(side * 0.19, 0.18, -0.015);
+      head.add(ear);
+    }
+    const tail = makeEllipsoid('BearTail', materials.secondary, new THREE.Vector3(0.14, 0.14, 0.14), 8);
+    tail.position.set(0, 0.04, 0.47);
+    body.add(tail);
+  }
+
+  private addRabbitFeatures(
+    head: THREE.Group,
+    body: THREE.Group,
+    materials: AppearanceMaterials,
+  ): void {
+    for (const side of [-1, 1] as const) {
+      const ear = makeEllipsoid(
+        side < 0 ? 'RabbitEarLeft' : 'RabbitEarRight',
+        materials.primary,
+        new THREE.Vector3(0.105, 0.34, 0.08),
+        8,
+      );
+      ear.position.set(side * 0.13, 0.38, 0.02);
+      ear.rotation.z = side * -0.08;
+      const inner = makeEllipsoid(
+        side < 0 ? 'RabbitInnerEarLeft' : 'RabbitInnerEarRight',
+        materials.accent,
+        new THREE.Vector3(0.045, 0.24, 0.035),
+        7,
+      );
+      inner.position.set(side * 0.13, 0.38, -0.075);
+      inner.rotation.z = side * -0.08;
+      head.add(ear, inner);
+    }
+    const tail = makeEllipsoid('RabbitTail', materials.secondary, new THREE.Vector3(0.17, 0.17, 0.17), 8);
+    tail.position.set(0, 0.02, 0.5);
+    body.add(tail);
+  }
+
+  private addCatFeatures(head: THREE.Group, materials: AppearanceMaterials): void {
+    for (const side of [-1, 1] as const) {
+      for (let index = -1; index <= 1; index += 1) {
+        const whisker = shadows(new THREE.Mesh(
+          new THREE.CylinderGeometry(0.006, 0.006, 0.3, 5),
+          materials.dark,
+        ));
+        whisker.name = `${side < 0 ? 'CatWhiskerLeft' : 'CatWhiskerRight'}${index + 2}`;
+        whisker.position.set(side * 0.24, -0.05 + index * 0.045, -0.46);
+        whisker.rotation.z = Math.PI * 0.5;
+        whisker.rotation.x = index * 0.12;
+        head.add(whisker);
+      }
+    }
+  }
+
+  private addAxolotlFeatures(
+    head: THREE.Group,
+    body: THREE.Group,
+    materials: AppearanceMaterials,
+  ): void {
+    for (const side of [-1, 1] as const) {
+      for (let index = -1; index <= 1; index += 1) {
+        const gill = makeCapsule(
+          `${side < 0 ? 'AxolotlGillLeft' : 'AxolotlGillRight'}${index + 2}`,
+          materials.accent,
+          0.035,
+          0.16,
+          0,
+        );
+        gill.position.set(side * (0.28 + Math.abs(index) * 0.025), 0.06 + index * 0.105, -0.02);
+        gill.rotation.z = side * (-Math.PI * 0.5 + index * 0.18);
+        head.add(gill);
+      }
+    }
+    const fin = makeEllipsoid('AxolotlTailFin', materials.highlight, new THREE.Vector3(0.055, 0.19, 0.3), 8);
+    fin.position.set(0, 0.05, 0.45);
+    body.add(fin);
+  }
+
+  private addPremiumCrest(head: THREE.Group, materials: AppearanceMaterials): void {
+    const crest = shadows(new THREE.Mesh(new THREE.ConeGeometry(0.075, 0.18, 5), materials.highlight));
+    crest.name = 'PremiumAnimalCrest';
+    crest.position.set(0, 0.35, 0.02);
+    crest.rotation.z = Math.PI;
+    head.add(crest);
+  }
+
+  private disposeAppearanceRoots(): void {
+    const geometries = new Set<THREE.BufferGeometry>();
+    for (const root of this.appearanceRoots) {
+      root.removeFromParent();
+      root.traverse((object) => {
+        if (!(object instanceof THREE.Mesh)) return;
+        geometries.add(object.geometry);
+      });
+    }
+    this.appearanceRoots.length = 0;
+    geometries.forEach((geometry) => geometry.dispose());
   }
 
   private setRestBodyPose(): void {

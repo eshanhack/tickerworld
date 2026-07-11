@@ -4,6 +4,15 @@ coverage/
 *.log
 *.tsbuildinfo
 .vercel/
+.colyseus-cloud.json
+server/.colyseus-cloud.json
 .env
 .env.*
 !.env.example
+server/data/
+server/**/*.sqlite
+server/**/*.sqlite-*
+server/dist/
+shared/dist/
+
+.vercel

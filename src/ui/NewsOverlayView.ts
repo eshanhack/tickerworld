@@ -16,6 +16,7 @@ export interface NewsOverlayViewState {
 
 export interface NewsOverlayViewOptions {
   onDismiss: (itemId: string) => void;
+  onInteractionChange?: (active: boolean) => void;
 }
 
 export interface NewsOverlayRect {
@@ -182,6 +183,7 @@ export class NewsOverlayView {
   private readonly timestamp: HTMLTimeElement;
   private readonly permalink: HTMLElement;
   private readonly onDismiss: (itemId: string) => void;
+  private readonly onInteractionChange?: (active: boolean) => void;
   private state: NewsOverlayViewState | null = null;
   private renderedItem: NewsItem | null = null;
   private renderedSymbol: AssetSymbol | null = null;
@@ -201,6 +203,7 @@ export class NewsOverlayView {
 
   constructor(parent: HTMLElement, options: NewsOverlayViewOptions) {
     this.onDismiss = options.onDismiss;
+    this.onInteractionChange = options.onInteractionChange;
     this.root = document.createElement('div');
     this.root.className = 'news-overlay-layer';
     this.root.hidden = true;
@@ -255,7 +258,11 @@ export class NewsOverlayView {
     for (const type of ['pointerdown', 'pointermove', 'pointerup', 'click', 'dblclick', 'contextmenu', 'wheel']) {
       this.root.addEventListener(type, this.stopCameraInput);
     }
+    this.root.addEventListener('pointerdown', this.beginInteraction);
+    this.root.addEventListener('pointerup', this.finishInteraction);
+    this.root.addEventListener('pointercancel', this.finishInteraction);
     window.addEventListener('resize', this.resize);
+    window.addEventListener('blur', this.finishInteraction);
   }
 
   setState(state: NewsOverlayViewState | null): void {
@@ -289,7 +296,12 @@ export class NewsOverlayView {
     for (const type of ['pointerdown', 'pointermove', 'pointerup', 'click', 'dblclick', 'contextmenu', 'wheel']) {
       this.root.removeEventListener(type, this.stopCameraInput);
     }
+    this.root.removeEventListener('pointerdown', this.beginInteraction);
+    this.root.removeEventListener('pointerup', this.finishInteraction);
+    this.root.removeEventListener('pointercancel', this.finishInteraction);
+    this.onInteractionChange?.(false);
     window.removeEventListener('resize', this.resize);
+    window.removeEventListener('blur', this.finishInteraction);
     this.root.remove();
     this.state = null;
     this.renderedItem = null;
@@ -453,6 +465,9 @@ export class NewsOverlayView {
     event.stopPropagation();
   };
 
+  private readonly beginInteraction = (): void => this.onInteractionChange?.(true);
+  private readonly finishInteraction = (): void => this.onInteractionChange?.(false);
+
   private readonly close = (event: MouseEvent): void => {
     event.preventDefault();
     event.stopPropagation();
@@ -460,6 +475,7 @@ export class NewsOverlayView {
     if (!itemId) return;
     this.root.hidden = true;
     this.root.setAttribute('aria-hidden', 'true');
+    this.onInteractionChange?.(false);
     this.onDismiss(itemId);
   };
 
@@ -505,6 +521,7 @@ export class NewsOverlayView {
     this.dragPointer = null;
     if (this.header.hasPointerCapture(event.pointerId)) this.header.releasePointerCapture(event.pointerId);
     this.card.classList.remove('is-dragging');
+    this.onInteractionChange?.(false);
     const cardWidth = this.cardWidth;
     const cardHeight = this.cardHeight;
     this.storeNormalizedPosition(cardWidth, cardHeight);

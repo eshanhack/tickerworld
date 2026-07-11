@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import nunitoFontUrl from '@fontsource/nunito/files/nunito-latin-700-normal.woff?url';
 import { AudioEngine, MARKET_AUDIO_MAX_RADIUS, MARKET_MOVE_THRESHOLDS } from './audio';
-import { DEBUG_MODE, GRAND_MONUMENTS, WORLD_SEED } from './config';
+import { DEBUG_MODE, GRAND_MONUMENTS, MULTIPLAYER_ALLOWED, WORLD_SEED } from './config';
 import {
   HyperliquidMarketFeed,
   MarketCelebrationGate,
@@ -9,13 +9,29 @@ import {
   type MarketCelebrationTier,
 } from './markets';
 import { FireworkPool, Monument, MonumentSystem } from './monuments';
+import { RoomClientSystem, type GuestIdentity, type RoomClientSnapshot } from './net';
 import { BrowserNewsFeed, type NewsFeedMode, type NewsFeedUpdate } from './news';
+import { PortalSystem, type PortalRoute } from './portals';
 import { FoxPlayer, ThirdPersonCamera, type FootstepEvent, type FoxActionEvent } from './player';
+import {
+  marketSlugForSymbol,
+  type MarketRouteHistory,
+} from './routing';
 import type { AssetState, AssetSymbol } from './types';
-import { Hud } from './ui';
-import { WayfindingSystem, WorldSystem, type EchoPlacementDescriptor } from './world';
+import {
+  allocateSpawnAssignment,
+  type CorrectionMessage,
+  type MarketSlug,
+  type NetPlayerState,
+} from '../shared/src/index.js';
+import { EconomySystem } from './economy/EconomySystem';
+import { CanvasInteractionCoordinator } from './social/CanvasInteractionCoordinator';
+import { accountBlockMerge } from './social/BlockStore';
+import { RemoteAvatarSystem } from './social/RemoteAvatarSystem';
+import { SocialSystem } from './social/SocialSystem';
+import { Hud, UiInteractionLock, type UiInteractionOwner } from './ui';
+import { WayfindingSystem, WorldGuard, WorldSystem } from './world';
 
-const DISCOVERY_KEY = 'tickerworld:v1:discoveries';
 const COMPASS_KEY = 'tickerworld:v1:compass';
 const QUALITY_KEY = 'tickerworld:v1:quality';
 const REDUCED_MOTION_KEY = 'tickerworld:v1:reduced-motion';
@@ -30,14 +46,9 @@ export function countFreshNewsAdditions(
   ), 0);
 }
 
-function safeReadDiscoveries(): Set<AssetSymbol> {
-  try {
-    const saved = JSON.parse(localStorage.getItem(DISCOVERY_KEY) ?? '[]') as unknown;
-    return new Set(Array.isArray(saved) ? saved.filter((value): value is AssetSymbol =>
-      GRAND_MONUMENTS.some((monument) => monument.symbol === value)) : []);
-  } catch {
-    return new Set();
-  }
+export interface GameOptions {
+  readonly activeMarket?: AssetSymbol;
+  readonly routeHistory?: MarketRouteHistory;
 }
 
 function safeWrite(key: string, value: string): void {
@@ -81,21 +92,31 @@ export class Game {
   private readonly fireworks: FireworkPool;
   private readonly celebrationGate = new MarketCelebrationGate();
   private readonly wayfinding: WayfindingSystem;
+  private readonly worldGuard = new WorldGuard();
+  private readonly uiInteractionLock = new UiInteractionLock();
+  private readonly portalSystem: PortalSystem;
+  private readonly roomClient: RoomClientSystem;
+  private remoteAvatars?: RemoteAvatarSystem;
+  private social?: SocialSystem;
+  private economy?: EconomySystem;
+  private canvasInteractions?: CanvasInteractionCoordinator;
   private readonly hud: Hud;
-  private readonly grandMonuments = new Map<AssetSymbol, Monument>();
-  private readonly echoMonuments = new Map<string, Monument>();
+  private readonly routeHistory?: MarketRouteHistory;
   private readonly monumentIds = new Map<Monument, string>();
   private readonly latestStates = new Map<AssetSymbol, AssetState>();
-  private readonly discoveries = safeReadDiscoveries();
+  private readonly pendingRoomSpawns = new Map<MarketSlug, NetPlayerState>();
   private readonly clock = new THREE.Clock();
   private readonly tempPosition = new THREE.Vector3();
   private readonly newsCameraSpace = new THREE.Vector3();
   private readonly newsNdc = new THREE.Vector3();
   private readonly cameraTarget = new THREE.Vector3();
+  private activeMarket: AssetSymbol;
+  private activeMonument: Monument;
   private entered = false;
   private visible = true;
   private disposed = false;
   private frameHandle = 0;
+  private marketSwitchGeneration = 0;
   private elapsed = 0;
   private fps = 60;
   private fpsAccumulator = 0;
@@ -108,9 +129,11 @@ export class Game {
   private activeNewsCount = 0;
   private newsSoundCreatedAtCutoff = Number.NEGATIVE_INFINITY;
 
-  constructor(container: HTMLElement) {
+  constructor(container: HTMLElement, options: GameOptions = {}) {
     this.container = container;
     this.container.innerHTML = '';
+    this.activeMarket = options.activeMarket ?? 'BTC';
+    this.routeHistory = options.routeHistory;
 
     this.renderer = new THREE.WebGLRenderer({
       antialias: true,
@@ -149,16 +172,19 @@ export class Game {
       camera: this.camera,
       domElement: this.renderer.domElement,
       fontUrl: nunitoFontUrl,
+      attachInteractionListeners: false,
     });
     this.world = new WorldSystem(this.scene, {
       seed: WORLD_SEED,
       reducedMotion: this.reducedMotion,
-      onEchoPlacementsChanged: (placements) => this.syncEchoMonuments(placements),
+      monuments: GRAND_MONUMENTS,
+      echoSuppressionRadius: Number.POSITIVE_INFINITY,
     });
     this.wayfinding = new WayfindingSystem({
       parent: this.scene,
       fontUrl: nunitoFontUrl,
       heightAt: (x, z) => this.world.heightAt(x, z),
+      activeMarket: this.activeMarket,
     });
     this.fireworks = new FireworkPool({ reducedMotion: this.reducedMotion });
     this.scene.add(this.fireworks.points);
@@ -170,22 +196,61 @@ export class Game {
     });
     this.player.input.setEnabled(false);
     this.scene.add(this.player.group);
+    this.roomClient = new RoomClientSystem({
+      // QA seeds intentionally alter terrain. Keep them local so authoritative
+      // movement validation never compares the player with tickerworld-v1.
+      endpoint: MULTIPLAYER_ALLOWED ? undefined : '',
+      snapshot: () => {
+        const playerState = this.player.snapshot;
+        const locomotion = this.player.getMotionDebugSnapshot().locomotionState;
+        return {
+          x: playerState.x,
+          y: playerState.y,
+          z: playerState.z,
+          yaw: this.player.headingYaw,
+          speed: playerState.speed,
+          verticalSpeed: playerState.verticalSpeed,
+          grounded: playerState.grounded,
+          gait: this.player.isGliding
+            ? 'glide'
+            : !playerState.grounded
+              ? 'air'
+              : locomotion === 'run'
+                ? 'run'
+                : locomotion === 'walk'
+                  ? 'walk'
+                  : 'idle',
+        };
+      },
+      onCorrection: (correction) => this.applyRoomCorrection(correction),
+      onSpawn: (market, player) => this.onRoomSpawn(market, player),
+      onChatRejected: (rejection) => {
+        this.hud?.showToast(rejection.code === 'rate_limited'
+          ? 'A gentle pause before the next message.'
+          : 'That message could not be shared.');
+      },
+      onReportAccepted: () => this.hud?.showToast('Report received. Thank you.'),
+      onReportRejected: (rejection) => this.hud?.showToast(
+        rejection.code === 'persistence_failed'
+          ? 'The report could not be saved. Please try again.'
+          : 'That report could not be sent.',
+      ),
+      onIdentityRefreshRejected: () => this.hud?.showToast(
+        'Your room identity could not refresh. Your account remains safe.',
+      ),
+      onIdentityChanged: (identity) => this.onRoomIdentityChanged(identity),
+    });
+    this.placeAtSpawn(this.activeMarket);
 
-    for (const definition of GRAND_MONUMENTS) {
-      const monument = this.monuments.add({
-        symbol: definition.symbol,
-        kind: 'grand',
-        position: {
-          x: definition.x,
-          y: this.world.heightAt(definition.x, definition.z),
-          z: definition.z,
-        },
-        scale: definition.scale,
-        initialState: this.market.getState(definition.symbol),
-      });
-      this.grandMonuments.set(definition.symbol, monument);
-      this.monumentIds.set(monument, `grand:${definition.symbol}`);
-    }
+    this.activeMonument = this.monuments.add({
+      symbol: this.activeMarket,
+      kind: 'grand',
+      position: { x: 0, y: this.world.heightAt(0, 0), z: 0 },
+      scale: 1.25,
+      initialState: this.market.getState(this.activeMarket),
+    });
+    this.monumentIds.set(this.activeMonument, `grand:${this.activeMarket}`);
+    this.player.setAnimal(this.roomClient.identity.animal, 'base');
 
     this.hud = new Hud(this.container, {
       onEnter: () => this.enter(),
@@ -196,6 +261,7 @@ export class Game {
       onSfxMuteToggle: () => this.audio.toggleSfxMuted(),
       onSfxVolumeChange: (value) => this.audio.setSfxVolume(value),
       onNewsDismiss: (itemId) => this.monuments.dismissNewsOverlay(itemId),
+      onNewsInteractionChange: (active) => this.setUiInteraction('news', active),
       onCompassToggle: (enabled) => {
         this.compassEnabled = enabled;
         safeWrite(COMPASS_KEY, String(enabled));
@@ -206,6 +272,7 @@ export class Game {
         this.cameraRig.setReducedMotion(enabled);
         this.fireworks.setReducedMotion(enabled);
         this.world.setReducedMotion(enabled);
+        this.portalSystem?.setReducedMotion(enabled);
         safeWrite(REDUCED_MOTION_KEY, String(enabled));
       },
       onVirtualInput: (x, forward, sprint) => this.player.setVirtualInput(x, forward, sprint),
@@ -220,6 +287,79 @@ export class Game {
     }
     this.hud.setCompassEnabled(this.compassEnabled);
     this.hud.setReducedMotion(this.reducedMotion);
+    this.portalSystem = new PortalSystem({
+      parent: this.scene,
+      activeMarket: this.activeMarket,
+      fontUrl: nunitoFontUrl,
+      heightAt: (x, z) => this.world.heightAt(x, z),
+      overlayParent: this.container,
+      reducedMotion: this.reducedMotion,
+      onPortalChime: (_route, stage) => this.audio.playPortalChime(stage),
+      onTravelRequested: (route) => this.travelThroughPortal(route),
+    });
+
+    this.remoteAvatars = new RemoteAvatarSystem({
+      parent: this.scene,
+      camera: this.camera,
+      fontUrl: nunitoFontUrl,
+      localPosition: () => this.player.position,
+      viewport: () => {
+        const bounds = this.renderer.domElement.getBoundingClientRect();
+        return {
+          left: bounds.left,
+          top: bounds.top,
+          width: bounds.width,
+          height: bounds.height,
+        };
+      },
+      occlusionBounds: () => {
+        const bounds = this.renderer.domElement.getBoundingClientRect();
+        const chart = this.monuments.getChartOcclusionBounds({
+          left: bounds.left,
+          top: bounds.top,
+          width: bounds.width,
+          height: bounds.height,
+        });
+        return chart ? [chart] : [];
+      },
+    });
+    this.social = new SocialSystem({
+      root: this.hud.mountLayer('tickerworld-social-layer'),
+      transport: this.roomClient,
+      localActorId: this.roomClient.identity.actorId,
+      onInputFocusChange: (focused) => {
+        if (focused) this.player.input.clear();
+      },
+      onInteractionChange: (owner, active) => this.setUiInteraction(owner, active),
+      onSpeech: (message) => this.remoteAvatars?.showSpeech(message),
+      onBlocksChanged: (blocked) => this.remoteAvatars?.setBlockedActors(blocked),
+      persistBlock: (actorId, blocked) => this.economy?.persistBlock(actorId, blocked),
+    });
+    this.economy = new EconomySystem({
+      root: this.hud.mountLayer('tickerworld-economy-layer'),
+      actorId: () => this.roomClient.identity.actorId,
+      anonymousAnimal: () => this.roomClient.identity.animal,
+      anonymousToken: () => this.roomClient.anonymousToken,
+      market: () => marketSlugForSymbol(this.activeMarket),
+      onAppearanceChange: (animal, skin) => this.player.setAnimal(animal, skin),
+      onAnonymousAppearance: (animal) => this.player.setAnimal(animal, 'base'),
+      onProfileChange: (profile, sessionToken) => (
+        this.roomClient.setAccountSession(sessionToken, profile)
+      ),
+      onBlocksLoaded: (actorIds) => this.mergeAccountBlocks(actorIds),
+      onInteractionChange: (active) => this.setUiInteraction('economy', active),
+    });
+    this.canvasInteractions = new CanvasInteractionCoordinator({
+      element: this.renderer.domElement,
+      activateNewsAt: (x, y) => this.monuments.activateNewsAt(x, y),
+      pickPlayerAt: (x, y) => this.remoteAvatars?.pickAt(x, y, this.renderer.domElement) ?? null,
+      openPlayerCard: (player) => this.social?.openPlayerCard(player),
+    });
+    this.roomClient.subscribe((state) => this.onRoomClientState(state));
+    this.roomClient.subscribeChat((message) => this.social?.acceptChat(message));
+    this.roomClient.subscribeChatRejected((rejection) => this.social?.acceptChatRejection(rejection));
+    this.roomClient.subscribeReportAccepted(() => this.social?.acceptReportAccepted());
+    this.roomClient.subscribeReportRejected((rejection) => this.social?.acceptReportRejection(rejection));
 
     this.audio.subscribe((state) => {
       this.hud.setMusicMuted(state.musicMuted);
@@ -249,6 +389,7 @@ export class Game {
 
     void this.market.start();
     void this.news.start();
+    void this.roomClient.connect(marketSlugForSymbol(this.activeMarket));
     this.clock.start();
     if (DEBUG_MODE) {
       Object.defineProperty(window, '__tickerworldDebug', {
@@ -263,6 +404,7 @@ export class Game {
           news: this.news,
           monuments: this.monuments,
           audio: this.audio,
+          roomClient: this.roomClient,
           fireworks: this.fireworks,
           wayfinding: this.wayfinding,
           triggerLargeUp: () => this.triggerDebugMarketEvent('up', 'large'),
@@ -279,7 +421,7 @@ export class Game {
   private async enter(): Promise<void> {
     if (this.entered) return;
     this.entered = true;
-    this.player.input.setEnabled(true);
+    this.player.input.setEnabled(!this.uiInteractionLock.locked);
     this.hud.setEntered();
     const audioReady = await this.audio.unlock();
     if (!audioReady && !this.audio.state.available) {
@@ -289,9 +431,174 @@ export class Game {
     }
   }
 
+  public get marketSymbol(): AssetSymbol {
+    return this.activeMarket;
+  }
+
+  public async switchMarket(
+    destination: AssetSymbol,
+    previousMarket = this.activeMarket,
+  ): Promise<boolean> {
+    if (this.disposed) return false;
+    const releasePortalLock = this.acquireUiInteraction('portal');
+    const switchGeneration = ++this.marketSwitchGeneration;
+    try {
+      const destinationSlug = marketSlugForSymbol(destination);
+      if (destination === this.activeMarket && this.roomClient.state.market === destinationSlug) {
+        this.portalSystem.cancelTravel();
+        return true;
+      }
+
+      this.portalSystem.beginTransfer(destination);
+      // Keep the old world behind the loading veil until matchmaking has either
+      // joined the destination room or deliberately resolved to solo mode. This
+      // prevents movement in a new world while the client is still in the old
+      // room and keeps browser history travel consistent with physical portals.
+      await this.roomClient.switchMarket(destinationSlug);
+      if (this.disposed || switchGeneration !== this.marketSwitchGeneration) return false;
+      if (destination === this.activeMarket) {
+        this.portalSystem.cancelTravel();
+        return true;
+      }
+      this.monuments.remove(this.activeMonument, true);
+      this.monumentIds.delete(this.activeMonument);
+      this.activeMarket = destination;
+      this.activeMonument = this.monuments.add({
+        symbol: destination,
+        kind: 'grand',
+        position: { x: 0, y: this.world.heightAt(0, 0), z: 0 },
+        scale: 1.25,
+        initialState: this.market.getState(destination),
+      });
+      this.monumentIds.set(this.activeMonument, `grand:${destination}`);
+      this.portalSystem.setActiveMarket(destination);
+      this.wayfinding.setActiveMarket(destination);
+      this.economy?.syncLastMarket(marketSlugForSymbol(destination));
+
+      this.placeAtSpawn(destination, previousMarket);
+      this.refreshAudioSources();
+      this.audio.updateProximityPosition(this.player.position);
+      this.hud.showToast(`${destination} world`);
+      return true;
+    } finally {
+      releasePortalLock();
+      this.refreshInputLock();
+    }
+  }
+
+  private async travelThroughPortal(route: PortalRoute): Promise<void> {
+    if (route.activeMarket !== this.activeMarket) return;
+    const previous = this.activeMarket;
+    if (await this.switchMarket(route.destination, previous)) {
+      this.routeHistory?.push(route.destination);
+    }
+  }
+
+  private setUiInteraction(owner: UiInteractionOwner, active: boolean): void {
+    this.uiInteractionLock.set(owner, active);
+    this.refreshInputLock();
+  }
+
+  private acquireUiInteraction(owner: UiInteractionOwner): () => void {
+    const release = this.uiInteractionLock.acquire(owner);
+    this.refreshInputLock();
+    return release;
+  }
+
+  private refreshInputLock(): void {
+    this.player.input.clear();
+    this.player.input.setEnabled(this.visible && this.entered && !this.uiInteractionLock.locked);
+  }
+
+  private mergeAccountBlocks(accountActorIds: readonly string[]): void {
+    if (!this.social) return;
+    const merge = accountBlockMerge(this.social.blockedActors, accountActorIds);
+    this.social.mergeAccountBlocks([...merge.union]);
+    for (const actorId of merge.localOnly) {
+      void this.economy?.persistBlock(actorId, true).catch(() => undefined);
+    }
+  }
+
+  private applyRoomCorrection(correction: CorrectionMessage): void {
+    const distance = Math.hypot(
+      correction.x - this.player.position.x,
+      correction.z - this.player.position.z,
+    );
+    if (correction.hard || distance > 1.5) {
+      this.player.setPosition(correction.x, correction.y, correction.z);
+      return;
+    }
+    this.player.position.x = THREE.MathUtils.lerp(this.player.position.x, correction.x, 0.2);
+    this.player.position.y = THREE.MathUtils.lerp(this.player.position.y, correction.y, 0.12);
+    this.player.position.z = THREE.MathUtils.lerp(this.player.position.z, correction.z, 0.2);
+  }
+
+  private onRoomIdentityChanged(identity: GuestIdentity): void {
+    this.social?.setLocalActorId(identity.actorId);
+    if (!this.roomClient.sessionToken) this.player.setAnimal(identity.animal, 'base');
+    if (!this.entered) this.placeAtSpawn(this.activeMarket);
+  }
+
+  private placeAtSpawn(destination: AssetSymbol, previousMarket?: AssetSymbol): void {
+    const destinationSlug = marketSlugForSymbol(destination);
+    const authoritative = this.pendingRoomSpawns.get(destinationSlug);
+    if (authoritative) {
+      this.pendingRoomSpawns.delete(destinationSlug);
+      this.applyAuthoritativeSpawn(authoritative);
+      return;
+    }
+    const assignment = allocateSpawnAssignment(
+      this.roomClient.identity.actorId,
+      destinationSlug,
+      previousMarket ? marketSlugForSymbol(previousMarket) : undefined,
+    );
+    this.player.setPosition(
+      assignment.x,
+      this.groundHeightAt(assignment.x, assignment.z),
+      assignment.z,
+    );
+    this.player.setHeadingYaw(assignment.yaw);
+    this.cameraRig.setOrbit(assignment.yaw, this.cameraRig.pitch, this.cameraRig.zoomDistance);
+  }
+
+  private onRoomSpawn(market: MarketSlug, player: NetPlayerState): void {
+    this.pendingRoomSpawns.set(market, player);
+    if (market !== marketSlugForSymbol(this.activeMarket)) return;
+    this.pendingRoomSpawns.delete(market);
+    this.applyAuthoritativeSpawn(player);
+  }
+
+  private applyAuthoritativeSpawn(player: NetPlayerState): void {
+    this.player.setPosition(player.x, this.groundHeightAt(player.x, player.z), player.z);
+    this.player.setHeadingYaw(player.yaw);
+    this.cameraRig.setOrbit(player.yaw, this.cameraRig.pitch, this.cameraRig.zoomDistance);
+  }
+
+  private onRoomClientState(state: RoomClientSnapshot): void {
+    this.remoteAvatars?.setPlayers(state.remotes);
+    this.social?.setConnectionState(
+      state.connection,
+      state.connection === 'online' ? state.remotes.length + 1 : 0,
+    );
+    const connectionMode = state.connection === 'online'
+      ? 'online'
+      : state.connection === 'connecting' || state.connection === 'reconnecting'
+        ? 'connecting'
+        : 'offline';
+    for (const definition of GRAND_MONUMENTS) {
+      const marketState = this.market.getState(definition.symbol);
+      const slug = marketSlugForSymbol(definition.symbol);
+      this.portalSystem.setLiveData(definition.symbol, {
+        price: marketState.price,
+        feedMode: marketState.mode,
+        population: state.populations.get(slug)?.online ?? null,
+        connectionMode,
+      });
+    }
+  }
+
   private prewarmWorld(): void {
     for (let index = 0; index < 12; index += 1) this.world.update(this.player.position, 0);
-    this.syncEchoMonuments(this.world.getActiveEchoPlacements());
   }
 
   private readonly frame = (): void => {
@@ -306,8 +613,17 @@ export class Game {
       (x, z) => this.groundSurfaceAt(x, z),
       (footstep) => this.onFootstep(footstep),
       (action) => this.onFoxAction(action),
+      this.worldGuard.resolveHorizontal,
     );
+    this.roomClient.update(delta);
     this.world.update(this.player.position, this.elapsed);
+    this.portalSystem.setPlayerProbe({
+      x: this.player.position.x,
+      z: this.player.position.z,
+      grounded: this.player.snapshot.grounded,
+      enabled: this.entered && !this.uiInteractionLock.locked,
+    });
+    this.portalSystem.update(delta, this.elapsed);
     this.cameraRig.setChaseMotion(
       this.player.headingYaw,
       this.player.normalizedSpeed,
@@ -322,6 +638,9 @@ export class Game {
     );
     this.monuments.setNightFactor(this.world.nightFactor);
     this.monuments.update(delta, this.elapsed);
+    this.remoteAvatars?.update(delta);
+    this.social?.update();
+    this.economy?.update();
     this.updateNewsOverlay();
     this.fireworks.update(delta);
     this.audio.setEnvironment({ nightFactor: this.world.nightFactor });
@@ -357,6 +676,7 @@ export class Game {
     const previous = this.latestStates.get(state.symbol);
     this.latestStates.set(state.symbol, state);
     this.monuments.updateAsset(state);
+    this.onRoomClientState(this.roomClient.state);
 
     const previousOpen = previous?.candles.at(-1)?.openTime;
     const currentOpen = state.candles.at(-1)?.openTime;
@@ -451,34 +771,6 @@ export class Game {
     }
   }
 
-  private syncEchoMonuments(placements: readonly EchoPlacementDescriptor[]): void {
-    if (!this.world || !this.monuments) return;
-    const desired = new Set(placements.map((placement) => placement.key));
-    for (const [key, monument] of this.echoMonuments) {
-      if (desired.has(key)) continue;
-      this.monuments.remove(monument, true);
-      this.monumentIds.delete(monument);
-      this.echoMonuments.delete(key);
-    }
-    for (const placement of placements) {
-      if (this.echoMonuments.has(placement.key)) continue;
-      const monument = this.monuments.add({
-        symbol: placement.symbol,
-        kind: 'echo',
-        position: {
-          x: placement.x,
-          y: this.world.heightAt(placement.x, placement.z),
-          z: placement.z,
-        },
-        scale: placement.scale,
-        initialState: this.market.getState(placement.symbol),
-      });
-      this.echoMonuments.set(placement.key, monument);
-      this.monumentIds.set(monument, placement.key);
-    }
-    this.refreshAudioSources();
-  }
-
   private refreshAudioSources(): void {
     const sources = this.monuments.getAll().map((monument) => {
       monument.root.getWorldPosition(this.tempPosition);
@@ -504,31 +796,7 @@ export class Game {
     } else {
       this.hud.setNearby(null);
     }
-
-    const nearbyGrand = this.monuments.nearestTo(this.player.position, 24, true);
-    if (this.entered && nearbyGrand && !this.discoveries.has(nearbyGrand.monument.symbol)) {
-      this.discoveries.add(nearbyGrand.monument.symbol);
-      safeWrite(DISCOVERY_KEY, JSON.stringify([...this.discoveries]));
-      this.hud.showToast(`${nearbyGrand.monument.symbol} monument discovered`);
-    }
-
-    let closest: { symbol: AssetSymbol; monument: Monument; distance: number } | null = null;
-    if (this.compassEnabled) {
-      for (const [symbol, monument] of this.grandMonuments) {
-        if (this.discoveries.has(symbol)) continue;
-        const distance = monument.nearestDistance(this.player.position);
-        if (!closest || distance < closest.distance) closest = { symbol, monument, distance };
-      }
-    }
-    if (!closest) {
-      this.hud.setCompass(0, null);
-    } else {
-      closest.monument.root.getWorldPosition(this.tempPosition);
-      const dx = this.tempPosition.x - this.player.position.x;
-      const dz = this.tempPosition.z - this.player.position.z;
-      const relativeAngle = Math.atan2(dx, -dz) + this.cameraRig.yaw;
-      this.hud.setCompass(relativeAngle, closest.symbol);
-    }
+    this.hud.setCompass(0, null);
   }
 
   private updateNewsOverlay(): void {
@@ -567,7 +835,7 @@ export class Game {
   }
 
   private cameraObstacleAt(x: number, y: number, z: number): boolean {
-    return this.monuments.collidesCamera(x, y, z);
+    return this.worldGuard.collides(x, z) || this.monuments.collidesCamera(x, y, z);
   }
 
   private groundHeightAt(x: number, z: number): number {
@@ -603,15 +871,16 @@ export class Game {
     }
     if (DEBUG_MODE) {
       const world = this.world.getDebugStats();
-      const btcMarket = this.market.getState('BTC');
+      const activeMarketState = this.market.getState(this.activeMarket);
       const audioState = this.audio.state;
       const playerState = this.player.snapshot;
       this.hud.setDebug([
         `fps ${this.fps.toFixed(1)} · dpr ${this.pixelRatio.toFixed(2)}`,
         `draws ${this.renderer.info.render.calls} · tris ${this.estimateTriangles()}`,
         `chunks ${world.loadedChunks}/${world.desiredChunks} · queued ${world.queuedLoads}`,
-        `props ${world.propInstances} · echoes ${world.activeEchoes}`,
-        `market ${btcMarket.mode} · tick ${btcMarket.presentationTick} · candles ${btcMarket.candles.length}`,
+        `props ${world.propInstances} · portals ${this.portalSystem.getDebugStats().portals}`,
+        `market ${this.activeMarket} ${activeMarketState.mode} · tick ${activeMarketState.presentationTick} · candles ${activeMarketState.candles.length}`,
+        `room ${this.roomClient.state.connection} · remotes ${this.roomClient.state.remotes.length}${this.roomClient.state.lastError ? ` · ${this.roomClient.state.lastError.slice(0, 72)}` : ''}`,
         `news ${this.newsMode} · posts ${this.activeNewsCount} · fireworks ${this.fireworks.getDebugStats().activeParticles}`,
         `audio ${audioState.status} · music ${Math.round(audioState.musicVolume * 100)}${audioState.musicMuted ? 'x' : ''} · fx ${Math.round(audioState.sfxVolume * 100)}${audioState.sfxMuted ? 'x' : ''}`,
         `fox ${playerState.grounded ? 'grounded' : this.player.isGliding ? 'gliding' : 'airborne'} · jumps ${playerState.jumpsUsed}/2 · vy ${playerState.verticalSpeed.toFixed(2)}`,
@@ -645,6 +914,12 @@ export class Game {
   private readonly visibility = (): void => {
     this.visible = !document.hidden;
     this.audio.setVisible(this.visible);
+    this.portalSystem.setVisible(this.visible);
+    this.roomClient.setVisible(this.visible);
+    this.remoteAvatars?.setVisible(this.visible);
+    this.social?.setVisible(this.visible);
+    this.economy?.setVisible(this.visible);
+    this.player.input.setEnabled(this.visible && this.entered && !this.uiInteractionLock.locked);
     this.player.input.clear();
     if (!this.visible) {
       cancelAnimationFrame(this.frameHandle);
@@ -670,11 +945,18 @@ export class Game {
     removeEventListener('beforeunload', this.dispose);
     this.market.dispose();
     this.news.dispose();
+    this.roomClient.dispose();
+    this.canvasInteractions?.dispose();
+    this.social?.dispose();
+    this.economy?.dispose();
+    this.uiInteractionLock.clear();
+    this.remoteAvatars?.dispose();
     this.audio.dispose();
     this.hud.dispose();
     this.monuments.dispose();
     this.fireworks.points.removeFromParent();
     this.fireworks.dispose();
+    this.portalSystem.dispose();
     this.wayfinding.dispose();
     this.player.dispose();
     this.cameraRig.dispose();

@@ -10,6 +10,7 @@ import {
   ROAD_SIGN_SHOULDER_OFFSET,
   bearingBetween,
   createCanonicalRoadDescriptors,
+  createMarketRoadSignDescriptors,
   createRoadSignDescriptors,
   createRoadSignExclusionPoints,
   directionForBearing,
@@ -120,6 +121,18 @@ describe('canonical road-sign layout', () => {
     expect(createRoadSignDescriptors(cloned)).toEqual(createRoadSignDescriptors());
   });
 
+  it('reuses the seven canonical bearings and replaces the active outer slot with BTC', () => {
+    const btc = createMarketRoadSignDescriptors('BTC');
+    const eth = createMarketRoadSignDescriptors('ETH');
+    expect(btc).toHaveLength(7);
+    expect(eth).toHaveLength(7);
+    expect(eth.map((sign) => sign.bearing)).toEqual(btc.map((sign) => sign.bearing));
+    expect(eth.map((sign) => sign.destination.symbol).sort()).toEqual(
+      ['AVAX', 'BNB', 'BTC', 'DOGE', 'LINK', 'SOL', 'XRP'],
+    );
+    expect(eth.every((sign) => sign.destination.symbol !== 'ETH')).toBe(true);
+  });
+
   it('keeps generated lamps and benches outside every sign clearance', () => {
     const terrain = new TerrainSampler({
       seed: WORLD_SEED,
@@ -154,6 +167,20 @@ describe('canonical road-sign layout', () => {
 });
 
 describe('WayfindingSystem presentation', () => {
+  it('rebuilds seven bounded-world signs when the active market changes', () => {
+    const parent = new THREE.Group();
+    const system = new WayfindingSystem({ parent, activeMarket: 'BTC' });
+    expect(system.descriptors).toHaveLength(7);
+    expect(system.descriptors.some((sign) => sign.destination.symbol === 'BTC')).toBe(false);
+
+    system.setActiveMarket('SOL');
+    expect(system.descriptors).toHaveLength(7);
+    expect(system.descriptors.filter((sign) => sign.destination.symbol === 'BTC')).toHaveLength(1);
+    expect(system.descriptors.some((sign) => sign.destination.symbol === 'SOL')).toBe(false);
+    expect(system.root.children).toHaveLength(7);
+    system.dispose();
+  });
+
   it('builds fourteen low, fixed, double-sided one-destination signs', () => {
     const parent = new THREE.Group();
     const system = new WayfindingSystem({

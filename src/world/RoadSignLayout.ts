@@ -212,6 +212,39 @@ export function createRoadSignDescriptors(
   });
 }
 
+/**
+ * Builds the seven signs visible in a bounded market world. The canonical BTC
+ * spokes keep their bearings; in an outer market's former slot the sign points
+ * back to BTC, matching the portal occupying that road.
+ */
+export function createMarketRoadSignDescriptors(
+  activeMarket: AssetSymbol,
+  monuments: readonly WayfindingCoordinate[] = GRAND_MONUMENTS,
+): readonly RoadSignDescriptor[] {
+  return createCanonicalRoadDescriptors(monuments).map((road) => {
+    if (activeMarket !== 'BTC' && road.market.symbol === activeMarket) {
+      return directedSign(
+        road,
+        { ...road.market, x: road.btc.x, z: road.btc.z },
+        road.btc,
+        road.direction,
+        road.tangent,
+        road.bearing,
+        road.btcShoulder,
+      );
+    }
+    return directedSign(
+      road,
+      { ...road.btc, symbol: activeMarket },
+      road.market,
+      road.direction,
+      road.tangent,
+      road.bearing,
+      road.btcShoulder,
+    );
+  });
+}
+
 /** Positions reserved from generated lamps and benches. */
 export function createRoadSignExclusionPoints(
   monuments: readonly WayfindingCoordinate[] = GRAND_MONUMENTS,

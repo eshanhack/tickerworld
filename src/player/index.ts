@@ -9,10 +9,18 @@ export type {
   FoxMotionDebugSnapshot,
   FoxPlayerOptions,
   HeightSampler,
+  HorizontalMovementResolver,
+  HorizontalMovementResult,
   SurfaceSampler,
 } from './FoxPlayer';
 export { FoxRig, FOX_RIG_PROPORTIONS } from './FoxRig';
 export type { FoxRigDebugSnapshot, FoxRigPoseInput, FoxRigRenderedPawState } from './FoxRig';
+export {
+  BASE_ANIMAL_PALETTES,
+  PREMIUM_SKIN_ANIMAL,
+  resolveAnimalAppearance,
+} from './animalAppearance';
+export type { AnimalAppearancePalette, AnimalAppearanceProfile } from './animalAppearance';
 export {
   FOX_LEG_KEYS,
   isFoxLegInContact,

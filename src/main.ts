@@ -1,11 +1,17 @@
 import '@fontsource/nunito/latin-700.css';
 import * as THREE from 'three';
 import { Game } from './Game';
+import {
+  BrowserMarketRouteHistory,
+  type MarketChooserRoute,
+  type MarketRouteModel,
+} from './routing';
 import './styles.css';
 
 const root = document.querySelector<HTMLDivElement>('#app');
-
 if (!root) throw new Error('Tickerworld could not find its app root.');
+const appRoot = root;
+const isAdminRoute = /^\/admin\/?$/i.test(location.pathname);
 
 function supportsWebGL(): boolean {
   try {
@@ -16,16 +22,83 @@ function supportsWebGL(): boolean {
   }
 }
 
-if (!supportsWebGL()) {
-  root.innerHTML = `
-    <main class="unsupported-screen">
-      <div class="unsupported-card">
-        <span aria-hidden="true">🦊</span>
-        <h1>This little world needs WebGL</h1>
-        <p>Try opening Tickerworld in a recent version of Chrome, Edge, Firefox, or Safari.</p>
-      </div>
-    </main>`;
-} else {
-  THREE.ColorManagement.enabled = true;
-  new Game(root);
+const routeHistory = new BrowserMarketRouteHistory();
+let game: Game | null = null;
+
+function renderUnsupported(): void {
+  appRoot.replaceChildren();
+  const screen = document.createElement('main');
+  screen.className = 'unsupported-screen';
+  const card = document.createElement('div');
+  card.className = 'unsupported-card';
+  const icon = document.createElement('span');
+  icon.setAttribute('aria-hidden', 'true');
+  icon.textContent = '🦊';
+  const heading = document.createElement('h1');
+  heading.textContent = 'This little world needs WebGL';
+  const copy = document.createElement('p');
+  copy.textContent = 'Try opening Tickerworld in a recent version of Chrome, Edge, Firefox, or Safari.';
+  card.append(icon, heading, copy);
+  screen.append(card);
+  appRoot.append(screen);
 }
+
+function renderChooser(route: MarketChooserRoute): void {
+  game?.dispose();
+  game = null;
+  appRoot.replaceChildren();
+  const screen = document.createElement('main');
+  screen.className = 'market-chooser-screen';
+  const card = document.createElement('section');
+  card.className = 'market-chooser-card';
+  const kicker = document.createElement('div');
+  kicker.className = 'market-chooser-kicker';
+  kicker.textContent = 'A quiet path back';
+  const heading = document.createElement('h1');
+  heading.textContent = route.title;
+  const message = document.createElement('p');
+  message.textContent = route.message;
+  const choices = document.createElement('nav');
+  choices.setAttribute('aria-label', 'Live market worlds');
+  choices.className = 'market-chooser-grid';
+  for (const choice of route.choices) {
+    const link = document.createElement('a');
+    link.href = choice.path;
+    link.textContent = choice.symbol;
+    link.setAttribute('aria-label', choice.label);
+    choices.append(link);
+  }
+  card.append(kicker, heading, message, choices);
+  screen.append(card);
+  appRoot.append(screen);
+}
+
+function mountRoute(route: MarketRouteModel): void {
+  if (route.kind === 'chooser') {
+    renderChooser(route);
+    return;
+  }
+  if (!supportsWebGL()) {
+    game?.dispose();
+    game = null;
+    renderUnsupported();
+    return;
+  }
+  THREE.ColorManagement.enabled = true;
+  if (!game) {
+    game = new Game(appRoot, { activeMarket: route.market, routeHistory });
+    return;
+  }
+  if (game.marketSymbol !== route.market) void game.switchMarket(route.market);
+}
+
+if (isAdminRoute) {
+  void import('./admin/AdminApp').then(({ AdminApp }) => {
+    const admin = new AdminApp(appRoot);
+    addEventListener('beforeunload', () => admin.dispose(), { once: true });
+  });
+} else {
+  mountRoute(routeHistory.canonicalize());
+  routeHistory.subscribe(mountRoute);
+}
+addEventListener('beforeunload', () => routeHistory.dispose(), { once: true });

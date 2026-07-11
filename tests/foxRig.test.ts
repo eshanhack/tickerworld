@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { ANIMAL_KINDS } from '../shared/src/index.js';
 import { PALETTE } from '../src/config';
 import { FoxRig } from '../src/player/FoxRig';
 import {
@@ -99,6 +100,101 @@ describe('FoxRig hierarchy and silhouette', () => {
     });
     expect(meshCount).toBeGreaterThan(30);
     disposeRig(rig);
+  });
+
+  it('switches across all eight animals without replacing the articulated paw chains', () => {
+    const rig = new FoxRig();
+    const paws = Object.fromEntries(
+      ['FrontLeft', 'FrontRight', 'HindLeft', 'HindRight'].map((label) => [
+        label,
+        rig.root.getObjectByName(`Fox${label}Paw`),
+      ]),
+    );
+    const speciesFeature: Record<(typeof ANIMAL_KINDS)[number], string | null> = {
+      fox: null,
+      penguin: 'PenguinBeak',
+      frog: 'FrogEyeBulbLeft',
+      duck: 'DuckBill',
+      bear: 'BearEarLeft',
+      rabbit: 'RabbitEarLeft',
+      cat: 'CatWhiskerLeft1',
+      axolotl: 'AxolotlGillLeft1',
+    };
+
+    for (const animal of ANIMAL_KINDS) {
+      rig.setAnimal(animal);
+      expect(rig.animal).toBe(animal);
+      expect(rig.skin).toBe('base');
+      const feature = speciesFeature[animal];
+      if (feature) expect(rig.root.getObjectByName(feature), `${animal} feature`).toBeInstanceOf(THREE.Mesh);
+      for (const [label, paw] of Object.entries(paws)) {
+        expect(rig.root.getObjectByName(`Fox${label}Paw`)).toBe(paw);
+      }
+      rig.updatePose({
+        deltaSeconds: 1 / 60,
+        elapsedSeconds: 1,
+        gaitPhase: Math.PI * 0.4,
+        movementBlend: 1,
+        runBlend: 0.5,
+      });
+      expect(Object.values(rig.getRenderedPawStates()).every((state) => Number.isFinite(state.clearance))).toBe(true);
+    }
+    disposeRig(rig);
+  });
+
+  it('restores the exact default fox palette, visibility, and bounds after switching', () => {
+    const rig = new FoxRig();
+    const before = rig.getDebugSnapshot().bounds;
+    const torso = rig.root.getObjectByName('FoxTorso') as THREE.Mesh;
+    const fur = torso.material as THREE.MeshStandardMaterial;
+
+    rig.setAnimal('rabbit', 'amethyst-rabbit');
+    expect(fur.color.getHex()).not.toBe(PALETTE.fox);
+    rig.setAnimal('fox');
+
+    expect(rig.getDebugSnapshot().bounds).toEqual(before);
+    expect(fur.color.getHex()).toBe(PALETTE.fox);
+    expect((rig.root.getObjectByName('FoxChestCream') as THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial>)
+      .material.color.getHex()).toBe(PALETTE.foxCream);
+    expect((rig.root.getObjectByName('FoxFrontLeftPaw') as THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial>)
+      .material.color.getHex()).toBe(PALETTE.ink);
+    expect(rig.root.getObjectByName('FoxEarLeft')?.visible).toBe(true);
+    expect(rig.root.getObjectByName('FoxTailJoint1')?.visible).toBe(true);
+    expect(rig.root.getObjectByName('AnimalAppearanceHead')).toBeUndefined();
+    disposeRig(rig);
+  });
+
+  it('accepts only the premium skin paired with the selected animal', () => {
+    const rig = new FoxRig();
+    rig.setAnimal('rabbit', 'amethyst-rabbit');
+    expect(rig.skin).toBe('amethyst-rabbit');
+    expect(rig.root.getObjectByName('PremiumAnimalCrest')).toBeInstanceOf(THREE.Mesh);
+
+    rig.setAnimal('rabbit', 'sunrise-fox');
+    expect(rig.skin).toBe('base');
+    expect(rig.root.getObjectByName('PremiumAnimalCrest')).toBeUndefined();
+    disposeRig(rig);
+  });
+
+  it('disposes replaced attachment geometry once while retaining shared rig materials', () => {
+    const rig = new FoxRig();
+    const fur = (rig.root.getObjectByName('FoxTorso') as THREE.Mesh).material as THREE.Material;
+    const furDispose = vi.spyOn(fur, 'dispose');
+    rig.setAnimal('frog');
+    const oldRoot = rig.root.getObjectByName('AnimalAppearanceHead')!;
+    const geometrySpies: Array<ReturnType<typeof vi.spyOn>> = [];
+    oldRoot.traverse((object) => {
+      if (object instanceof THREE.Mesh) geometrySpies.push(vi.spyOn(object.geometry, 'dispose'));
+    });
+
+    rig.setAnimal('duck');
+    geometrySpies.forEach((spy) => expect(spy).toHaveBeenCalledOnce());
+    expect(furDispose).not.toHaveBeenCalled();
+
+    rig.setAnimal('fox');
+    expect(furDispose).not.toHaveBeenCalled();
+    disposeRig(rig);
+    expect(furDispose).toHaveBeenCalledOnce();
   });
 });
 

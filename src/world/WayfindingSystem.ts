@@ -9,7 +9,9 @@ import {
 } from 'three';
 import { Text } from 'troika-three-text';
 import { GRAND_MONUMENTS, PALETTE } from '../config';
+import type { AssetSymbol } from '../types';
 import {
+  createMarketRoadSignDescriptors,
   createRoadSignDescriptors,
   type RoadSignDescriptor,
   type WayfindingCoordinate,
@@ -20,6 +22,8 @@ export interface WayfindingSystemOptions {
   readonly fontUrl?: string;
   readonly heightAt?: (x: number, z: number) => number;
   readonly monuments?: readonly WayfindingCoordinate[];
+  /** When set, render only the seven portal-entry signs for this bounded world. */
+  readonly activeMarket?: AssetSymbol;
 }
 
 const BOARD_WIDTH = 3.1;
@@ -43,7 +47,7 @@ function finiteOrZero(value: number): number {
 /** Fourteen static road-entry signs. No billboard work is required per frame. */
 export class WayfindingSystem {
   public readonly root = new Group();
-  public readonly descriptors: readonly RoadSignDescriptor[];
+  public descriptors: readonly RoadSignDescriptor[];
 
   private readonly boardGeometry = new BoxGeometry(BOARD_WIDTH, BOARD_HEIGHT, BOARD_DEPTH);
   private readonly poleGeometry = new CylinderGeometry(0.09, 0.12, 1, 8);
@@ -65,21 +69,27 @@ export class WayfindingSystem {
     flatShading: true,
   });
   private readonly texts: Text[] = [];
+  private readonly heightAt: (x: number, z: number) => number;
+  private readonly fontUrl?: string;
+  private readonly monuments: readonly WayfindingCoordinate[];
   private disposed = false;
 
   public constructor(options: WayfindingSystemOptions) {
     this.root.name = 'tickerworld-wayfinding';
-    const heightAt = options.heightAt ?? (() => 0);
-    this.descriptors = createRoadSignDescriptors(options.monuments ?? GRAND_MONUMENTS);
-    this.descriptors.forEach((descriptor, index) => {
-      this.root.add(this.buildSign(
-        descriptor,
-        index,
-        finiteOrZero(heightAt(descriptor.x, descriptor.z)),
-        options.fontUrl,
-      ));
-    });
+    this.heightAt = options.heightAt ?? (() => 0);
+    this.fontUrl = options.fontUrl;
+    this.monuments = options.monuments ?? GRAND_MONUMENTS;
+    this.descriptors = options.activeMarket
+      ? createMarketRoadSignDescriptors(options.activeMarket, this.monuments)
+      : createRoadSignDescriptors(this.monuments);
+    this.rebuild();
     options.parent.add(this.root);
+  }
+
+  public setActiveMarket(activeMarket: AssetSymbol): void {
+    if (this.disposed) return;
+    this.descriptors = createMarketRoadSignDescriptors(activeMarket, this.monuments);
+    this.rebuild();
   }
 
   public setVisible(visible: boolean): void {
@@ -152,6 +162,20 @@ export class WayfindingSystem {
       this.buildLabel(descriptor, 'back', -BOARD_DEPTH * 0.5 - 0.012, fontUrl),
     );
     return sign;
+  }
+
+  private rebuild(): void {
+    for (const text of this.texts) text.dispose();
+    this.texts.length = 0;
+    this.root.clear();
+    this.descriptors.forEach((descriptor, index) => {
+      this.root.add(this.buildSign(
+        descriptor,
+        index,
+        finiteOrZero(this.heightAt(descriptor.x, descriptor.z)),
+        this.fontUrl,
+      ));
+    });
   }
 
   private buildLabel(

@@ -184,7 +184,7 @@ describe('BrowserNewsFeed lifecycle', () => {
     feed.dispose();
   });
 
-  it('automatically demos an unconfigured endpoint and silently adopts live backfill later', async () => {
+  it('never invents news for an unconfigured endpoint and silently adopts live backfill later', async () => {
     const replies = [
       response('unconfigured', []),
       response('live', [item('live-1', NOW + 1_000)], NOW + 1_000),
@@ -195,8 +195,7 @@ describe('BrowserNewsFeed lifecycle', () => {
     feed.subscribe((update) => updates.push(update));
 
     await feed.start();
-    expect(updates.at(-1)).toMatchObject({ mode: 'simulated', added: [] });
-    expect(updates.at(-1)?.items[0]?.demo).toBe(true);
+    expect(updates.at(-1)).toMatchObject({ mode: 'unconfigured', items: [], added: [] });
 
     await vi.advanceTimersByTimeAsync(1_000);
     expect(updates.at(-1)).toMatchObject({ mode: 'live', added: [] });

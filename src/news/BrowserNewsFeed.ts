@@ -146,7 +146,8 @@ export class BrowserNewsFeed implements NewsFeed {
       if (this.paused || this.disposed || controller.signal.aborted) return;
 
       if (parsed.mode === 'unconfigured') {
-        this.enterDemo();
+        this.leaveDemo();
+        this.publish('unconfigured', this.xItems(), [], parsed.checkedAt);
       } else if (parsed.mode === 'unavailable') {
         this.leaveDemo();
         this.publish('unavailable', this.xItems(), [], parsed.checkedAt);

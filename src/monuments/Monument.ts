@@ -83,6 +83,22 @@ export interface MonumentNewsOverlayState extends NewsPanelSelection {
   readonly candleAnchor: Vector3;
 }
 
+export interface MonumentScreenViewport {
+  readonly left: number;
+  readonly top: number;
+  readonly width: number;
+  readonly height: number;
+}
+
+export interface MonumentChartOcclusionBounds {
+  readonly left: number;
+  readonly top: number;
+  readonly right: number;
+  readonly bottom: number;
+  /** Positive camera-space distance to the chart plane. */
+  readonly depth: number;
+}
+
 const COLORS = {
   stone: 0xb8aea0,
   stoneLight: 0xd7cec0,
@@ -164,6 +180,8 @@ export class Monument {
   private readonly downColor = new Color(COLORS.red);
   private readonly flatColor = new Color(COLORS.cream);
   private readonly targetRangeFallback: PriceRange = { min: 0, max: 1 };
+  private readonly occlusionCorners = [new Vector3(), new Vector3(), new Vector3(), new Vector3()];
+  private readonly occlusionCenter = new Vector3();
 
   private targetCandles: Candle[] = [];
   private displayedCandles: Candle[] = [];
@@ -448,6 +466,47 @@ export class Monument {
       0.35,
     );
     return this.chartGroup.localToWorld(target);
+  }
+
+  /** Camera-projected chart/price bounds used only by social overlay fading. */
+  getChartOcclusionBounds(
+    camera: Camera,
+    viewport: MonumentScreenViewport,
+  ): MonumentChartOcclusionBounds | null {
+    if (!this.active || this.disposed || viewport.width <= 0 || viewport.height <= 0) return null;
+    this.presentationGroup.updateWorldMatrix(true, true);
+    camera.updateWorldMatrix(true, false);
+
+    const minX = -CHART_WIDTH * 0.5 - 0.55;
+    const maxX = CHART_WIDTH * 0.5 + 0.95;
+    const minY = 0.72;
+    const maxY = 9.15;
+    const localZ = MONUMENT_PRESENTATION_FORWARD_OFFSET;
+    const coordinates = [[minX, minY], [maxX, minY], [maxX, maxY], [minX, maxY]] as const;
+    let left = Number.POSITIVE_INFINITY;
+    let top = Number.POSITIVE_INFINITY;
+    let right = Number.NEGATIVE_INFINITY;
+    let bottom = Number.NEGATIVE_INFINITY;
+
+    for (let index = 0; index < coordinates.length; index += 1) {
+      const [x, y] = coordinates[index]!;
+      const corner = this.occlusionCorners[index]!;
+      corner.set(x, y, localZ).applyMatrix4(this.presentationGroup.matrixWorld);
+      if (tempWorldPoint.copy(corner).applyMatrix4(camera.matrixWorldInverse).z >= 0) return null;
+      corner.project(camera);
+      const screenX = viewport.left + (corner.x + 1) * 0.5 * viewport.width;
+      const screenY = viewport.top + (1 - corner.y) * 0.5 * viewport.height;
+      left = Math.min(left, screenX);
+      right = Math.max(right, screenX);
+      top = Math.min(top, screenY);
+      bottom = Math.max(bottom, screenY);
+    }
+
+    this.occlusionCenter
+      .set((minX + maxX) * 0.5, (minY + maxY) * 0.5, localZ)
+      .applyMatrix4(this.presentationGroup.matrixWorld)
+      .applyMatrix4(camera.matrixWorldInverse);
+    return { left, top, right, bottom, depth: Math.max(0, -this.occlusionCenter.z) };
   }
 
   setAssetState(state: AssetState): void {

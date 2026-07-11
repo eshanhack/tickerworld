@@ -1,5 +1,10 @@
 export { Hud, type HudCallbacks } from './Hud';
 export {
+  UiInteractionLock,
+  type UiInteractionListener,
+  type UiInteractionOwner,
+} from './UiInteractionLock';
+export {
   NewsOverlayView,
   clampNewsOverlayPosition,
   createNewsConnectorPath,

@@ -19,6 +19,7 @@ export interface HudCallbacks {
   onJump: () => void;
   onGlideChange: (held: boolean) => void;
   onNewsDismiss?: (itemId: string) => void;
+  onNewsInteractionChange?: (active: boolean) => void;
 }
 
 interface NearbyView {
@@ -53,6 +54,7 @@ export class Hud {
   private readonly joystickKnob: HTMLElement;
   private readonly jumpButton: HTMLButtonElement;
   private readonly newsOverlay: NewsOverlayView;
+  private readonly extensionLayers = new Set<HTMLElement>();
   private readonly activeJumpPointers = new Set<number>();
   private joystickPointer: number | null = null;
   private joystickCenter = { x: 0, y: 0 };
@@ -153,6 +155,7 @@ export class Hud {
     this.jumpButton = this.required<HTMLButtonElement>('[data-jump]');
     this.newsOverlay = new NewsOverlayView(this.root, {
       onDismiss: (itemId) => this.callbacks.onNewsDismiss?.(itemId),
+      onInteractionChange: (active) => this.callbacks.onNewsInteractionChange?.(active),
     });
 
     this.enterButton.addEventListener('click', this.enter);
@@ -279,6 +282,20 @@ export class Hud {
     this.newsOverlay.setState(state);
   }
 
+  /** Mounts an independently-owned HUD layer inside the existing safe UI root. */
+  mountLayer(className: string): HTMLDivElement {
+    const layer = document.createElement('div');
+    layer.className = `hud-extension ${className}`.trim();
+    this.root.append(layer);
+    this.extensionLayers.add(layer);
+    return layer;
+  }
+
+  unmountLayer(layer: HTMLElement): void {
+    if (!this.extensionLayers.delete(layer)) return;
+    layer.remove();
+  }
+
   dispose(): void {
     this.enterButton.removeEventListener('click', this.enter);
     this.musicMuteButton.removeEventListener('click', this.musicMute);
@@ -298,6 +315,8 @@ export class Hud {
     document.removeEventListener('keydown', this.keydown);
     this.releaseAllJumps();
     if (this.pricePulseTimer !== undefined) window.clearTimeout(this.pricePulseTimer);
+    for (const layer of this.extensionLayers) layer.remove();
+    this.extensionLayers.clear();
     this.newsOverlay.dispose();
     this.root.remove();
   }

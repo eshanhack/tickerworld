@@ -1,15 +1,6 @@
-export const ASSET_SYMBOLS = [
-  'BTC',
-  'ETH',
-  'SOL',
-  'XRP',
-  'DOGE',
-  'BNB',
-  'LINK',
-  'AVAX',
-] as const;
-
-export type AssetSymbol = (typeof ASSET_SYMBOLS)[number];
+export { ASSET_SYMBOLS } from '../shared/src/index.js';
+export type { AssetSymbol } from '../shared/src/index.js';
+import type { AssetSymbol } from '../shared/src/index.js';
 export type FeedMode = 'connecting' | 'live' | 'reconnecting' | 'simulated';
 export type MarketProvider = 'hyperliquid' | 'simulation';
 export type MarketUpdateKind = 'snapshot' | 'trade' | 'candle' | 'simulation';

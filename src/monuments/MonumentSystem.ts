@@ -3,8 +3,10 @@ import type { NewsItem } from '../news';
 import type { AssetState, AssetSymbol, GameSystem } from '../types';
 import {
   Monument,
+  type MonumentChartOcclusionBounds,
   type MonumentNewsOverlayState,
   type MonumentOptions,
+  type MonumentScreenViewport,
 } from './Monument';
 
 export type NewsWindowOpener = (
@@ -20,6 +22,8 @@ export interface MonumentSystemOptions {
   domElement?: HTMLElement;
   openWindow?: NewsWindowOpener;
   interactionDragThreshold?: number;
+  /** Disable the built-in click listener when a shared canvas coordinator owns picking. */
+  attachInteractionListeners?: boolean;
 }
 
 export interface NearestMonument {
@@ -93,7 +97,7 @@ export class MonumentSystem implements GameSystem {
     this.interactionDragThreshold = Math.max(0, options.interactionDragThreshold ?? 7);
     this.root.name = 'tickerworld-monuments';
     options.parent.add(this.root);
-    this.attachInteractionListeners();
+    if (options.attachInteractionListeners !== false) this.attachInteractionListeners();
   }
 
   add(options: MonumentOptions): Monument {
@@ -215,6 +219,17 @@ export class MonumentSystem implements GameSystem {
       if (monument.collidesCamera(x, y, z)) return true;
     }
     return false;
+  }
+
+  getChartOcclusionBounds(
+    viewport: MonumentScreenViewport,
+  ): MonumentChartOcclusionBounds | null {
+    for (const monument of this.monuments) {
+      if (!monument.discoverable) continue;
+      const bounds = monument.getChartOcclusionBounds(this.camera, viewport);
+      if (bounds) return bounds;
+    }
+    return null;
   }
 
   setCamera(camera: Camera): void {
