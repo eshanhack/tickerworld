@@ -1,12 +1,14 @@
 import {
-  NEWS_ITEM_TTL_MS,
   dedupeNewsItems,
   pruneExpiredNewsItems,
+} from '../src/news/newsMath.js';
+import {
+  NEWS_ITEM_TTL_MS,
   type NewsApiMode,
   type NewsApiResponse,
   type NewsItem,
   type NewsLink,
-} from '../src/news';
+} from '../src/news/types.js';
 
 declare const process: {
   readonly env: Record<string, string | undefined>;

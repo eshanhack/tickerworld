@@ -4,7 +4,7 @@ import {
   mergeNewsItems,
   parseNewsApiResponse,
   pruneExpiredNewsItems,
-} from './newsMath';
+} from './newsMath.js';
 import {
   NEWS_DEMO_INTERVAL_MS,
   NEWS_POLL_INTERVAL_MS,
@@ -13,7 +13,7 @@ import {
   type NewsFeedMode,
   type NewsFeedUpdate,
   type NewsItem,
-} from './types';
+} from './types.js';
 
 type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 

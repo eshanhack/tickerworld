@@ -1,4 +1,4 @@
-export { BrowserNewsFeed, type BrowserNewsFeedOptions } from './BrowserNewsFeed';
+export { BrowserNewsFeed, type BrowserNewsFeedOptions } from './BrowserNewsFeed.js';
 export {
   createDemoNewsItem,
   dedupeNewsItems,
@@ -8,7 +8,7 @@ export {
   pruneExpiredNewsItems,
   type NewItemCursor,
   type NewItemResult,
-} from './newsMath';
+} from './newsMath.js';
 export {
   NEWS_DEMO_INTERVAL_MS,
   NEWS_ITEM_TTL_MS,
@@ -23,4 +23,4 @@ export {
   type NewsLink,
   type NewsLinkKind,
   type NewsSource,
-} from './types';
+} from './types.js';
