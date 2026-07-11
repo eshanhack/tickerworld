@@ -89,8 +89,8 @@ function pointInBox(
     && Math.abs(z - centerZ) <= halfZ;
 }
 
-/** Point collision in monument-local space, padded for a small third-person camera probe. */
-export function collidesLocalCamera(localX: number, localY: number, localZ: number): boolean {
+/** Static point collision in monument-local space, padded for a small camera probe. */
+export function collidesLocalStaticCamera(localX: number, localY: number, localZ: number): boolean {
   const padding = 0.24;
 
   for (const layer of PLAZA_LAYERS) {
@@ -134,8 +134,25 @@ export function collidesLocalCamera(localX: number, localY: number, localZ: numb
     return true;
   }
 
+  return false;
+}
+
+/** Medallion collision in the local space used by buildMedallion. */
+export function collidesLocalMedallionCamera(
+  localX: number,
+  localY: number,
+  localZ: number,
+): boolean {
+  const padding = 0.24;
+
   const dx = localX - MEDALLION_CENTER.x;
   const dy = localY - MEDALLION_CENTER.y;
   return dx * dx + dy * dy <= (MEDALLION_RADIUS + padding) ** 2
     && Math.abs(localZ - MEDALLION_CENTER.z) <= MEDALLION_DEPTH * 0.5 + padding;
+}
+
+/** Legacy combined helper for callers whose medallion has not been rotated. */
+export function collidesLocalCamera(localX: number, localY: number, localZ: number): boolean {
+  return collidesLocalStaticCamera(localX, localY, localZ)
+    || collidesLocalMedallionCamera(localX, localY, localZ);
 }

@@ -25,21 +25,39 @@ const COLORS = {
   flat: 0x77736c,
 } as const;
 
+const OVERLAY_LAYER = {
+  card: 0,
+  clock: 1,
+  hand: 2,
+  text: 3,
+} as const;
+
+export const HORIZON_BADGE_LAYOUT = {
+  cardWidth: 1.9,
+  cardHeight: 0.78,
+  clockCenterX: -0.66,
+  clockOuterRadius: 0.15,
+  textStartX: -0.38,
+  timeframeY: 0.18,
+  changeY: -0.14,
+  sideX: 8.35,
+} as const;
+
 const BADGE_POSITIONS: ReadonlyArray<readonly [number, number]> = [
-  [-7.95, -0.6],
-  [-7.95, -1.9],
-  [-7.95, -3.2],
-  [-7.95, -4.5],
-  [7.95, -1.25],
-  [7.95, -2.55],
-  [7.95, -3.85],
+  [-HORIZON_BADGE_LAYOUT.sideX, -0.68],
+  [-HORIZON_BADGE_LAYOUT.sideX, -1.92],
+  [-HORIZON_BADGE_LAYOUT.sideX, -3.16],
+  [-HORIZON_BADGE_LAYOUT.sideX, -4.4],
+  [HORIZON_BADGE_LAYOUT.sideX, -1.3],
+  [HORIZON_BADGE_LAYOUT.sideX, -2.54],
+  [HORIZON_BADGE_LAYOUT.sideX, -3.78],
 ];
 
 interface BadgeVisual {
   readonly horizon: PriceHorizon;
   readonly root: Group;
   readonly card: Mesh<RoundedBoxGeometry, MeshBasicMaterial>;
-  readonly text: Text;
+  readonly changeText: Text;
   readonly secondHand: Mesh<BoxGeometry, MeshBasicMaterial>;
   readonly minuteHand: Mesh<BoxGeometry, MeshBasicMaterial>;
   readonly baseY: number;
@@ -54,12 +72,12 @@ function arrowFor(direction: TickDirection): string {
 
 function formatRatio(change: HorizonChange): string {
   if (change.changeRatio === null || !Number.isFinite(change.changeRatio)) {
-    return `${change.horizon}  \u00b7  \u2014`;
+    return '\u2014';
   }
   const percent = change.changeRatio * 100;
   const precision = Math.abs(percent) >= 10 ? 1 : 2;
   const sign = percent > 0 ? '+' : '';
-  return `${change.horizon}  ${arrowFor(change.direction)}  ${sign}${percent.toFixed(precision)}%`;
+  return `${arrowFor(change.direction)}  ${sign}${percent.toFixed(precision)}%`;
 }
 
 export class HorizonBadgePanel {
@@ -106,35 +124,74 @@ export class HorizonBadgePanel {
 
       const card = new Mesh(cardGeometry, this.directionMaterials.flat);
       card.name = `horizon-card-${horizon}`;
-      card.scale.set(1.55, 0.62, 0.08);
+      card.scale.set(
+        HORIZON_BADGE_LAYOUT.cardWidth,
+        HORIZON_BADGE_LAYOUT.cardHeight,
+        0.08,
+      );
+      card.renderOrder = OVERLAY_LAYER.card;
       badge.add(card);
 
       const clock = new Mesh(clockGeometry, clockMaterial);
-      clock.position.set(-0.56, 0, 0.065);
+      clock.name = `horizon-clock-${horizon}`;
+      clock.position.set(HORIZON_BADGE_LAYOUT.clockCenterX, 0, 0.065);
+      clock.renderOrder = OVERLAY_LAYER.clock;
       const secondHand = new Mesh(secondHandGeometry, clockMaterial);
-      secondHand.position.set(-0.56, 0.045, 0.07);
+      secondHand.name = `horizon-second-hand-${horizon}`;
+      secondHand.position.set(HORIZON_BADGE_LAYOUT.clockCenterX, 0.045, 0.07);
+      secondHand.renderOrder = OVERLAY_LAYER.hand;
       const minuteHand = new Mesh(minuteHandGeometry, clockMaterial);
-      minuteHand.position.set(-0.56, 0.033, 0.072);
+      minuteHand.name = `horizon-minute-hand-${horizon}`;
+      minuteHand.position.set(HORIZON_BADGE_LAYOUT.clockCenterX, 0.033, 0.072);
+      minuteHand.renderOrder = OVERLAY_LAYER.hand;
       badge.add(clock, secondHand, minuteHand);
 
-      const label = new Text();
-      label.text = `${horizon}  \u00b7  \u2014`;
-      label.fontSize = 0.205;
-      label.color = COLORS.cream;
-      label.anchorX = 'center';
-      label.anchorY = 'middle';
-      label.position.set(0.12, 0, 0.07);
-      label.depthOffset = -4;
-      if (fontUrl) label.font = fontUrl;
-      if (typeof self !== 'undefined') label.sync();
-      badge.add(label);
-      this.texts.add(label);
+      const timeframeText = new Text();
+      timeframeText.name = `horizon-timeframe-${horizon}`;
+      timeframeText.text = horizon;
+      timeframeText.fontSize = 0.15;
+      timeframeText.color = COLORS.cream;
+      timeframeText.anchorX = 'left';
+      timeframeText.anchorY = 'middle';
+      timeframeText.position.set(
+        HORIZON_BADGE_LAYOUT.textStartX,
+        HORIZON_BADGE_LAYOUT.timeframeY,
+        0.07,
+      );
+      timeframeText.depthOffset = -4;
+      timeframeText.renderOrder = OVERLAY_LAYER.text;
+
+      const changeText = new Text();
+      changeText.name = `horizon-change-${horizon}`;
+      changeText.text = '\u2014';
+      changeText.fontSize = 0.19;
+      changeText.color = COLORS.cream;
+      changeText.anchorX = 'left';
+      changeText.anchorY = 'middle';
+      changeText.position.set(
+        HORIZON_BADGE_LAYOUT.textStartX,
+        HORIZON_BADGE_LAYOUT.changeY,
+        0.07,
+      );
+      changeText.depthOffset = -4;
+      changeText.renderOrder = OVERLAY_LAYER.text;
+      if (fontUrl) {
+        timeframeText.font = fontUrl;
+        changeText.font = fontUrl;
+      }
+      if (typeof self !== 'undefined') {
+        timeframeText.sync();
+        changeText.sync();
+      }
+      badge.add(timeframeText, changeText);
+      this.texts.add(timeframeText);
+      this.texts.add(changeText);
       this.root.add(badge);
       this.badges.push({
         horizon,
         root: badge,
         card,
-        text: label,
+        changeText,
         secondHand,
         minuteHand,
         baseY,
@@ -146,6 +203,7 @@ export class HorizonBadgePanel {
     this.countdownCard.name = 'candle-countdown-card';
     this.countdownCard.scale.set(2.55, 0.68, 0.09);
     this.countdownCard.position.set(3.72, 0, 0.025);
+    this.countdownCard.renderOrder = OVERLAY_LAYER.card;
     this.root.add(this.countdownCard);
 
     this.countdownText.name = 'candle-countdown-text';
@@ -156,6 +214,7 @@ export class HorizonBadgePanel {
     this.countdownText.anchorY = 'middle';
     this.countdownText.position.set(3.72, 0, 0.08);
     this.countdownText.depthOffset = -4;
+    this.countdownText.renderOrder = OVERLAY_LAYER.text;
     if (fontUrl) this.countdownText.font = fontUrl;
     if (typeof self !== 'undefined') this.countdownText.sync();
     this.root.add(this.countdownText);
@@ -174,9 +233,9 @@ export class HorizonBadgePanel {
         direction: 'flat' as const,
       };
       const text = formatRatio(change);
-      if (badge.text.text !== text) {
-        badge.text.text = text;
-        if (typeof self !== 'undefined') badge.text.sync();
+      if (badge.changeText.text !== text) {
+        badge.changeText.text = text;
+        if (typeof self !== 'undefined') badge.changeText.sync();
       }
       badge.card.material = this.directionMaterials[change.direction];
     }

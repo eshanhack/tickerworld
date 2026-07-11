@@ -12,6 +12,18 @@ export const ASSET_AUDIO_PROFILES: Readonly<Record<AssetSymbol, AssetAudioProfil
   AVAX: { frequency: 493.88, accent: -5 },
 };
 
+/**
+ * Fixed one-minute return thresholds, expressed as ratios rather than percents.
+ * For example, 0.0001 is 0.01%. These deliberately sit well below daily-chart
+ * alert levels: a live one-minute candle should reach medium regularly, large
+ * during an energetic minute, and exceptional only on a genuinely sharp move.
+ */
+export const MARKET_MOVE_THRESHOLDS = Object.freeze({
+  medium: 0.0001,
+  large: 0.00035,
+  exceptional: 0.001,
+} as const);
+
 export function clampUnit(value: number): number {
   if (!Number.isFinite(value)) return 0;
   return Math.min(1, Math.max(0, value));
@@ -31,16 +43,34 @@ export function normaliseMoveIntensity(moveRatio: number): number {
 export function marketMoveSeverity(moveRatio: number): number {
   if (!Number.isFinite(moveRatio)) return 0;
   const magnitude = Math.abs(moveRatio);
-  return clampUnit(Math.log1p(magnitude / 0.00004) / Math.log1p(0.004 / 0.00004));
+  return clampUnit(Math.log1p(magnitude / 0.000025) / Math.log1p(0.003 / 0.000025));
 }
 
-/** Thresholds are fractional moves: 0.001 is a 0.1% move. */
+/** Classifies an absolute or signed current one-minute return. */
 export function classifyMarketMove(moveRatio: number): MarketMoveClass {
   const magnitude = Number.isFinite(moveRatio) ? Math.abs(moveRatio) : 0;
-  if (magnitude >= 0.002) return 'exceptional';
-  if (magnitude >= 0.0006) return 'large';
-  if (magnitude >= 0.00012) return 'medium';
+  if (magnitude >= MARKET_MOVE_THRESHOLDS.exceptional) return 'exceptional';
+  if (magnitude >= MARKET_MOVE_THRESHOLDS.large) return 'large';
+  if (magnitude >= MARKET_MOVE_THRESHOLDS.medium) return 'medium';
   return 'small';
+}
+
+/**
+ * Peak gain for one voice in the market gesture. Tier steps are intentionally
+ * pronounced so a large move reads as an event even after positional rolloff.
+ */
+export function marketMovePeakGain(moveRatio: number): number {
+  const severity = marketMoveSeverity(moveRatio);
+  switch (classifyMarketMove(moveRatio)) {
+    case 'exceptional':
+      return 0.12 + severity * 0.04;
+    case 'large':
+      return 0.085 + severity * 0.035;
+    case 'medium':
+      return 0.036 + severity * 0.024;
+    case 'small':
+      return 0.016 + severity * 0.022;
+  }
 }
 
 /** Keeps both notes of a market gesture inside the calm midrange. */

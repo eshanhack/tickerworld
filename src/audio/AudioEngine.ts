@@ -15,9 +15,10 @@ import {
   ASSET_AUDIO_PROFILES,
   classifyMarketMove,
   clampUnit,
+  MARKET_MOVE_THRESHOLDS,
   marketGestureFrequencies,
+  marketMovePeakGain,
   marketMoveSeverity,
-  normaliseMoveIntensity,
 } from './audioMath';
 import type {
   AudioEngineOptions,
@@ -39,13 +40,18 @@ const MUSIC_VOLUME_KEY = 'tickerworld:audio:music-volume';
 const MUSIC_MUTED_KEY = 'tickerworld:audio:music-muted';
 const SFX_VOLUME_KEY = 'tickerworld:audio:sfx-volume';
 const SFX_MUTED_KEY = 'tickerworld:audio:sfx-muted';
+const SFX_FULL_DEFAULT_MIGRATION_KEY = 'tickerworld:audio:sfx-full-default-v1';
 const MAX_MONUMENT_SOURCES = 24;
 const MAX_SCHEDULED_SOURCES = 48;
 const DEFAULT_VOLUME = 0.72;
+const DEFAULT_SFX_VOLUME = 1;
 const MARKET_TICK_COOLDOWN_SECONDS = 0.18;
-const MARKET_ACCENT_COOLDOWN_SECONDS = 5;
-const MARKET_ACCENT_GLOBAL_COOLDOWN_SECONDS = 0.35;
-const MARKET_ACCENT_REARM_RATIO = 0.00042;
+const MARKET_ACCENT_COOLDOWN_SECONDS = 1.8;
+const MARKET_ACCENT_GLOBAL_COOLDOWN_SECONDS = 0.22;
+const MARKET_ACCENT_UPGRADE_COOLDOWN_SECONDS = 0.38;
+const MARKET_ACCENT_REARM_COOLDOWN_SECONDS = 0.65;
+const MARKET_ACCENT_DIRECTION_CHANGE_COOLDOWN_SECONDS = 0.55;
+const MARKET_ACCENT_REARM_RATIO = MARKET_MOVE_THRESHOLDS.medium * 0.7;
 
 interface MonumentGraph {
   readonly descriptor: MonumentAudioSource;
@@ -125,6 +131,34 @@ function readStoredChannelMute(storage: Storage | null, key: string, fallback: b
   }
 }
 
+function hasStoredPreference(storage: Storage | null, key: string): boolean {
+  if (!storage) return false;
+  try {
+    return storage.getItem(key) !== null;
+  } catch {
+    return false;
+  }
+}
+
+function shouldUpgradeMaterialisedSfxDefault(storage: Storage | null): boolean {
+  if (!storage) return false;
+  try {
+    if (storage.getItem(SFX_FULL_DEFAULT_MIGRATION_KEY) === 'true') return false;
+    const legacyRaw = storage.getItem(VOLUME_KEY);
+    const legacy = Number.parseFloat(legacyRaw ?? '');
+    const music = Number.parseFloat(storage.getItem(MUSIC_VOLUME_KEY) ?? '');
+    const sfx = Number.parseFloat(storage.getItem(SFX_VOLUME_KEY) ?? '');
+    const isOldDefault = (value: number): boolean => (
+      Number.isFinite(value) && Math.abs(value - DEFAULT_VOLUME) < 0.000001
+    );
+    return (legacyRaw === null || isOldDefault(legacy))
+      && isOldDefault(music)
+      && isOldDefault(sfx);
+  } catch {
+    return false;
+  }
+}
+
 function safeDisconnect(node: AudioNode): void {
   try {
     node.disconnect();
@@ -191,6 +225,8 @@ export class AudioEngine {
   private readonly lastMarketTickAt = new Map<string, number>();
   private readonly marketAccentState = new Map<string, {
     tier: 'large' | 'exceptional';
+    direction: 'up' | 'down';
+    magnitude: number;
     at: number;
     armed: boolean;
   }>();
@@ -211,7 +247,13 @@ export class AudioEngine {
     this.mutedValue = readStoredMute(this.storage);
     this.musicVolumeValue = readStoredChannelVolume(this.storage, MUSIC_VOLUME_KEY, this.volumeValue);
     this.musicMutedValue = readStoredChannelMute(this.storage, MUSIC_MUTED_KEY, this.mutedValue);
-    this.sfxVolumeValue = readStoredChannelVolume(this.storage, SFX_VOLUME_KEY, this.volumeValue);
+    const sfxFallback = hasStoredPreference(this.storage, VOLUME_KEY)
+      ? this.volumeValue
+      : DEFAULT_SFX_VOLUME;
+    this.sfxVolumeValue = readStoredChannelVolume(this.storage, SFX_VOLUME_KEY, sfxFallback);
+    if (shouldUpgradeMaterialisedSfxDefault(this.storage)) {
+      this.sfxVolumeValue = DEFAULT_SFX_VOLUME;
+    }
     this.sfxMutedValue = readStoredChannelMute(this.storage, SFX_MUTED_KEY, this.mutedValue);
     // Materialise split preferences on first run so subsequent channel edits
     // never fall back to an unrelated legacy master value.
@@ -219,6 +261,7 @@ export class AudioEngine {
     this.persist(MUSIC_MUTED_KEY, String(this.musicMutedValue));
     this.persist(SFX_VOLUME_KEY, String(this.sfxVolumeValue));
     this.persist(SFX_MUTED_KEY, String(this.sfxMutedValue));
+    this.persist(SFX_FULL_DEFAULT_MIGRATION_KEY, 'true');
     this.mutedValue = this.musicMutedValue && this.sfxMutedValue;
     this.statusValue = this.contextFactory ? 'locked' : 'unavailable';
     this.reasonValue = this.contextFactory ? undefined : 'Web Audio is not available in this browser.';
@@ -390,9 +433,14 @@ export class AudioEngine {
     if (!graph || !this.context) return;
 
     const profile = ASSET_AUDIO_PROFILES[graph.descriptor.symbol];
-    const severity = marketMoveSeverity(moveRatio);
-    const legacyIntensity = normaliseMoveIntensity(moveRatio);
+    const magnitude = Math.abs(Number.isFinite(moveRatio) ? moveRatio : 0);
     const moveClass = classifyMarketMove(moveRatio);
+    const accentTier = moveClass === 'large' || moveClass === 'exceptional' ? moveClass : null;
+    // Game dispatches the same asset event to its grand shrine and any loaded
+    // echoes. Reserve the one special gesture for the source the player can
+    // actually hear best, independent of iteration order, and save its voices.
+    if (accentTier && this.nearestMonumentSourceId(graph.descriptor.symbol) !== sourceId) return;
+
     const now = this.context.currentTime;
     const lastTick = this.lastMarketTickAt.get(sourceId) ?? Number.NEGATIVE_INFINITY;
     if (now - lastTick < MARKET_TICK_COOLDOWN_SECONDS) return;
@@ -405,26 +453,40 @@ export class AudioEngine {
       }
     }
 
-    const accentTier = moveClass === 'large' || moveClass === 'exceptional' ? moveClass : null;
     const exceptional = accentTier === 'exceptional';
     const accentVoiceCount = direction === 'up'
-      ? (exceptional ? 6 : 4)
+      ? (exceptional ? 6 : 5)
       : (exceptional ? 5 : 4);
     const hasAccentCapacity = this.scheduledSources.size <= MAX_SCHEDULED_SOURCES - accentVoiceCount;
-    if (accentTier && hasAccentCapacity && this.shouldPlayMarketAccent(graph.descriptor.symbol, accentTier, now)) {
+    if (
+      accentTier
+      && hasAccentCapacity
+      && this.shouldPlayMarketAccent(graph.descriptor.symbol, direction, accentTier, magnitude, now)
+    ) {
       if (direction === 'up') {
-        this.playMarketCelebration(graph.input, now, profile.frequency, severity, exceptional);
+        this.playMarketCelebration(graph.input, now, profile.frequency, moveRatio, exceptional);
       } else {
-        this.playMarketWarning(graph.input, now, profile.frequency, severity, exceptional);
+        this.playMarketWarning(graph.input, now, profile.frequency, moveRatio, exceptional);
       }
       return;
     }
 
     const [first, second] = marketGestureFrequencies(profile.frequency, direction);
-    const peak = 0.014 + severity * 0.045 + legacyIntensity * 0.012;
+    const peak = marketMovePeakGain(moveRatio);
     const spacing = moveClass === 'small' ? 0.12 : 0.095;
-    this.playGentleNote(graph.input, now, first, 0.3, peak * 0.68, profile.accent);
-    this.playGentleNote(graph.input, now + spacing, second, 0.48, peak, profile.accent);
+    this.playGentleNote(graph.input, now, first, 0.3, peak * 0.62, profile.accent);
+    this.playGentleNote(graph.input, now + spacing, second, 0.48, peak * 0.86, profile.accent);
+    if (moveClass === 'medium') {
+      const answer = direction === 'up' ? second * 1.12246 : second * 0.94387;
+      this.playGentleNote(
+        graph.input,
+        now + spacing * 2,
+        Math.min(740, Math.max(196, answer)),
+        0.58,
+        peak,
+        profile.accent * 0.5,
+      );
+    }
   }
 
   public playCandleClose(sourceId: string, intensity = 0.5): void {
@@ -661,7 +723,7 @@ export class AudioEngine {
     const sfx = context.createGain();
     const compressor = context.createDynamicsCompressor();
     ambient.gain.value = 0.4;
-    sfx.gain.value = 0.8;
+    sfx.gain.value = 1;
     compressor.threshold.value = -15;
     compressor.knee.value = 18;
     compressor.ratio.value = 3;
@@ -704,7 +766,28 @@ export class AudioEngine {
     const musicLevel = this.musicMutedValue ? 0 : Math.pow(this.musicVolumeValue, 1.45);
     const sfxLevel = this.sfxMutedValue ? 0 : Math.pow(this.sfxVolumeValue, 1.35);
     this.ambientBus?.gain.setTargetAtTime((0.4 + this.nightFactor * 0.012) * musicLevel, now, 0.04);
-    this.sfxBus?.gain.setTargetAtTime(0.8 * sfxLevel, now, 0.025);
+    this.sfxBus?.gain.setTargetAtTime(sfxLevel, now, 0.025);
+  }
+
+  private nearestMonumentSourceId(symbol: MonumentAudioSource['symbol']): string | null {
+    const listener = this.cachedListenerPose.position;
+    let nearestId: string | null = null;
+    let nearestDistanceSquared = Number.POSITIVE_INFINITY;
+    for (const [id, graph] of this.monumentGraphs) {
+      if (graph.descriptor.symbol !== symbol || (graph.descriptor.gain ?? 1) <= 0.001) continue;
+      const dx = graph.descriptor.position.x - listener.x;
+      const dy = graph.descriptor.position.y - listener.y;
+      const dz = graph.descriptor.position.z - listener.z;
+      const distanceSquared = dx * dx + dy * dy + dz * dz;
+      if (
+        distanceSquared < nearestDistanceSquared
+        || (distanceSquared === nearestDistanceSquared && (nearestId === null || id < nearestId))
+      ) {
+        nearestId = id;
+        nearestDistanceSquared = distanceSquared;
+      }
+    }
+    return nearestId;
   }
 
   private syncMonumentGraphs(): void {
@@ -730,9 +813,9 @@ export class AudioEngine {
       input.gain.value = descriptor.gain ?? 1;
       panner.panningModel = 'HRTF';
       panner.distanceModel = 'exponential';
-      panner.refDistance = 9;
-      panner.maxDistance = 82;
-      panner.rolloffFactor = 1.45;
+      panner.refDistance = 13;
+      panner.maxDistance = 96;
+      panner.rolloffFactor = 1.12;
       input.connect(panner);
       panner.connect(this.sfxBus);
       const graph = { descriptor, input, panner };
@@ -1047,19 +1130,31 @@ export class AudioEngine {
 
   private shouldPlayMarketAccent(
     symbol: string,
+    direction: 'up' | 'down',
     tier: 'large' | 'exceptional',
+    magnitude: number,
     now: number,
   ): boolean {
     const previous = this.marketAccentState.get(symbol);
     const isUpgrade = tier === 'exceptional'
       && previous?.tier === 'large'
-      && now - previous.at >= 1.2;
+      && now - previous.at >= MARKET_ACCENT_UPGRADE_COOLDOWN_SECONDS;
+    const isDirectionChange = previous
+      && previous.direction !== direction
+      && now - previous.at >= MARKET_ACCENT_DIRECTION_CHANGE_COOLDOWN_SECONDS;
+    const isMeaningfulEscalation = previous
+      && previous.tier === tier
+      && magnitude >= previous.magnitude * 1.5
+      && now - previous.at >= MARKET_ACCENT_COOLDOWN_SECONDS;
     const isRearmed = !previous
-      || (previous.armed && now - previous.at >= MARKET_ACCENT_COOLDOWN_SECONDS);
-    if ((!isUpgrade && !isRearmed) || now - this.lastGlobalMarketAccentAt < MARKET_ACCENT_GLOBAL_COOLDOWN_SECONDS) {
+      || (previous.armed && now - previous.at >= MARKET_ACCENT_REARM_COOLDOWN_SECONDS);
+    if (
+      (!isUpgrade && !isDirectionChange && !isMeaningfulEscalation && !isRearmed)
+      || now - this.lastGlobalMarketAccentAt < MARKET_ACCENT_GLOBAL_COOLDOWN_SECONDS
+    ) {
       return false;
     }
-    this.marketAccentState.set(symbol, { tier, at: now, armed: false });
+    this.marketAccentState.set(symbol, { direction, tier, magnitude, at: now, armed: false });
     this.lastGlobalMarketAccentAt = now;
     return true;
   }
@@ -1069,19 +1164,20 @@ export class AudioEngine {
     destination: AudioNode,
     at: number,
     baseFrequency: number,
-    severity: number,
+    moveRatio: number,
     exceptional: boolean,
   ): void {
-    if (!this.context || this.scheduledSources.size > MAX_SCHEDULED_SOURCES - (exceptional ? 6 : 4)) return;
+    if (!this.context || this.scheduledSources.size > MAX_SCHEDULED_SOURCES - (exceptional ? 6 : 5)) return;
     const root = Math.min(523.25, Math.max(246.94, baseFrequency));
-    const peak = 0.036 + severity * 0.036;
-    this.playGentleNote(destination, at, root, 0.62, peak * 0.72, -2);
-    this.playGentleNote(destination, at + 0.1, root * 1.2599, 0.78, peak * 0.88, 2);
-    this.playGentleNote(destination, at + 0.21, root * 1.4983, 1.05, peak, 0);
-    this.playMagicalSweep(destination, at + 0.04, root * 0.75, root * 1.5, 0.7, peak * 0.52);
+    const severity = marketMoveSeverity(moveRatio);
+    const peak = marketMovePeakGain(moveRatio);
+    this.playGentleNote(destination, at, root, 0.72, peak * 0.74, -2);
+    this.playGentleNote(destination, at + 0.09, root * 1.2599, 0.9, peak * 0.88, 2);
+    this.playGentleNote(destination, at + 0.19, root * 1.4983, 1.16, peak, 0);
+    this.playMagicalSweep(destination, at + 0.03, root * 0.75, root * 1.68, 0.86, peak * 0.68);
+    this.playNoiseBurst(destination, at + 0.12, 0.2, 'bandpass', 1700, 0.014 + severity * 0.012);
     if (exceptional) {
-      this.playGentleNote(destination, at + 0.36, Math.min(1046.5, root * 2), 1.35, peak * 1.04, 3);
-      this.playNoiseBurst(destination, at + 0.16, 0.16, 'bandpass', 1500, 0.008 + severity * 0.006);
+      this.playGentleNote(destination, at + 0.34, Math.min(1046.5, root * 2), 1.5, peak * 1.08, 3);
     }
   }
 
@@ -1090,19 +1186,53 @@ export class AudioEngine {
     destination: AudioNode,
     at: number,
     baseFrequency: number,
-    severity: number,
+    moveRatio: number,
     exceptional: boolean,
   ): void {
     if (!this.context || this.scheduledSources.size > MAX_SCHEDULED_SOURCES - (exceptional ? 5 : 4)) return;
     const upper = Math.min(587.33, Math.max(329.63, baseFrequency * 1.26));
-    const peak = 0.034 + severity * 0.034;
-    this.playMagicalSweep(destination, at, upper, upper * 0.63, 0.78, peak);
-    this.playMagicalSweep(destination, at + 0.24, upper * 0.89, upper * 0.53, 0.86, peak * 0.88);
-    this.playDampedResonator(destination, at + 0.06, 164.81, 0.48, peak * 0.72);
-    this.playNoiseBurst(destination, at, 0.18, 'lowpass', 460, 0.006 + severity * 0.007);
+    const severity = marketMoveSeverity(moveRatio);
+    const peak = marketMovePeakGain(moveRatio);
+    this.playMarketSiren(destination, at, upper, upper * 0.56, 1.08, peak);
+    this.playMagicalSweep(destination, at + 0.28, upper * 0.9, upper * 0.5, 0.92, peak * 0.82);
+    this.playDampedResonator(destination, at + 0.05, 146.83, 0.58, peak * 0.74);
+    this.playNoiseBurst(destination, at, 0.23, 'lowpass', 520, 0.012 + severity * 0.012);
     if (exceptional) {
-      this.playMagicalSweep(destination, at + 0.52, upper * 0.75, upper * 0.45, 1.05, peak * 0.76);
+      this.playMarketSiren(destination, at + 0.54, upper * 0.82, upper * 0.43, 1.22, peak * 0.8);
     }
+  }
+
+  /** A rounded, musical warning sweep with one return pulse rather than a harsh alarm. */
+  private playMarketSiren(
+    destination: AudioNode,
+    at: number,
+    upperFrequency: number,
+    lowerFrequency: number,
+    duration: number,
+    peakGain: number,
+  ): void {
+    if (!this.context || this.scheduledSources.size >= MAX_SCHEDULED_SOURCES) return;
+    const oscillator = this.context.createOscillator();
+    const filter = this.context.createBiquadFilter();
+    const gain = this.context.createGain();
+    oscillator.type = 'triangle';
+    oscillator.frequency.setValueAtTime(upperFrequency, at);
+    oscillator.frequency.exponentialRampToValueAtTime(lowerFrequency, at + duration * 0.34);
+    oscillator.frequency.exponentialRampToValueAtTime(upperFrequency * 0.88, at + duration * 0.62);
+    oscillator.frequency.exponentialRampToValueAtTime(lowerFrequency * 0.92, at + duration * 0.92);
+    filter.type = 'lowpass';
+    filter.frequency.value = 1300;
+    filter.Q.value = 0.6;
+    gain.gain.setValueAtTime(0.0001, at);
+    gain.gain.exponentialRampToValueAtTime(peakGain, at + 0.025);
+    gain.gain.exponentialRampToValueAtTime(peakGain * 0.58, at + duration * 0.55);
+    gain.gain.exponentialRampToValueAtTime(0.0001, at + duration);
+    oscillator.connect(filter);
+    filter.connect(gain);
+    gain.connect(destination);
+    oscillator.start(at);
+    oscillator.stop(at + duration + 0.025);
+    this.trackFiniteSource(oscillator, [oscillator, filter, gain]);
   }
 
   private playGentleNote(

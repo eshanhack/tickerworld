@@ -41,9 +41,11 @@ interface LegRig {
   readonly pivot: THREE.Group;
   readonly restY: number;
   readonly restZ: number;
-  readonly phase: number;
+  readonly trotPhase: number;
+  readonly lopePhase: number;
   readonly front: boolean;
   readonly side: -1 | 1;
+  wasSwinging: boolean;
 }
 
 interface TailJoint {
@@ -75,6 +77,13 @@ const JUMP_IMPULSE = 8.65;
 const DOUBLE_JUMP_IMPULSE = 8.15;
 const COYOTE_SECONDS = 0.11;
 const JUMP_BUFFER_SECONDS = 0.14;
+const WALK_ACCELERATION_RESPONSE = 5.4;
+const SPRINT_ACCELERATION_RESPONSE = 4.75;
+const COAST_RESPONSE = 5;
+const DIRECTION_CHANGE_RESPONSE = 2.55;
+const FACING_RESPONSE = 6.7;
+const PAW_SWING_OFFSET = Math.PI * 0.18;
+const SPRINT_CONTACT_MERGE_SECONDS = 0.08;
 
 function damp(current: number, target: number, responsiveness: number, deltaSeconds: number): number {
   return THREE.MathUtils.lerp(current, target, 1 - Math.exp(-responsiveness * deltaSeconds));
@@ -115,9 +124,11 @@ export class FoxPlayer {
   private readonly walkSpeed: number;
   private readonly sprintSpeed: number;
   private elapsed = 0;
-  private travelled = 0;
-  private distanceSinceFootstep = 0;
-  private nextFoot = 0;
+  private gaitPhase = 0;
+  private sprintBlend = 0;
+  private turnLean = 0;
+  private accelerationLean = 0;
+  private lastFootfallAt = Number.NEGATIVE_INFINITY;
   private nextBlink = 2.15;
   private blinkProgress = -1;
   private nextEarFlick = 3.4;
@@ -256,7 +267,21 @@ export class FoxPlayer {
     this.desiredVelocity.copy(this.movementDirection).multiplyScalar(steeringSpeed * inputMagnitude);
     const currentSpeed = Math.hypot(this.velocity.x, this.velocity.z);
     const desiredSpeed = Math.hypot(this.desiredVelocity.x, this.desiredVelocity.z);
-    const groundedResponse = desiredSpeed > currentSpeed ? (sprintRequested ? 6.8 : 7.8) : 9.5;
+    const hasMoveIntent = desiredSpeed > 0.05;
+    let directionAlignment = 1;
+    if (hasMoveIntent && currentSpeed > 0.05) {
+      directionAlignment = THREE.MathUtils.clamp(
+        (this.velocity.x * this.desiredVelocity.x + this.velocity.z * this.desiredVelocity.z)
+          / (currentSpeed * desiredSpeed),
+        -1,
+        1,
+      );
+    }
+    const accelerating = desiredSpeed > currentSpeed + 0.08;
+    const groundedResponse = !hasMoveIntent
+      ? COAST_RESPONSE
+      : (accelerating ? (sprintRequested ? SPRINT_ACCELERATION_RESPONSE : WALK_ACCELERATION_RESPONSE) : 5.7)
+        + (1 - directionAlignment) * DIRECTION_CHANGE_RESPONSE;
     const response = this.grounded
       ? groundedResponse
       : glideIntent
@@ -267,6 +292,11 @@ export class FoxPlayer {
     if (desiredSpeed === 0 && this.velocity.lengthSq() < 0.0004) this.velocity.set(0, 0, 0);
 
     const speed = Math.hypot(this.velocity.x, this.velocity.z);
+    const horizontalAcceleration = (speed - currentSpeed) / delta;
+    const accelerationLeanTarget = this.grounded
+      ? THREE.MathUtils.clamp(-horizontalAcceleration * 0.0065, -0.075, 0.055)
+      : 0;
+    this.accelerationLean = damp(this.accelerationLean, accelerationLeanTarget, 5.8, delta);
     const moving = speed > 0.12;
     if (moving !== this.wasMoving) {
       this.squashPulse = moving ? 1 : -0.58;
@@ -275,7 +305,15 @@ export class FoxPlayer {
 
     if (speed > 0.05) {
       const targetRotation = Math.atan2(-this.velocity.x, -this.velocity.z);
-      this.model.rotation.y += shortestAngle(this.model.rotation.y, targetRotation) * (1 - Math.exp(-(this.grounded ? 9.5 : 7.2) * delta));
+      const turnError = shortestAngle(this.model.rotation.y, targetRotation);
+      this.model.rotation.y += turnError * (1 - Math.exp(-(this.grounded ? FACING_RESPONSE : 7.2) * delta));
+      const turnEnergy = THREE.MathUtils.smoothstep(speed / this.sprintSpeed, 0.08, 0.78);
+      const turnLeanTarget = this.grounded
+        ? THREE.MathUtils.clamp(-turnError * turnEnergy * 0.105, -0.105, 0.105)
+        : 0;
+      this.turnLean = damp(this.turnLean, turnLeanTarget, 7.4, delta);
+    } else {
+      this.turnLean = damp(this.turnLean, 0, 6.2, delta);
     }
 
     this.group.position.x += this.velocity.x * delta;
@@ -345,23 +383,9 @@ export class FoxPlayer {
       }
     }
 
-    const distance = speed * delta;
-    this.travelled += distance;
-    this.distanceSinceFootstep += distance;
-    const stride = THREE.MathUtils.lerp(1.14, 0.82, THREE.MathUtils.clamp((speed - this.walkSpeed) / Math.max(0.1, this.sprintSpeed - this.walkSpeed), 0, 1));
-    if (this.grounded && moving && this.distanceSinceFootstep >= stride * 0.5) {
-      this.distanceSinceFootstep %= stride * 0.5;
-      const side: FootstepEvent['side'] = this.nextFoot++ % 2 === 0 ? 'left' : 'right';
-      onFootstep?.({
-        position: this.group.position.clone(),
-        side,
-        surface: this.currentSurface,
-        sprinting: sprintRequested,
-        intensity: THREE.MathUtils.clamp(speed / this.sprintSpeed, 0.2, 1),
-      });
-    }
-
+    this.advanceGait(delta, speed, sprintRequested);
     this.animate(delta, speed, sprintRequested);
+    this.emitFootfalls(moving, speed, onFootstep);
     this.frameDisplacement.copy(this.group.position).sub(this.frameStart);
     this.updateMagic(delta, this.frameDisplacement, speed);
     return this.snapshot;
@@ -403,44 +427,102 @@ export class FoxPlayer {
     });
   }
 
+  private advanceGait(delta: number, speed: number, sprinting: boolean): void {
+    const sprintTarget = THREE.MathUtils.smoothstep(
+      speed,
+      this.walkSpeed * 0.88,
+      this.sprintSpeed * 0.92,
+    );
+    this.sprintBlend = damp(this.sprintBlend, sprintTarget, sprinting ? 3.9 : 4.8, delta);
+    // Phase is integrated instead of derived from distance * gait mode. That
+    // makes walk/lope transitions continuous even when Shift changes mid-step.
+    const gaitRadiansPerMetre = THREE.MathUtils.lerp(2.38, 2.82, this.sprintBlend);
+    this.gaitPhase = (this.gaitPhase + speed * delta * gaitRadiansPerMetre) % (Math.PI * 2);
+  }
+
+  private legPhase(leg: LegRig): number {
+    const offsetDelta = shortestAngle(leg.trotPhase, leg.lopePhase);
+    return this.gaitPhase + leg.trotPhase + offsetDelta * this.sprintBlend;
+  }
+
+  private emitFootfalls(moving: boolean, speed: number, onFootstep?: FootstepListener): void {
+    for (const leg of this.legs) {
+      const swinging = Math.sin(this.legPhase(leg) + PAW_SWING_OFFSET) > 0;
+      // Front contacts represent each audible beat. During a trot the matching
+      // hind paw lands with it; at a lope the softer hind push remains visual,
+      // avoiding doubled, machine-gun-like samples.
+      if (this.grounded && moving && leg.front && leg.wasSwinging && !swinging) {
+        const clusteredSprintContact = this.sprintBlend > 0.58
+          && this.elapsed - this.lastFootfallAt < SPRINT_CONTACT_MERGE_SECONDS;
+        if (!clusteredSprintContact) {
+          this.lastFootfallAt = this.elapsed;
+          onFootstep?.({
+            position: this.group.position.clone(),
+            side: leg.side < 0 ? 'left' : 'right',
+            surface: this.currentSurface,
+            sprinting: this.sprintBlend > 0.52,
+            intensity: THREE.MathUtils.clamp(speed / this.sprintSpeed, 0.2, 1),
+          });
+        }
+      }
+      leg.wasSwinging = swinging;
+    }
+  }
+
   private animate(delta: number, speed: number, sprinting: boolean): void {
     const speedRatio = THREE.MathUtils.clamp(speed / this.sprintSpeed, 0, 1);
-    const movementAmount = THREE.MathUtils.smoothstep(speedRatio, 0.01, 0.7);
-    const gaitPhase = this.travelled * (sprinting ? 5.7 : 5.15);
+    const movementAmount = THREE.MathUtils.smoothstep(speedRatio, 0.015, 0.68);
+    const gaitPhase = this.gaitPhase;
     const motionScale = this.reducedMotion ? 0.3 : 1;
     this.glideBlend = damp(this.glideBlend, this.glideActive ? 1 : 0, this.glideActive ? 7.2 : 9.5, delta);
     this.landingBloom *= Math.exp(-5.4 * delta);
 
     for (const leg of this.legs) {
-      const phase = gaitPhase + leg.phase;
+      const phase = this.legPhase(leg);
       const strideWave = Math.sin(phase);
-      const pawArc = Math.pow(Math.max(0, Math.sin(phase + Math.PI * 0.22)), 1.45);
-      const swing = strideWave * (0.14 + speedRatio * 0.43) * movementAmount * motionScale;
-      const lift = pawArc * (0.026 + speedRatio * 0.085) * movementAmount * motionScale;
-      const poisedIdle = Math.sin(this.elapsed * 1.25 + leg.phase) * 0.009 * (1 - movementAmount) * motionScale;
+      const pawArc = Math.pow(Math.max(0, Math.sin(phase + PAW_SWING_OFFSET)), 1.72);
+      const swingReach = THREE.MathUtils.lerp(0.2, 0.41, this.sprintBlend);
+      const lopeShape = leg.front
+        ? strideWave - Math.sin(phase * 2) * 0.1 * this.sprintBlend
+        : strideWave + Math.sin(phase * 2) * 0.17 * this.sprintBlend;
+      const swing = lopeShape * swingReach * movementAmount * motionScale;
+      // Paws skim rather than stamp: most of the expression comes from a long
+      // fore/aft reach with only a small, rounded clearance arc.
+      const lift = pawArc * THREE.MathUtils.lerp(0.029, 0.071, this.sprintBlend)
+        * movementAmount * motionScale;
+      const poisedIdle = Math.sin(this.elapsed * 1.25 + leg.trotPhase) * 0.009 * (1 - movementAmount) * motionScale;
       const jumpTuck = this.grounded ? 0 : (leg.front ? 0.3 : -0.23) * motionScale;
       const glideReach = (leg.front ? 0.72 : -0.56) * motionScale;
-      const rotationTarget = THREE.MathUtils.lerp(swing * (leg.front ? 1 : 0.92) + jumpTuck, glideReach, this.glideBlend);
+      const hindFlow = leg.front ? 1 : 0.9 + this.sprintBlend * 0.08;
+      const rotationTarget = THREE.MathUtils.lerp(swing * hindFlow + jumpTuck, glideReach, this.glideBlend);
       const heightTarget = leg.restY + lift + poisedIdle
         + (this.grounded
           ? this.landingBloom * 0.055 * motionScale
           : THREE.MathUtils.lerp(0.075, 0.15, this.glideBlend) * motionScale);
-      leg.pivot.rotation.x = damp(leg.pivot.rotation.x, rotationTarget, this.glideActive ? 8 : 11.5, delta);
+      leg.pivot.rotation.x = damp(leg.pivot.rotation.x, rotationTarget, this.glideActive ? 8 : 8.7, delta);
       leg.pivot.rotation.z = damp(
         leg.pivot.rotation.z,
         leg.side * this.glideBlend * (leg.front ? 0.075 : 0.045) * motionScale,
-        9,
+        8.2,
         delta,
       );
-      leg.pivot.position.y = damp(leg.pivot.position.y, heightTarget, 12.5, delta);
-      leg.pivot.position.z = damp(leg.pivot.position.z, leg.restZ + strideWave * 0.018 * movementAmount * motionScale, 10, delta);
+      leg.pivot.position.y = damp(leg.pivot.position.y, heightTarget, 9.2, delta);
+      leg.pivot.position.z = damp(
+        leg.pivot.position.z,
+        leg.restZ + strideWave * THREE.MathUtils.lerp(0.014, 0.027, this.sprintBlend) * movementAmount * motionScale,
+        8.4,
+        delta,
+      );
     }
 
-    const idleBreath = Math.sin(this.elapsed * 2.15) * 0.018;
-    const gaitBob = (0.5 + 0.5 * Math.sin(gaitPhase * 2 - 0.45)) * 0.034 * movementAmount * motionScale;
+    const idleBreath = Math.sin(this.elapsed * 1.72) * 0.016;
+    const gaitBob = (0.5 + 0.5 * Math.sin(gaitPhase * 2 - 0.4))
+      * THREE.MathUtils.lerp(0.011, 0.021, this.sprintBlend) * movementAmount * motionScale;
     const airborneFloat = this.grounded ? 0 : Math.sin(this.airborneTime * 4.2) * 0.018 * motionScale;
     this.model.position.y = idleBreath + gaitBob + airborneFloat + this.landingBloom * 0.015;
-    this.model.rotation.z = Math.sin(gaitPhase * 0.5) * 0.035 * movementAmount * motionScale
+    const diagonalFlow = Math.sin(gaitPhase) * THREE.MathUtils.lerp(0.012, 0.022, this.sprintBlend)
+      * movementAmount * motionScale;
+    this.model.rotation.z = this.turnLean * motionScale + diagonalFlow
       + Math.sin(this.airborneTime * 2.2) * 0.018 * this.glideBlend * motionScale;
 
     if (this.spinProgress >= 0) {
@@ -455,17 +537,23 @@ export class FoxPlayer {
         this.model.rotation.x = -eased * Math.PI * 2;
       }
     } else {
-      const flowingPitch = (this.glideBlend * 0.115 - (this.grounded ? speedRatio * 0.035 : 0.015)) * motionScale;
+      const flowingPitch = (this.glideBlend * 0.115
+        - (this.grounded ? speedRatio * 0.018 : 0.015)
+        + this.accelerationLean) * motionScale;
       this.model.rotation.x = damp(this.model.rotation.x, flowingPitch, this.glideActive ? 7 : 11, delta);
     }
 
     this.squashPulse *= Math.exp(-6.8 * delta);
-    const strideSquash = Math.sin(gaitPhase * 2) * 0.018 * movementAmount * motionScale;
+    const strideSquash = Math.sin(gaitPhase * 2) * 0.008 * movementAmount * motionScale;
+    // At full lope the front pair reaches as the hind pair finishes its push,
+    // giving the silhouette one restrained airborne stretch per stride.
+    const lopeStretch = Math.max(0, Math.sin(gaitPhase - 0.3)) * this.sprintBlend
+      * movementAmount * 0.012 * motionScale;
     const squash = this.squashPulse * motionScale + strideSquash;
     this.model.scale.set(
       MODEL_SCALE * (1 + squash * 0.055),
       MODEL_SCALE * (1 - squash * 0.09),
-      MODEL_SCALE * (1 + squash * 0.045),
+      MODEL_SCALE * (1 + squash * 0.045 + lopeStretch),
     );
 
     this.animateBlink(delta);
@@ -509,8 +597,13 @@ export class FoxPlayer {
     const springDelta = Math.min(delta, 1 / 30);
     this.tail.forEach((joint, index) => {
       const delay = index * 0.42;
-      const wagSpeed = this.glideBlend > 0.05 ? 1.65 : (sprinting ? 4.6 : 2.05);
-      const groundedYaw = Math.sin(this.elapsed * wagSpeed - delay) * (0.105 + speedRatio * 0.2) * motionScale;
+      const wagSpeed = this.glideBlend > 0.05
+        ? 1.65
+        : THREE.MathUtils.lerp(1.9, sprinting ? 2.85 : 2.48, this.sprintBlend);
+      const groundedYaw = (
+        Math.sin(this.elapsed * wagSpeed - delay) * (0.11 + speedRatio * 0.19)
+        - this.turnLean * (1.15 - index * 0.11)
+      ) * motionScale;
       const glideYaw = Math.sin(this.elapsed * wagSpeed - delay * 0.62) * (0.18 - index * 0.012) * motionScale;
       const targetYaw = THREE.MathUtils.lerp(groundedYaw, glideYaw, this.glideBlend);
       const groundedPitch = joint.restPitch + Math.sin(this.elapsed * 1.35 - delay) * 0.035 * motionScale - speedRatio * 0.035;
@@ -670,16 +763,19 @@ export class FoxPlayer {
     this.model.add(charm);
 
     const legPositions = [
-      { name: 'FrontLeft', x: -0.42, z: -0.5, phase: 0.18, front: true },
-      { name: 'FrontRight', x: 0.42, z: -0.5, phase: Math.PI + 0.18, front: true },
-      { name: 'HindLeft', x: -0.42, z: 0.5, phase: Math.PI, front: false },
-      { name: 'HindRight', x: 0.42, z: 0.5, phase: 0, front: false },
+      // Walk starts as a stable diagonal trot. At speed the phase offsets blend
+      // into a compact gallop: hind paws gather and push, then the front paws
+      // reach and land with a small lead-leg stagger.
+      { name: 'FrontLeft', x: -0.42, z: -0.5, trotPhase: 0.12, lopePhase: Math.PI + 0.28, front: true },
+      { name: 'FrontRight', x: 0.42, z: -0.5, trotPhase: Math.PI + 0.12, lopePhase: Math.PI - 0.16, front: true },
+      { name: 'HindLeft', x: -0.42, z: 0.5, trotPhase: Math.PI, lopePhase: 0.18, front: false },
+      { name: 'HindRight', x: 0.42, z: 0.5, trotPhase: 0, lopePhase: -0.18, front: false },
     ] as const;
     for (const definition of legPositions) {
       const pivot = new THREE.Group();
       // A little clearance keeps the cream soles skimming above uneven ground
       // even while the whole body leans into a flowing stride.
-      const restY = 0.755;
+      const restY = 0.83;
       pivot.name = `Fox${definition.name}LegPivot`;
       pivot.position.set(definition.x, restY, definition.z);
       const leg = enableShadows(new THREE.Mesh(new THREE.CapsuleGeometry(0.145, 0.34, 3, 6), fur));
@@ -694,9 +790,11 @@ export class FoxPlayer {
         pivot,
         restY,
         restZ: definition.z,
-        phase: definition.phase,
+        trotPhase: definition.trotPhase,
+        lopePhase: definition.lopePhase,
         front: definition.front,
         side: definition.x < 0 ? -1 : 1,
+        wasSwinging: Math.sin(definition.trotPhase + PAW_SWING_OFFSET) > 0,
       });
       this.model.add(pivot);
     }

@@ -1,5 +1,6 @@
-import { Group, Mesh, Vector3 } from 'three';
+import { Group, Mesh, PerspectiveCamera, Points, Vector3 } from 'three';
 import { describe, expect, it, vi } from 'vitest';
+import { Text } from 'troika-three-text';
 import { ASSET_SYMBOLS, type AssetState, type Candle, type TickDirection } from '../src/types';
 import {
   MONUMENT_CANDLE_COUNT,
@@ -16,9 +17,17 @@ import { buildMedallion } from '../src/monuments/medallions';
 import { MEDALLION_CENTER, PLINTH_BOUNDS } from '../src/monuments/monumentGeometry';
 import { Monument } from '../src/monuments/Monument';
 import { TickTrailPool } from '../src/monuments/TickTrailPool';
-import { HorizonBadgePanel } from '../src/monuments/HorizonBadgePanel';
+import {
+  HORIZON_BADGE_LAYOUT,
+  HorizonBadgePanel,
+} from '../src/monuments/HorizonBadgePanel';
 import { createEmptyHorizonChanges } from '../src/markets';
-import { MONUMENT_CHART_HEIGHT, MONUMENT_CHART_WIDTH } from '../src/monuments/Monument';
+import {
+  MONUMENT_CHART_HEIGHT,
+  MONUMENT_CHART_WIDTH,
+  MONUMENT_OVERLAY_RENDER_ORDER,
+  MONUMENT_PRESENTATION_FORWARD_OFFSET,
+} from '../src/monuments/Monument';
 
 function candle(openTime: number, open: number, high: number, low: number, close: number, closed = true): Candle {
   return { openTime, open, high, low, close, closed };
@@ -226,6 +235,44 @@ describe('monument chart math', () => {
     expect(monument.collidesCamera(medallionPoint.x, medallionPoint.y, medallionPoint.z)).toBe(true);
     expect(monument.collidesCamera(plinthPoint.x, plinthPoint.y, plinthPoint.z)).toBe(true);
     expect(monument.collidesCamera(clearPoint.x, clearPoint.y, clearPoint.z)).toBe(false);
+
+    const camera = new PerspectiveCamera();
+    const pivot = monument.root.localToWorld(new Vector3(
+      MEDALLION_CENTER.x,
+      MEDALLION_CENTER.y,
+      MEDALLION_CENTER.z,
+    ));
+    camera.position.copy(monument.root.localToWorld(new Vector3(
+      MEDALLION_CENTER.x + 20,
+      MEDALLION_CENTER.y + 3,
+      MEDALLION_CENTER.z,
+    )));
+    monument.update(1 / 60, 0, camera);
+    parent.updateMatrixWorld(true);
+
+    const medallion = monument.root.getObjectByName('eth-grand-medallion') as Group;
+    const rotatedSolidPoint = medallion.localToWorld(new Vector3(
+      MEDALLION_CENTER.x + 2,
+      MEDALLION_CENTER.y,
+      MEDALLION_CENTER.z,
+    ));
+    const staleHeadingPoint = monument.root.localToWorld(new Vector3(
+      MEDALLION_CENTER.x + 2,
+      MEDALLION_CENTER.y,
+      MEDALLION_CENTER.z,
+    ));
+    expect(camera.position.x).toBeGreaterThan(pivot.x);
+    expect(monument.collidesCamera(
+      rotatedSolidPoint.x,
+      rotatedSolidPoint.y,
+      rotatedSolidPoint.z,
+    )).toBe(true);
+    expect(monument.collidesCamera(
+      staleHeadingPoint.x,
+      staleHeadingPoint.y,
+      staleHeadingPoint.z,
+    )).toBe(false);
+    expect(monument.collidesCamera(plinthPoint.x, plinthPoint.y, plinthPoint.z)).toBe(true);
     monument.dispose();
   });
 
@@ -240,6 +287,127 @@ describe('monument chart math', () => {
     const echo = buildMedallion('BTC', 'echo');
     expect(echo.name).toBe('btc-echo-medallion');
     expect(echo.children.length).toBeLessThan(grand.children.length);
+  });
+
+  it('smoothly yaws the crest and market presentation while scenery and plinth stay fixed', () => {
+    const world = new Group();
+    world.position.set(4, 0, -7);
+    world.rotation.y = 0.42;
+    world.scale.setScalar(1.2);
+    const monument = new Monument({ symbol: 'BTC', position: { x: 3, z: -2 } });
+    monument.mount(world);
+    world.updateMatrixWorld(true);
+
+    const presentation = monument.root.getObjectByName('BTC-facing-presentation') as Group;
+    const chart = monument.root.getObjectByName('BTC-chart');
+    const medallion = monument.root.getObjectByName('btc-grand-medallion');
+    const plinth = monument.root.getObjectByName('btc-medallion-plinth') as Mesh;
+    const symbolLabel = monument.root.getObjectByName('BTC-symbol-label');
+    const marketUi = monument.root.getObjectByName('BTC-market-ui');
+    expect(chart?.parent).toBe(presentation);
+    expect(medallion?.parent).toBe(presentation);
+    expect(plinth.parent).toBe(monument.root);
+    expect(symbolLabel?.parent).toBe(presentation);
+    expect(marketUi?.parent).toBe(presentation);
+    expect(monument.root.getObjectByName('market-horizon-panel')?.parent).toBe(marketUi);
+
+    for (const fixedName of [
+      'BTC-plaza-tier-1',
+      'btc-medallion-plinth',
+      'BTC-bench-left',
+      'BTC-lamp-pole-1',
+      'BTC-planter-1',
+    ]) {
+      expect(monument.root.getObjectByName(fixedName)?.parent).toBe(monument.root);
+    }
+
+    const camera = new PerspectiveCamera();
+    const pivot = presentation.getWorldPosition(new Vector3());
+    const assertFacesCamera = (): void => {
+      world.updateMatrixWorld(true);
+      camera.updateMatrixWorld(true);
+      const position = presentation.getWorldPosition(new Vector3());
+      const forward = presentation
+        .localToWorld(new Vector3(0, 0, 1))
+        .sub(position)
+        .setY(0)
+        .normalize();
+      const towardCamera = camera.position.clone().sub(position).setY(0).normalize();
+      expect(forward.dot(towardCamera)).toBeGreaterThan(0.999);
+      expect(presentation.rotation.x).toBe(0);
+      expect(presentation.rotation.z).toBe(0);
+      expect(marketUi?.rotation.x).toBe(0);
+      expect(marketUi?.rotation.y).toBe(0);
+      expect(marketUi?.rotation.z).toBe(0);
+    };
+
+    camera.position.copy(pivot).add(new Vector3(0, 8, 24));
+    monument.update(1 / 60, 0, camera);
+    assertFacesCamera();
+
+    for (const offset of [new Vector3(22, 6, 0), new Vector3(-16, 5, -18)]) {
+      camera.position.copy(pivot).add(offset);
+      const priorYaw = presentation.rotation.y;
+      monument.update(1 / 60, 1 / 60, camera);
+      expect(presentation.rotation.y).not.toBe(priorYaw);
+      for (let frame = 0; frame < 180; frame += 1) {
+        monument.update(1 / 60, (frame + 2) / 60, camera);
+      }
+      assertFacesCamera();
+    }
+
+    // At an exact 90-degree side view, the chart and UI still share the
+    // presentation heading without moving closer and growing on screen.
+    camera.position.copy(monument.root.localToWorld(new Vector3(
+      MEDALLION_CENTER.x + 40,
+      8,
+      MEDALLION_CENTER.z,
+    )));
+    for (let frame = 0; frame < 180; frame += 1) {
+      monument.update(1 / 60, (frame + 200) / 60, camera);
+    }
+    assertFacesCamera();
+    expect(presentation.rotation.y).toBeCloseTo(Math.PI * 0.5, 5);
+    const facingPivot = presentation.getWorldPosition(new Vector3());
+    const forward = presentation
+      .localToWorld(new Vector3(0, 0, 1))
+      .sub(facingPivot)
+      .setY(0)
+      .normalize();
+    const chartDepth = (chart?.getWorldPosition(new Vector3()) ?? new Vector3())
+      .sub(facingPivot)
+      .dot(forward);
+    const marketUiDepth = (marketUi?.getWorldPosition(new Vector3()) ?? new Vector3())
+      .sub(facingPivot)
+      .dot(forward);
+    expect(chartDepth).toBeCloseTo(MONUMENT_PRESENTATION_FORWARD_OFFSET * 1.2, 5);
+    expect(marketUiDepth).toBeCloseTo(chartDepth, 5);
+    expect(MEDALLION_CENTER.z + MONUMENT_PRESENTATION_FORWARD_OFFSET).toBeCloseTo(3.15, 8);
+
+    // Market geometry is an intentional magical overlay: it keeps the old
+    // readable depth while no static bench, lamp, or planter can hide it.
+    for (const [overlayRoot, minimumOrder] of [
+      [chart, MONUMENT_OVERLAY_RENDER_ORDER],
+      [marketUi, MONUMENT_OVERLAY_RENDER_ORDER + 1],
+    ] as const) {
+      let renderableCount = 0;
+      overlayRoot?.traverse((object) => {
+        if (!(object instanceof Mesh) && !(object instanceof Points)) return;
+        renderableCount += 1;
+        expect(object.renderOrder).toBeGreaterThanOrEqual(minimumOrder);
+        const materials = Array.isArray(object.material) ? object.material : [object.material];
+        for (const material of materials) {
+          expect(material.depthTest).toBe(false);
+          expect(material.depthWrite).toBe(false);
+        }
+      });
+      expect(renderableCount).toBeGreaterThan(0);
+    }
+
+    const disposeGeometry = vi.spyOn(plinth.geometry, 'dispose');
+    monument.dispose();
+    monument.dispose();
+    expect(disposeGeometry).toHaveBeenCalledTimes(1);
   });
 
   it('uses a taller, forward chart plane and keeps horizon badges grand-only', () => {
@@ -277,9 +445,26 @@ describe('monument chart math', () => {
     expect(panel.countdownLabel).toBe('NEXT CANDLE  0:01');
     const upCard = panel.root.getObjectByName('horizon-card-1m');
     const downCard = panel.root.getObjectByName('horizon-card-15m');
+    const upBadge = panel.root.getObjectByName('horizon-badge-1m') as Group;
+    const upClock = panel.root.getObjectByName('horizon-clock-1m') as Mesh;
+    const upTimeframe = panel.root.getObjectByName('horizon-timeframe-1m') as Text;
+    const upChange = panel.root.getObjectByName('horizon-change-1m') as Text;
     expect(upCard).toBeInstanceOf(Mesh);
     expect(downCard).toBeInstanceOf(Mesh);
     expect((upCard as Mesh).material).not.toBe((downCard as Mesh).material);
+    expect(upTimeframe.text).toBe('1m');
+    expect(upChange.text).toBe('↑  +1.20%');
+    expect(upTimeframe.position.y).toBeGreaterThan(upChange.position.y);
+    expect(upClock.position.x).toBe(HORIZON_BADGE_LAYOUT.clockCenterX);
+    expect(upTimeframe.anchorX).toBe('left');
+    expect(upChange.anchorX).toBe('left');
+    expect(upChange.position.x).toBe(HORIZON_BADGE_LAYOUT.textStartX);
+    expect(
+      HORIZON_BADGE_LAYOUT.clockCenterX + HORIZON_BADGE_LAYOUT.clockOuterRadius,
+    ).toBeLessThan(HORIZON_BADGE_LAYOUT.textStartX);
+    expect(
+      Math.abs(upBadge.position.x) - HORIZON_BADGE_LAYOUT.cardWidth * 0.5,
+    ).toBeGreaterThan(MONUMENT_CHART_WIDTH * 0.5);
 
     const disposeGeometry = vi.spyOn((upCard as Mesh).geometry, 'dispose');
     panel.dispose();

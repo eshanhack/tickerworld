@@ -13,7 +13,9 @@ export {
 export {
   ASSET_AUDIO_PROFILES,
   classifyMarketMove,
+  MARKET_MOVE_THRESHOLDS,
   marketGestureFrequencies,
+  marketMovePeakGain,
   marketMoveSeverity,
   normaliseMoveIntensity,
 } from './audioMath';

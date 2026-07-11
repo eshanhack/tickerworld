@@ -14,6 +14,7 @@ import {
   MeshBasicMaterial,
   MeshStandardMaterial,
   Object3D,
+  Points,
   SphereGeometry,
   TorusGeometry,
   Vector3,
@@ -41,7 +42,9 @@ import {
 } from './chartMath';
 import { buildMedallion, type MonumentKind } from './medallions';
 import {
-  collidesLocalCamera,
+  collidesLocalMedallionCamera,
+  collidesLocalStaticCamera,
+  MEDALLION_CENTER,
   PLAZA_LAYERS,
   PLAZA_STEPS,
   sampleLocalStoneGround,
@@ -83,16 +86,19 @@ const COLORS = {
 
 export const MONUMENT_CHART_WIDTH = 14.4;
 export const MONUMENT_CHART_HEIGHT = 5.75;
+/** Pivot-relative offset that preserves the chart's original root-local z=3.15. */
+export const MONUMENT_PRESENTATION_FORWARD_OFFSET = 3.15 - MEDALLION_CENTER.z;
+export const MONUMENT_OVERLAY_RENDER_ORDER = 40;
 const CHART_WIDTH = MONUMENT_CHART_WIDTH;
 const CHART_HEIGHT = MONUMENT_CHART_HEIGHT;
 const LIVE_MARKER_X = CHART_WIDTH * 0.5 + 0.42;
 const tempObject = new Object3D();
 const tempCameraPosition = new Vector3();
-const tempBillboardPosition = new Vector3();
 const tempMonumentPosition = new Vector3();
 const tempLocalPoint = new Vector3();
 const tempWorldPoint = new Vector3();
 const tempInverseMatrix = new Matrix4();
+const PRESENTATION_FACING_RESPONSE = 7.5;
 
 interface LampBulb {
   readonly mesh: Mesh<SphereGeometry, MeshStandardMaterial>;
@@ -119,8 +125,10 @@ export class Monument {
   readonly livePriceGuide: Mesh<BoxGeometry, MeshBasicMaterial>;
   readonly livePriceMarker: Mesh<SphereGeometry, MeshStandardMaterial>;
 
+  private readonly presentationGroup = new Group();
   private readonly chartGroup = new Group();
   private readonly billboardGroup = new Group();
+  private medallionGroup: Group | null = null;
   private readonly symbolText = new Text();
   private readonly priceText = new Text();
   private readonly sparkles = new SparklePool(24);
@@ -161,6 +169,7 @@ export class Monument {
   private activeChartSpring: ActiveChartSpring | null = null;
   private nightFactor = 0;
   private feedMode: FeedMode = 'connecting';
+  private facingInitialized = false;
 
   constructor(options: MonumentOptions) {
     this.symbol = options.symbol;
@@ -174,6 +183,9 @@ export class Monument {
     this.root.scale.setScalar(options.scale ?? defaultScale);
 
     this.buildPlaza();
+    this.presentationGroup.name = `${this.symbol}-facing-presentation`;
+    this.presentationGroup.position.set(MEDALLION_CENTER.x, 0, MEDALLION_CENTER.z);
+    this.root.add(this.presentationGroup);
 
     const bodyGeometry = new RoundedBoxGeometry(1, 1, 1, 2, 0.15);
     const wickGeometry = new CylinderGeometry(0.055, 0.055, 1, 7);
@@ -225,6 +237,10 @@ export class Monument {
       wickGeometry,
       createMaterial(COLORS.red, 0.72),
     );
+    this.greenWickInstances.renderOrder = 1;
+    this.redWickInstances.renderOrder = 1;
+    this.greenBodyInstances.renderOrder = 2;
+    this.redBodyInstances.renderOrder = 2;
 
     const highlightMaterial = new MeshStandardMaterial({
       color: COLORS.cream,
@@ -239,10 +255,12 @@ export class Monument {
     this.activeBodyHighlight.name = `${this.symbol}-active-candle-highlight`;
     this.activeBodyHighlight.frustumCulled = false;
     this.activeBodyHighlight.visible = false;
+    this.activeBodyHighlight.renderOrder = 4;
     this.activeWickHighlight = new Mesh(wickGeometry, highlightMaterial.clone());
     this.activeWickHighlight.name = `${this.symbol}-active-wick-highlight`;
     this.activeWickHighlight.frustumCulled = false;
     this.activeWickHighlight.visible = false;
+    this.activeWickHighlight.renderOrder = 3;
 
     this.livePriceGuide = new Mesh(
       new BoxGeometry(1, 1, 1),
@@ -272,9 +290,16 @@ export class Monument {
     this.livePriceMarker.position.set(LIVE_MARKER_X, CHART_HEIGHT * 0.5, 0.045);
     this.livePriceMarker.visible = false;
     this.livePriceMarker.frustumCulled = false;
+    this.livePriceMarker.renderOrder = 5;
+    this.tickTrail.mesh.renderOrder = 5;
+    this.sparkles.points.renderOrder = 6;
 
     this.chartGroup.name = `${this.symbol}-chart`;
-    this.chartGroup.position.set(0, 0.9, 3.15);
+    this.chartGroup.position.set(
+      -MEDALLION_CENTER.x,
+      0.9,
+      MONUMENT_PRESENTATION_FORWARD_OFFSET,
+    );
     this.chartGroup.add(
       this.livePriceGuide,
       this.greenWickInstances,
@@ -287,7 +312,7 @@ export class Monument {
       this.livePriceMarker,
       this.sparkles.points,
     );
-    this.root.add(this.chartGroup);
+    this.presentationGroup.add(this.chartGroup);
 
     this.pulseRingMaterial = new MeshBasicMaterial({
       color: COLORS.cream,
@@ -298,10 +323,13 @@ export class Monument {
     this.pulseRing = new Mesh(new TorusGeometry(0.28, 0.026, 6, 28), this.pulseRingMaterial);
     this.pulseRing.position.set(LIVE_MARKER_X, CHART_HEIGHT * 0.5, 0.025);
     this.pulseRing.visible = false;
+    this.pulseRing.renderOrder = 5;
     this.chartGroup.add(this.pulseRing);
 
     this.horizonPanel = this.kind === 'grand' ? new HorizonBadgePanel(options.fontUrl) : null;
     this.buildShrine(options.fontUrl);
+    this.configurePresentationOverlay(this.chartGroup, MONUMENT_OVERLAY_RENDER_ORDER);
+    this.configurePresentationOverlay(this.billboardGroup, MONUMENT_OVERLAY_RENDER_ORDER + 1);
     if (this.kind === 'grand') {
       this.buildFurniture();
       this.buildLandscaping();
@@ -443,7 +471,7 @@ export class Monument {
     }
 
     if (camera) {
-      this.updateBillboard(camera);
+      this.updateBillboard(camera, delta);
     }
   }
 
@@ -487,10 +515,22 @@ export class Monument {
     if (!this.active || this.disposed) {
       return false;
     }
-    this.root.updateWorldMatrix(true, false);
+    this.root.updateWorldMatrix(true, true);
     tempInverseMatrix.copy(this.root.matrixWorld).invert();
     tempLocalPoint.set(worldX, worldY, worldZ).applyMatrix4(tempInverseMatrix);
-    return collidesLocalCamera(tempLocalPoint.x, tempLocalPoint.y, tempLocalPoint.z);
+    if (collidesLocalStaticCamera(tempLocalPoint.x, tempLocalPoint.y, tempLocalPoint.z)) {
+      return true;
+    }
+
+    // The crest turns independently of the fixed plinth and plaza. Probe it
+    // in its current rotated local space so camera collision follows what is
+    // actually visible instead of lingering at the shrine's initial heading.
+    if (!this.medallionGroup) {
+      return false;
+    }
+    tempInverseMatrix.copy(this.medallionGroup.matrixWorld).invert();
+    tempLocalPoint.set(worldX, worldY, worldZ).applyMatrix4(tempInverseMatrix);
+    return collidesLocalMedallionCamera(tempLocalPoint.x, tempLocalPoint.y, tempLocalPoint.z);
   }
 
   dispose(): void {
@@ -583,7 +623,19 @@ export class Monument {
   }
 
   private buildShrine(fontUrl?: string): void {
-    this.root.add(buildMedallion(this.symbol, this.kind));
+    const medallion = buildMedallion(this.symbol, this.kind);
+    this.medallionGroup = medallion;
+    const plinth = medallion.getObjectByName(`${this.symbol.toLowerCase()}-medallion-plinth`);
+    if (plinth) {
+      plinth.removeFromParent();
+      this.root.add(plinth);
+    }
+    // Medallion geometry is authored in monument-local coordinates. Offset it
+    // into the facing pivot without changing its initial world placement. The
+    // heavy plinth stays fixed, while only the crest turns toward the player.
+    medallion.position.set(-MEDALLION_CENTER.x, 0, -MEDALLION_CENTER.z);
+    this.presentationGroup.add(medallion);
+    this.symbolText.name = `${this.symbol}-symbol-label`;
     this.symbolText.text = this.symbol;
     this.symbolText.fontSize = this.kind === 'echo' || this.symbol === 'BTC' ? 0.8 : 0.98;
     this.symbolText.color = COLORS.cream;
@@ -596,22 +648,33 @@ export class Monument {
     if (fontUrl) {
       this.symbolText.font = fontUrl;
     }
-    this.symbolText.position.set(0, this.symbol === 'BTC' ? 5.98 : 7.52, -0.34);
+    this.symbolText.position.set(
+      -MEDALLION_CENTER.x,
+      this.symbol === 'BTC' ? 5.98 : 7.52,
+      -0.34 - MEDALLION_CENTER.z,
+    );
     if (typeof self !== 'undefined') {
       this.symbolText.sync();
     }
-    this.root.add(this.symbolText);
+    this.presentationGroup.add(this.symbolText);
 
     const card = new Mesh(
       new RoundedBoxGeometry(1, 1, 1, 3, 0.14),
       this.priceCardMaterial,
     );
+    card.name = `${this.symbol}-price-card`;
     card.scale.set(this.kind === 'echo' ? 3.5 : 4.25, 1.02, 0.12);
     card.position.z = -0.1;
     card.castShadow = true;
-    this.billboardGroup.position.set(0, 6.72, 3.15);
+    this.billboardGroup.name = `${this.symbol}-market-ui`;
+    this.billboardGroup.position.set(
+      -MEDALLION_CENTER.x,
+      6.72,
+      MONUMENT_PRESENTATION_FORWARD_OFFSET,
+    );
     this.billboardGroup.add(card);
 
+    this.priceText.name = `${this.symbol}-price-text`;
     this.priceText.text = '$—';
     this.priceText.fontSize = 0.58;
     this.priceText.color = COLORS.cream;
@@ -621,6 +684,7 @@ export class Monument {
     this.priceText.outlineColor = COLORS.ink;
     this.priceText.outlineOpacity = 0.55;
     this.priceText.depthOffset = -2;
+    this.priceText.renderOrder = 4;
     if (fontUrl) {
       this.priceText.font = fontUrl;
     }
@@ -630,7 +694,7 @@ export class Monument {
     }
     this.billboardGroup.add(this.priceText);
     if (this.horizonPanel) this.billboardGroup.add(this.horizonPanel.root);
-    this.root.add(this.billboardGroup);
+    this.presentationGroup.add(this.billboardGroup);
   }
 
   private buildFurniture(): void {
@@ -642,6 +706,7 @@ export class Monument {
 
     for (const side of [-1, 1]) {
       const bench = new Group();
+      bench.name = `${this.symbol}-bench-${side < 0 ? 'left' : 'right'}`;
       const seat = new Mesh(seatGeometry, woodMaterial);
       seat.position.y = 0.95;
       const back = new Mesh(backGeometry, woodMaterial);
@@ -681,11 +746,14 @@ export class Monument {
     ];
     lampPositions.forEach(([x, z], index) => {
       const pole = new Mesh(poleGeometry, metalMaterial);
+      pole.name = `${this.symbol}-lamp-pole-${index + 1}`;
       pole.position.set(x, 2.23, z);
       pole.castShadow = true;
       const bulb = new Mesh(bulbGeometry, bulbMaterial.clone());
+      bulb.name = `${this.symbol}-lamp-bulb-${index + 1}`;
       bulb.position.set(x, 4.02, z);
       const shade = new Mesh(shadeGeometry, metalMaterial);
+      shade.name = `${this.symbol}-lamp-shade-${index + 1}`;
       shade.position.set(x, 4.38, z);
       shade.castShadow = true;
       this.root.add(pole, bulb, shade);
@@ -709,17 +777,42 @@ export class Monument {
 
     positions.forEach(([x, z], index) => {
       const pot = new Mesh(potGeometry, potMaterial);
+      pot.name = `${this.symbol}-planter-${index + 1}`;
       pot.position.set(x, 1.12, z);
       const bush = new Mesh(bushGeometry, bushMaterial);
+      bush.name = `${this.symbol}-bush-${index + 1}`;
       bush.position.set(x, 1.85, z);
       bush.scale.y = 0.84;
       const flower = new Mesh(flowerGeometry, flowerMaterial);
+      flower.name = `${this.symbol}-flower-${index + 1}`;
       const angle = index * 1.9;
       flower.position.set(x + Math.cos(angle) * 0.52, 2.25, z + Math.sin(angle) * 0.4);
       for (const mesh of [pot, bush, flower]) {
         mesh.castShadow = true;
         mesh.receiveShadow = true;
         this.root.add(mesh);
+      }
+    });
+  }
+
+  /**
+   * The market display is a magical HUD-like projection in the 3D world. It
+   * keeps its familiar scale and position, but always draws over plaza props
+   * that cross its sightline while the shrine turns toward the camera.
+   */
+  private configurePresentationOverlay(root: Object3D, renderOrder: number): void {
+    root.traverse((object) => {
+      object.renderOrder += renderOrder;
+      if (!(object instanceof Mesh) && !(object instanceof Points)) {
+        return;
+      }
+      const objectMaterials = Array.isArray(object.material)
+        ? object.material
+        : [object.material];
+      for (const material of objectMaterials) {
+        material.depthTest = false;
+        material.depthWrite = false;
+        material.needsUpdate = true;
       }
     });
   }
@@ -915,13 +1008,32 @@ export class Monument {
     this.livePriceGuide.scale.y = 0.04 * (1 + Math.sin(elapsedSeconds * 2.4) * 0.1);
   }
 
-  private updateBillboard(camera: Camera): void {
+  private updateBillboard(camera: Camera, deltaSeconds: number): void {
     camera.getWorldPosition(tempCameraPosition);
-    this.billboardGroup.getWorldPosition(tempBillboardPosition);
-    this.billboardGroup.lookAt(
-      tempCameraPosition.x,
-      tempBillboardPosition.y,
-      tempCameraPosition.z,
+    this.root.updateWorldMatrix(true, false);
+    tempInverseMatrix.copy(this.root.matrixWorld).invert();
+    tempLocalPoint.copy(tempCameraPosition).applyMatrix4(tempInverseMatrix);
+
+    const targetYaw = Math.atan2(
+      tempLocalPoint.x - this.presentationGroup.position.x,
+      tempLocalPoint.z - this.presentationGroup.position.z,
     );
+    if (!this.facingInitialized) {
+      this.presentationGroup.rotation.y = targetYaw;
+      this.facingInitialized = true;
+    } else {
+      const difference = Math.atan2(
+        Math.sin(targetYaw - this.presentationGroup.rotation.y),
+        Math.cos(targetYaw - this.presentationGroup.rotation.y),
+      );
+      const blend = 1 - Math.exp(-PRESENTATION_FACING_RESPONSE * deltaSeconds);
+      this.presentationGroup.rotation.y += difference * blend;
+    }
+
+    // The whole shrine presentation shares a yaw-only pivot. Keeping the
+    // nested UI neutral prevents double-facing and any pitch/roll tilt.
+    this.presentationGroup.rotation.x = 0;
+    this.presentationGroup.rotation.z = 0;
+    this.billboardGroup.rotation.set(0, 0, 0);
   }
 }

@@ -69,7 +69,7 @@ export type AudioStateListener = (state: AudioEngineState) => void;
 
 export interface TickSoundOptions {
   readonly direction: TickDirection;
-  /** Absolute fractional price move. For example, 0.001 means 0.1%. */
+  /** Signed or absolute current one-minute return. For example, 0.001 means 0.1%. */
   readonly moveRatio?: number;
 }
 
