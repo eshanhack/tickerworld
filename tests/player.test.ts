@@ -8,7 +8,12 @@ vi.hoisted(() => {
   });
 });
 
-import { FoxPlayer, PlayerInputController, ThirdPersonCamera } from '../src/player';
+import {
+  FoxPlayer,
+  PlayerInputController,
+  ThirdPersonCamera,
+  type FootstepEvent,
+} from '../src/player';
 
 function emitKey(target: EventTarget, type: 'keydown' | 'keyup', code: string, repeat = false): void {
   const event = new Event(type, { cancelable: true });
@@ -17,6 +22,21 @@ function emitKey(target: EventTarget, type: 'keydown' | 'keyup', code: string, r
     repeat: { value: repeat },
   });
   target.dispatchEvent(event);
+}
+
+function minimumMeshTerrainClearance(
+  mesh: THREE.Mesh,
+  heightAt: (x: number, z: number) => number,
+): number {
+  mesh.updateWorldMatrix(true, false);
+  const positions = mesh.geometry.getAttribute('position');
+  const vertex = new THREE.Vector3();
+  let minimum = Number.POSITIVE_INFINITY;
+  for (let index = 0; index < positions.count; index += 1) {
+    vertex.fromBufferAttribute(positions, index).applyMatrix4(mesh.matrixWorld);
+    minimum = Math.min(minimum, vertex.y - heightAt(vertex.x, vertex.z));
+  }
+  return minimum;
 }
 
 describe('PlayerInputController', () => {
@@ -44,34 +64,35 @@ describe('PlayerInputController', () => {
 });
 
 describe('FoxPlayer', () => {
-  it('moves forward relative to a south-facing camera and emits alternating footsteps', () => {
+  it('moves forward relative to a south-facing camera and emits a lateral four-beat cadence', () => {
     const input = new PlayerInputController({ target: null, document: null });
     const fox = new FoxPlayer({ input });
-    const sides: string[] = [];
+    const footsteps: FootstepEvent[] = [];
     const footfallFrames: number[] = [];
-    const footfallClearances: number[] = [];
     input.setVirtualInput(0, 1);
 
     for (let frame = 0; frame < 180; frame += 1) {
       fox.update(1 / 60, 0, () => 2, () => 'stone', (event) => {
-        sides.push(event.side);
+        footsteps.push(event);
         footfallFrames.push(frame);
-        fox.group.updateMatrixWorld(true);
-        const pawName = event.side === 'left' ? 'FoxFrontLeftPaw' : 'FoxFrontRightPaw';
-        footfallClearances.push(new THREE.Box3().setFromObject(fox.group.getObjectByName(pawName)!).min.y - 2);
       });
     }
 
     expect(fox.position.z).toBeLessThan(-5);
     expect(fox.position.y).toBeCloseTo(2, 2);
     expect(fox.snapshot.surface).toBe('stone');
-    expect(sides.length).toBeGreaterThan(2);
-    expect(sides.slice(0, 2)).toEqual(['left', 'right']);
+    expect(footsteps.length).toBeGreaterThan(8);
+    const openingSides = footsteps.slice(0, 4).map((event) => event.side);
+    expect(openingSides.filter((side) => side === 'left')).toHaveLength(2);
+    expect(openingSides.filter((side) => side === 'right')).toHaveLength(2);
+    expect(openingSides.some((side, index) => side === openingSides[index + 1])).toBe(true);
     const beatIntervals = footfallFrames.slice(1).map((frame, index) => frame - footfallFrames[index]!);
-    expect(Math.min(...beatIntervals)).toBeGreaterThanOrEqual(14);
+    expect(Math.min(...beatIntervals)).toBeGreaterThanOrEqual(7);
     expect(Math.max(...beatIntervals)).toBeLessThanOrEqual(24);
-    expect(Math.max(...footfallClearances)).toBeLessThan(0.12);
-    expect(Math.min(...footfallClearances)).toBeGreaterThanOrEqual(0);
+    expect(footsteps.every((event) => event.surface === 'stone')).toBe(true);
+    expect(footsteps.every((event) => !event.sprinting)).toBe(true);
+    expect(footsteps.every((event) => Math.abs(event.position.y - 2) < 0.005)).toBe(true);
+    expect(footsteps.every((event) => event.intensity >= 0.2 && event.intensity <= 1)).toBe(true);
     fox.dispose();
   });
 
@@ -151,15 +172,16 @@ describe('FoxPlayer', () => {
     const input = new PlayerInputController({ target: null, document: null });
     const fox = new FoxPlayer({ input });
     const model = fox.group.getObjectByName('FoxModel')!;
+    const heading = fox.group.getObjectByName('FoxHeadingPivot')!;
     input.setVirtualInput(0, 1);
     for (let frame = 0; frame < 90; frame += 1) fox.update(1 / 60, 0);
 
     input.setVirtualInput(1, 0);
-    const headings: number[] = [model.rotation.y];
+    const headings: number[] = [heading.rotation.y];
     const leans: number[] = [];
     for (let frame = 0; frame < 30; frame += 1) {
       fox.update(1 / 60, 0);
-      headings.push(model.rotation.y);
+      headings.push(heading.rotation.y);
       leans.push(model.rotation.z);
     }
 
@@ -167,7 +189,7 @@ describe('FoxPlayer', () => {
       Math.atan2(Math.sin(heading - headings[index]!), Math.cos(heading - headings[index]!)),
     ));
     expect(Math.max(...headingSteps)).toBeLessThan(0.18);
-    expect(model.rotation.y).toBeLessThan(-1.32);
+    expect(heading.rotation.y).toBeLessThan(-1.32);
     expect(Math.max(...leans.map(Math.abs))).toBeGreaterThan(0.018);
     expect(Math.max(...leans.map(Math.abs))).toBeLessThan(0.13);
 
@@ -177,40 +199,42 @@ describe('FoxPlayer', () => {
     fox.dispose();
   });
 
-  it('blends continuously from a diagonal walk into a front-hind fox lope', () => {
+  it('blends continuously from a four-beat walk into a rotary gallop', () => {
     const input = new PlayerInputController({ target: null, document: null });
     const fox = new FoxPlayer({ input });
     const model = fox.group.getObjectByName('FoxModel')!;
-    const frontLeft = fox.group.getObjectByName('FoxFrontLeftLegPivot')!;
-    const frontRight = fox.group.getObjectByName('FoxFrontRightLegPivot')!;
-    const hindRight = fox.group.getObjectByName('FoxHindRightLegPivot')!;
     input.setVirtualInput(0, 1, false);
     for (let frame = 0; frame < 90; frame += 1) fox.update(1 / 60, 0);
-    expect(Math.abs(frontLeft.rotation.x - hindRight.rotation.x)).toBeLessThan(0.12);
+    const walking = fox.getMotionDebugSnapshot();
+    expect(walking.locomotionState).toBe('walk');
+    expect(walking.runBlend).toBeLessThan(0.18);
 
-    const legSteps: number[] = [];
+    const runBlends: number[] = [];
     const bodyHeights: number[] = [];
-    const frontPairDeltas: number[] = [];
-    const diagonalDeltas: number[] = [];
-    let previousLegAngle = frontLeft.rotation.x;
+    const strideExtensions: number[] = [];
+    const spinePitches: number[] = [];
     input.setVirtualInput(0, 1, true);
     for (let frame = 0; frame < 120; frame += 1) {
       fox.update(1 / 60, 0);
-      legSteps.push(Math.abs(frontLeft.rotation.x - previousLegAngle));
+      const debug = fox.getMotionDebugSnapshot();
+      runBlends.push(debug.runBlend);
       bodyHeights.push(model.position.y);
-      previousLegAngle = frontLeft.rotation.x;
       if (frame >= 60) {
-        frontPairDeltas.push(Math.abs(frontLeft.rotation.x - frontRight.rotation.x));
-        diagonalDeltas.push(Math.abs(frontLeft.rotation.x - hindRight.rotation.x));
+        strideExtensions.push(debug.rig.pose.strideExtension);
+        spinePitches.push(debug.rig.pose.spinePitch);
       }
     }
 
-    expect(Math.max(...legSteps)).toBeLessThan(0.095);
-    expect(Math.max(...bodyHeights) - Math.min(...bodyHeights)).toBeLessThan(0.055);
-    const meanFrontPair = frontPairDeltas.reduce((sum, value) => sum + value, 0) / frontPairDeltas.length;
-    const meanDiagonal = diagonalDeltas.reduce((sum, value) => sum + value, 0) / diagonalDeltas.length;
-    expect(meanFrontPair).toBeLessThan(meanDiagonal * 0.72);
-    expect(Math.max(...diagonalDeltas)).toBeGreaterThan(0.3);
+    const blendSteps = runBlends.slice(1).map((blend, index) => Math.abs(blend - runBlends[index]!));
+    expect(runBlends[0]).toBeLessThan(runBlends.at(-1)!);
+    expect(runBlends.at(-1)).toBeGreaterThan(0.82);
+    expect(Math.max(...blendSteps)).toBeLessThan(0.04);
+    expect(Math.max(...bodyHeights) - Math.min(...bodyHeights)).toBeGreaterThan(0.015);
+    expect(Math.max(...bodyHeights) - Math.min(...bodyHeights)).toBeLessThan(0.18);
+    expect(Math.max(...strideExtensions)).toBeGreaterThan(0.8);
+    expect(Math.min(...strideExtensions)).toBeLessThan(-0.8);
+    expect(Math.max(...spinePitches) - Math.min(...spinePitches)).toBeGreaterThan(0.24);
+    expect(fox.getMotionDebugSnapshot().locomotionState).toBe('run');
     fox.dispose();
   });
 
@@ -231,7 +255,7 @@ describe('FoxPlayer', () => {
         for (const pawName of pawNames) {
           const paw = fox.group.getObjectByName(pawName);
           const bounds = new THREE.Box3().setFromObject(paw!);
-          expect(bounds.min.y, `${pawName} should stay above ground throughout its stride`).toBeGreaterThanOrEqual(0);
+          expect(bounds.min.y, `${pawName} should stay above ground throughout its stride at frame ${frame}`).toBeGreaterThanOrEqual(0);
         }
       }
     }
@@ -248,10 +272,59 @@ describe('FoxPlayer', () => {
     expect(fox.group.getObjectByName('FoxHindLeftLeg')).toBeTruthy();
     expect(fox.group.getObjectByName('FoxHindRightLeg')).toBeTruthy();
     const model = fox.group.getObjectByName('FoxModel');
-    expect(model?.scale.x).toBeGreaterThan(0.74);
-    expect(model?.scale.x).toBeLessThan(0.82);
+    expect(model?.scale.x).toBeGreaterThan(0.86);
+    expect(model?.scale.x).toBeLessThan(0.94);
+    const proportions = fox.getMotionDebugSnapshot().rig.proportions;
+    expect(proportions.torsoLengthToWidth).toBeGreaterThanOrEqual(2);
+    expect(proportions.headToTorsoWidth).toBeLessThan(0.7);
+    expect(proportions.tailToTorsoLength).toBeGreaterThan(1.05);
     const foxBounds = new THREE.Box3().setFromObject(fox.group);
-    expect(foxBounds.max.y).toBeLessThan(2.2);
+    expect(foxBounds.max.y).toBeGreaterThan(1.4);
+    expect(foxBounds.max.y).toBeLessThan(2.4);
+    fox.dispose();
+  });
+
+  it('snaps upward onto plaza tiers without sinking the paws through stone', () => {
+    const fox = new FoxPlayer({ input: new PlayerInputController({ target: null, document: null }) });
+    let tierHeight = 0;
+    fox.update(1 / 60, 0, () => tierHeight, () => 'stone');
+    tierHeight = 0.25;
+    fox.update(1 / 60, 0, () => tierHeight, () => 'stone');
+
+    expect(fox.position.y).toBeCloseTo(0.25, 6);
+    fox.group.updateMatrixWorld(true);
+    for (const name of ['FrontLeft', 'FrontRight', 'HindLeft', 'HindRight']) {
+      const paw = fox.group.getObjectByName(`Fox${name}Paw`)!;
+      expect(new THREE.Box3().setFromObject(paw).min.y).toBeGreaterThanOrEqual(tierHeight);
+    }
+    fox.dispose();
+  });
+
+  it('pitches in local heading space and plants actual paws across a side-facing slope', () => {
+    const input = new PlayerInputController({ target: null, document: null });
+    const fox = new FoxPlayer({ input });
+    const slope = (x: number): number => -0.18 * x;
+    const heightAt = (x: number, _z: number): number => slope(x);
+    input.setVirtualInput(1, 0, false);
+    for (let frame = 0; frame < 120; frame += 1) fox.update(1 / 60, 0, heightAt, () => 'grass');
+    input.setVirtualInput(0, 0, false);
+    for (let frame = 0; frame < 60; frame += 1) fox.update(1 / 60, 0, heightAt, () => 'grass');
+
+    fox.group.updateMatrixWorld(true);
+    const model = fox.group.getObjectByName('FoxModel')!;
+    const orientation = model.getWorldQuaternion(new THREE.Quaternion());
+    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(orientation);
+    const right = new THREE.Vector3(1, 0, 0).applyQuaternion(orientation);
+    expect(forward.x).toBeGreaterThan(0.9);
+    expect(forward.y).toBeLessThan(-0.08);
+    expect(Math.abs(right.y)).toBeLessThan(0.045);
+
+    for (const name of ['FrontLeft', 'FrontRight', 'HindLeft', 'HindRight']) {
+      const paw = fox.group.getObjectByName(`Fox${name}Paw`) as THREE.Mesh;
+      const clearance = minimumMeshTerrainClearance(paw, heightAt);
+      expect(clearance, `${name} paw should clear its actual local slope`).toBeGreaterThanOrEqual(-0.015);
+      expect(clearance, `${name} paw should remain close to its actual local slope`).toBeLessThan(0.12);
+    }
     fox.dispose();
   });
 
@@ -285,7 +358,10 @@ describe('FoxPlayer', () => {
     update();
 
     fox.requestJump();
-    update();
+    for (let frame = 0; frame < 12 && !actions.includes('jump'); frame += 1) update();
+    expect(actions).toEqual(['jump']);
+    expect(fox.snapshot.jumpsUsed).toBe(1);
+
     fox.requestJump();
     update();
     fox.requestJump();
@@ -298,8 +374,23 @@ describe('FoxPlayer', () => {
     expect(fox.snapshot.jumpsUsed).toBe(0);
 
     fox.requestJump();
-    update();
+    for (let frame = 0; frame < 12 && actions.filter((type) => type === 'jump').length < 2; frame += 1) update();
     expect(actions.filter((type) => type.includes('jump'))).toEqual(['jump', 'double-jump', 'jump']);
+    fox.dispose();
+  });
+
+  it('preserves a rapid second jump tap through the takeoff anticipation', () => {
+    const fox = new FoxPlayer({ input: new PlayerInputController({ target: null, document: null }) });
+    const actions: string[] = [];
+    const update = () => fox.update(1 / 60, 0, () => 0, () => 'grass', undefined, (event) => actions.push(event.type));
+    update();
+    fox.requestJump();
+    update();
+    fox.requestJump();
+    for (let frame = 0; frame < 16 && actions.length < 2; frame += 1) update();
+
+    expect(actions.slice(0, 2)).toEqual(['jump', 'double-jump']);
+    expect(fox.snapshot.jumpsUsed).toBe(2);
     fox.dispose();
   });
 
@@ -311,15 +402,24 @@ describe('FoxPlayer', () => {
     fox.requestJump();
     fox.setGlideHeld(true);
 
-    for (let frame = 0; frame < 60; frame += 1) update();
+    let apex = fox.position.y;
+    let glideEntryVelocity: number | undefined;
+    for (let frame = 0; frame < 60; frame += 1) {
+      update();
+      apex = Math.max(apex, fox.position.y);
+      if (fox.isGliding && glideEntryVelocity === undefined) glideEntryVelocity = fox.snapshot.verticalSpeed;
+    }
 
     expect(fox.isGliding).toBe(true);
     expect(fox.snapshot.grounded).toBe(false);
-    expect(fox.position.y).toBeGreaterThan(2.2);
+    expect(apex).toBeGreaterThan(1.2);
+    expect(glideEntryVelocity).toBeLessThanOrEqual(0.5);
+    expect(fox.position.y).toBeGreaterThan(0.45);
     expect(fox.snapshot.verticalSpeed).toBeGreaterThan(-3.2);
     expect(actions.filter((type) => type.includes('jump'))).toEqual(['jump']);
-    expect(fox.group.getObjectByName('FoxFrontLeftLegPivot')!.rotation.x).toBeGreaterThan(0.45);
-    expect(fox.group.getObjectByName('FoxHindLeftLegPivot')!.rotation.x).toBeLessThan(-0.3);
+    const glidePose = fox.getMotionDebugSnapshot();
+    expect(glidePose.airPose).toBe('glide');
+    expect(glidePose.rig.pose.legs.frontLeft.hip - glidePose.rig.pose.legs.hindLeft.hip).toBeGreaterThan(0.65);
     fox.dispose();
   });
 

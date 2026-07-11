@@ -14,10 +14,21 @@ export interface ThirdPersonCameraOptions {
   readonly lookHeight?: number;
   readonly collisionClearance?: number;
   readonly reducedMotion?: boolean;
+  readonly autoRecenter?: boolean;
 }
+
+const CHASE_RECENTER_DELAY = 1.1;
+const CHASE_RECENTER_RESPONSE = 1.65;
+const MAX_CHASE_BOOM_EXTENSION = 0.7;
+const MAX_CHASE_LOOK_AHEAD = 0.55;
+const CHASE_MOVEMENT_THRESHOLD = 0.08;
 
 function damp(current: number, target: number, responsiveness: number, deltaSeconds: number): number {
   return THREE.MathUtils.lerp(current, target, 1 - Math.exp(-responsiveness * deltaSeconds));
+}
+
+function shortestAngle(from: number, to: number): number {
+  return Math.atan2(Math.sin(to - from), Math.cos(to - from));
 }
 
 function sampledHeight(heightAt: HeightSampler, x: number, z: number): number {
@@ -40,8 +51,16 @@ export class ThirdPersonCamera {
   private readonly desiredFocus = new THREE.Vector3();
   private readonly desiredPosition = new THREE.Vector3();
   private readonly boomOffset = new THREE.Vector3();
+  private readonly chaseLookAhead = new THREE.Vector3();
+  private readonly desiredChaseLookAhead = new THREE.Vector3();
+  private readonly autoRecenter: boolean;
   private distance: number;
   private resolvedDistance: number;
+  private chaseHeadingYaw = 0;
+  private chaseSpeed = 0;
+  private chaseRecenterWeight = 1;
+  private chaseBoomExtension = 0;
+  private chaseMoveSeconds = 0;
   private activePointer: number | null = null;
   private pointerX = 0;
   private pointerY = 0;
@@ -58,9 +77,10 @@ export class ThirdPersonCamera {
     this.maxDistance = options.maxDistance ?? 12.5;
     this.distance = THREE.MathUtils.clamp(options.distance ?? 7.8, this.minDistance, this.maxDistance);
     this.resolvedDistance = this.distance;
-    this.lookHeight = options.lookHeight ?? 1.18;
+    this.lookHeight = options.lookHeight ?? 0.85;
     this.collisionClearance = options.collisionClearance ?? 0.38;
     this.reducedMotion = options.reducedMotion ?? false;
+    this.autoRecenter = options.autoRecenter ?? true;
 
     this.camera.name = this.camera.name || 'ThirdPersonCamera';
     this.domElement?.addEventListener('pointerdown', this.onPointerDown);
@@ -81,12 +101,36 @@ export class ThirdPersonCamera {
 
   public setReducedMotion(reducedMotion: boolean): void {
     this.reducedMotion = reducedMotion;
+    if (reducedMotion) this.chaseMoveSeconds = 0;
   }
 
   public setOrbit(yaw: number, pitch: number, distance = this.distance): void {
     this.yaw = yaw;
     this.pitch = THREE.MathUtils.clamp(pitch, 0.12, 0.88);
     this.distance = THREE.MathUtils.clamp(distance, this.minDistance, this.maxDistance);
+    this.chaseMoveSeconds = 0;
+  }
+
+  /**
+   * Supplies the fox's world-space heading and speed for gentle chase framing.
+   * A heading of zero faces world -Z, placing the camera behind it on +Z.
+   */
+  public setChaseMotion(
+    headingYaw: number,
+    normalizedSpeed: number,
+    recenterWeight = 1,
+  ): void {
+    if (Number.isFinite(headingYaw)) this.chaseHeadingYaw = headingYaw;
+    this.chaseSpeed = THREE.MathUtils.clamp(
+      Number.isFinite(normalizedSpeed) ? normalizedSpeed : 0,
+      0,
+      1,
+    );
+    this.chaseRecenterWeight = THREE.MathUtils.clamp(
+      Number.isFinite(recenterWeight) ? recenterWeight : 0,
+      0,
+      1,
+    );
   }
 
   public resize(width: number, height: number): void {
@@ -105,7 +149,12 @@ export class ThirdPersonCamera {
     obstacleAt?: CameraObstacleSampler,
   ): void {
     const delta = Math.min(Math.max(deltaSeconds, 0), 0.1);
-    this.desiredFocus.set(target.x, target.y + this.lookHeight, target.z);
+    this.updateChaseMotion(delta);
+    this.desiredFocus.set(
+      target.x + this.chaseLookAhead.x,
+      target.y + this.lookHeight,
+      target.z + this.chaseLookAhead.z,
+    );
 
     if (!this.initialized) {
       this.focus.copy(this.desiredFocus);
@@ -115,17 +164,18 @@ export class ThirdPersonCamera {
       this.focus.lerp(this.desiredFocus, 1 - Math.exp(-focusResponse * delta));
     }
 
-    const horizontalDistance = Math.cos(this.pitch) * this.distance;
+    const requestedDistance = Math.min(this.maxDistance, this.distance + this.chaseBoomExtension);
+    const horizontalDistance = Math.cos(this.pitch) * requestedDistance;
     this.boomOffset.set(
       Math.sin(this.yaw) * horizontalDistance,
-      Math.sin(this.pitch) * this.distance,
+      Math.sin(this.pitch) * requestedDistance,
       Math.cos(this.yaw) * horizontalDistance,
     );
 
-    const safeDistance = this.findSafeDistance(heightAt, obstacleAt);
+    const safeDistance = this.findSafeDistance(requestedDistance, heightAt, obstacleAt);
     const distanceResponse = safeDistance < this.resolvedDistance ? 24 : 5.5;
     this.resolvedDistance = damp(this.resolvedDistance, safeDistance, distanceResponse, delta);
-    const distanceScale = this.distance <= 0 ? 1 : this.resolvedDistance / this.distance;
+    const distanceScale = requestedDistance <= 0 ? 1 : this.resolvedDistance / requestedDistance;
     this.desiredPosition.copy(this.focus).addScaledVector(this.boomOffset, distanceScale);
 
     const ground = sampledHeight(heightAt, this.desiredPosition.x, this.desiredPosition.z);
@@ -149,7 +199,52 @@ export class ThirdPersonCamera {
     this.activePointer = null;
   }
 
-  private findSafeDistance(heightAt: HeightSampler, obstacleAt?: CameraObstacleSampler): number {
+  private updateChaseMotion(delta: number): void {
+    const moving = this.chaseSpeed > CHASE_MOVEMENT_THRESHOLD;
+    const forwardChase = this.chaseRecenterWeight > 0.9;
+    if (this.enabled && moving && forwardChase && this.activePointer === null) this.chaseMoveSeconds += delta;
+    else this.chaseMoveSeconds = 0;
+
+    if (
+      this.enabled
+      && this.autoRecenter
+      && !this.reducedMotion
+      && moving
+      && forwardChase
+      && this.activePointer === null
+      && this.chaseMoveSeconds >= CHASE_RECENTER_DELAY
+    ) {
+      const yawError = shortestAngle(this.yaw, this.chaseHeadingYaw);
+      this.yaw += yawError * (1 - Math.exp(-CHASE_RECENTER_RESPONSE * delta));
+    }
+
+    const motionScale = this.reducedMotion ? 0.2 : 1;
+    const targetExtension = this.chaseSpeed * MAX_CHASE_BOOM_EXTENSION * motionScale;
+    this.chaseBoomExtension = damp(
+      this.chaseBoomExtension,
+      targetExtension,
+      targetExtension > this.chaseBoomExtension ? 3.2 : 4.6,
+      delta,
+    );
+
+    const lookAheadDistance = this.chaseSpeed * MAX_CHASE_LOOK_AHEAD * motionScale;
+    this.desiredChaseLookAhead.set(
+      -Math.sin(this.chaseHeadingYaw) * lookAheadDistance,
+      0,
+      -Math.cos(this.chaseHeadingYaw) * lookAheadDistance,
+    );
+    const lookAheadResponse = lookAheadDistance > this.chaseLookAhead.length() ? 5.2 : 6.5;
+    this.chaseLookAhead.lerp(
+      this.desiredChaseLookAhead,
+      1 - Math.exp(-lookAheadResponse * delta),
+    );
+  }
+
+  private findSafeDistance(
+    requestedDistance: number,
+    heightAt: HeightSampler,
+    obstacleAt?: CameraObstacleSampler,
+  ): number {
     const sampleCount = 16;
     let lastClearFraction = 1;
     let hit = false;
@@ -165,13 +260,18 @@ export class ThirdPersonCamera {
         break;
       }
     }
-    if (!hit) return this.distance;
-    return THREE.MathUtils.clamp(this.distance * lastClearFraction - 0.3, this.minDistance, this.distance);
+    if (!hit) return requestedDistance;
+    return THREE.MathUtils.clamp(
+      requestedDistance * lastClearFraction - 0.3,
+      this.minDistance,
+      requestedDistance,
+    );
   }
 
   private readonly onPointerDown = (event: PointerEvent): void => {
     if (!this.enabled || (event.pointerType === 'mouse' && event.button !== 0)) return;
     this.activePointer = event.pointerId;
+    this.chaseMoveSeconds = 0;
     this.pointerX = event.clientX;
     this.pointerY = event.clientY;
     this.domElement?.setPointerCapture?.(event.pointerId);
@@ -183,6 +283,7 @@ export class ThirdPersonCamera {
     const deltaY = event.clientY - this.pointerY;
     this.pointerX = event.clientX;
     this.pointerY = event.clientY;
+    this.chaseMoveSeconds = 0;
     this.yaw -= deltaX * 0.0062;
     this.pitch = THREE.MathUtils.clamp(this.pitch + deltaY * 0.0045, 0.12, 0.88);
     event.preventDefault();

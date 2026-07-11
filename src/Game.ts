@@ -191,8 +191,12 @@ export class Game {
     this.market.subscribe((state) => this.onMarketState(state));
     this.refreshAudioSources();
     this.prewarmWorld();
+    this.cameraRig.setChaseMotion(
+      this.player.headingYaw,
+      this.player.normalizedSpeed,
+      this.player.chaseRecenterWeight,
+    );
     this.cameraTarget.copy(this.player.position);
-    this.cameraTarget.y += 0.75;
     this.cameraRig.update(0, this.cameraTarget, (x, z) => this.world.heightAt(x, z));
     this.hud.setEnterReady(true);
 
@@ -207,6 +211,8 @@ export class Game {
         value: {
           scene: this.scene,
           renderer: this.renderer,
+          camera: this.camera,
+          cameraRig: this.cameraRig,
           player: this.player,
           world: this.world,
           market: this.market,
@@ -251,8 +257,12 @@ export class Game {
       (action) => this.onFoxAction(action),
     );
     this.world.update(this.player.position, this.elapsed);
+    this.cameraRig.setChaseMotion(
+      this.player.headingYaw,
+      this.player.normalizedSpeed,
+      this.player.chaseRecenterWeight,
+    );
     this.cameraTarget.copy(this.player.position);
-    this.cameraTarget.y += 0.75;
     this.cameraRig.update(
       delta,
       this.cameraTarget,
