@@ -1,4 +1,5 @@
 export { Monument, type MonumentKind, type MonumentOptions, type MonumentPosition } from './Monument';
+export { HorizonBadgePanel } from './HorizonBadgePanel';
 export {
   MonumentSystem,
   type MonumentSystemOptions,

@@ -73,10 +73,53 @@ export function createSimulatedCandles(
   return candles;
 }
 
+/** Deterministic coarser history used only by the explicit simulation QA mode. */
+export function createSimulatedHistory(
+  symbol: AssetSymbol,
+  now: number,
+  count: number,
+  intervalMs: number,
+  seedSuffix = '',
+  targetLatestPrice?: number,
+): Candle[] {
+  const safeInterval = Math.max(60_000, Math.floor(intervalMs));
+  const bucket = Math.floor(now / safeInterval) * safeInterval;
+  const random = mulberry32(hashString(`${symbol}:${bucket}:${safeInterval}:${seedSuffix}`));
+  const intervalScale = Math.min(22, Math.sqrt(safeInterval / 60_000) * 0.52);
+  const volatility = VOLATILITY[symbol] * intervalScale;
+  let price = BASE_PRICES[symbol] * (0.9 + random() * 0.2);
+  const candles: Candle[] = [];
+
+  for (let index = Math.max(0, Math.floor(count)) - 1; index >= 0; index -= 1) {
+    const openTime = bucket - index * safeInterval;
+    const open = price;
+    const close = Math.max(0.0000001, open * Math.exp(gaussian(random) * volatility * 2.2));
+    const spread = Math.abs(gaussian(random)) * volatility * open * 1.3;
+    const high = Math.max(open, close) + spread;
+    const low = Math.max(0.0000001, Math.min(open, close) - spread * (0.7 + random() * 0.6));
+    candles.push({ openTime, open, high, low, close, closed: index !== 0 });
+    price = close;
+  }
+
+  const latest = candles.at(-1);
+  if (!latest || targetLatestPrice === undefined || !Number.isFinite(targetLatestPrice) || targetLatestPrice <= 0) {
+    return candles;
+  }
+  const scale = targetLatestPrice / latest.close;
+  return candles.map((candle) => ({
+    ...candle,
+    open: candle.open * scale,
+    high: candle.high * scale,
+    low: candle.low * scale,
+    close: candle.close * scale,
+  }));
+}
+
 export function stepSimulation(
   state: AssetState,
   random: () => number,
   now = Date.now(),
+  candleLimit = 30,
 ): AssetState {
   const latest = state.candles[state.candles.length - 1];
   if (!latest) return state;
@@ -97,7 +140,7 @@ export function stepSimulation(
       close: nextPrice,
       closed: false,
     });
-    candles = candles.slice(-30);
+    candles = candles.slice(-Math.max(1, Math.floor(candleLimit)));
   } else {
     candles[candles.length - 1] = {
       ...latest,

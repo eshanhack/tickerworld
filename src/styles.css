@@ -336,10 +336,49 @@ canvas {
   right: max(1.15rem, env(safe-area-inset-right));
   bottom: max(1.15rem, env(safe-area-inset-bottom));
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   gap: 0.55rem;
   pointer-events: auto;
 }
+
+.audio-mixer {
+  display: grid;
+  gap: .22rem;
+  width: 8.5rem;
+  padding: .38rem .5rem;
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  border-radius: 1.05rem;
+  background: rgba(255, 241, 207, 0.86);
+  box-shadow: 0 .65rem 1.7rem rgba(47, 58, 57, 0.14);
+  backdrop-filter: blur(12px);
+}
+
+.audio-channel {
+  display: grid;
+  grid-template-columns: 3.25rem 1fr;
+  align-items: center;
+  min-height: 1.25rem;
+  gap: .38rem;
+}
+
+.channel-mute {
+  display: flex;
+  align-items: center;
+  gap: .3rem;
+  min-width: 0;
+  padding: .1rem .18rem;
+  border: 0;
+  border-radius: .55rem;
+  background: transparent;
+  color: #4c5553;
+  cursor: pointer;
+}
+.channel-mute span { width: .82rem; color: #c9744f; font-size: .78rem; font-weight: 900; }
+.channel-mute strong { font-size: .57rem; letter-spacing: .045em; text-transform: uppercase; }
+.channel-mute.is-active { background: rgba(201, 116, 79, .14); color: rgba(76, 85, 83, .55); }
+.channel-mute.is-active span { color: #a95f4d; }
+.audio-channel label { display: grid; align-items: center; }
+.audio-channel input { width: 100%; min-width: 0; height: 1rem; accent-color: #c9744f; cursor: pointer; }
 
 .round-action {
   display: grid;
@@ -469,8 +508,8 @@ canvas {
   .mobile-joystick { display: block; }
   .mobile-jump { display: grid; }
   .enter-controls { display: none; }
-  .volume-control { display: none; }
   .hud-actions { bottom: auto; top: max(1rem, env(safe-area-inset-top)); }
+  .audio-mixer { width: 7.8rem; padding: .34rem .42rem; }
   .compass { top: calc(max(1rem, env(safe-area-inset-top)) + 3.25rem); }
 }
 
@@ -481,9 +520,7 @@ canvas {
 }
 
 @media (max-width: 900px) {
-  .mobile-joystick { display: block; }
-  .mobile-jump { display: grid; }
-  .volume-control { display: none; }
+  .audio-mixer { width: 7.8rem; }
 }
 
 @media (orientation: portrait) and (max-width: 700px) {

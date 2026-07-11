@@ -4,6 +4,8 @@ export interface PlayerInputState {
   /** Forward intent, where -1 is backward and +1 is forward. */
   readonly moveForward: number;
   readonly sprint: boolean;
+  /** True while Space or the touch glide control is being held. */
+  readonly jumpHeld: boolean;
 }
 
 export interface PlayerInputControllerOptions {
@@ -50,6 +52,7 @@ export class PlayerInputController {
   private virtualX = 0;
   private virtualForward = 0;
   private virtualSprint = false;
+  private virtualGlide = false;
   private jumpQueued = false;
   private enabled = true;
 
@@ -69,7 +72,7 @@ export class PlayerInputController {
 
   public get state(): PlayerInputState {
     if (!this.enabled) {
-      return { moveX: 0, moveForward: 0, sprint: false };
+      return { moveX: 0, moveForward: 0, sprint: false, jumpHeld: false };
     }
 
     const keyboardX = Number(this.isDown('KeyD', 'ArrowRight')) - Number(this.isDown('KeyA', 'ArrowLeft'));
@@ -87,6 +90,7 @@ export class PlayerInputController {
       moveX,
       moveForward,
       sprint: this.virtualSprint || this.pressed.has('ShiftLeft') || this.pressed.has('ShiftRight'),
+      jumpHeld: this.virtualGlide || this.pressed.has('Space'),
     };
   }
 
@@ -100,6 +104,11 @@ export class PlayerInputController {
   /** Queue one jump edge for the next player update (keyboard and touch share this path). */
   public requestJump(): void {
     if (this.enabled) this.jumpQueued = true;
+  }
+
+  /** Mirrors a held touch/pointer jump control without creating another jump edge. */
+  public setVirtualGlide(held: boolean): void {
+    this.virtualGlide = this.enabled && held;
   }
 
   /** Returns a queued jump once, preventing key-repeat from creating extra jumps. */
@@ -119,6 +128,7 @@ export class PlayerInputController {
     this.virtualX = 0;
     this.virtualForward = 0;
     this.virtualSprint = false;
+    this.virtualGlide = false;
     this.jumpQueued = false;
   };
 

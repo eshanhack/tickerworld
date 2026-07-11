@@ -5,8 +5,12 @@ import {
   HyperliquidMarketFeed,
   applyTradeToCandles,
   buildHyperliquidSubscriptions,
+  computeHorizonChanges,
   computeReconnectDelay,
+  createEmptyHorizonChanges,
   createSimulatedCandles,
+  createSimulatedHistory,
+  getCandleCountdown,
   isSocketActivityStale,
   mulberry32,
   parseHyperliquidCandles,
@@ -114,6 +118,7 @@ describe('market candle helpers', () => {
     const state: AssetState = {
       symbol: 'BTC', instrument: 'BTC', provider: 'simulation', candles, price, previousPrice: price,
       direction: 'flat', mode: 'simulated', updatedAt: 1_800_000, presentationTick: 0,
+      horizonChanges: createEmptyHorizonChanges(),
     };
     const first = stepSimulation(state, mulberry32(42), 1_800_400);
     const second = stepSimulation(state, mulberry32(42), 1_800_400);
@@ -180,6 +185,7 @@ describe('market candle helpers', () => {
       mode: 'live',
       updatedAt: 65_000,
       presentationTick: 7,
+      horizonChanges: createEmptyHorizonChanges(),
     });
 
     internals.setAllModes('reconnecting');
@@ -192,5 +198,64 @@ describe('market candle helpers', () => {
       candles: [candle],
       presentationTick: 7,
     });
+  });
+
+  it('derives signed direction ratios for every requested timeframe', () => {
+    const now = 400 * 24 * 60 * 60_000;
+    const minuteHistory = Array.from({ length: 66 }, (_, index): Candle => ({
+      openTime: now - (65 - index) * 60_000,
+      open: 100 + index,
+      high: 101 + index,
+      low: 99 + index,
+      close: 100 + index,
+      closed: index < 65,
+    }));
+    const dailyHistory = Array.from({ length: 370 }, (_, index): Candle => ({
+      openTime: now - (369 - index) * 24 * 60 * 60_000,
+      open: 80 + index * 0.05,
+      high: 81 + index * 0.05,
+      low: 79 + index * 0.05,
+      close: 80 + index * 0.05,
+      closed: index < 369,
+    }));
+    const changes = computeHorizonChanges(170, now, minuteHistory, dailyHistory);
+
+    expect(changes.map((change) => change.horizon)).toEqual([
+      '1m', '15m', '1h', '1d', '1w', '1mo', '1y',
+    ]);
+    expect(changes.every((change) => change.referencePrice !== null)).toBe(true);
+    expect(changes.every((change) => change.changeRatio !== null)).toBe(true);
+    expect(changes[0]?.changeRatio).toBeCloseTo(170 / 164 - 1, 8);
+    expect(changes[0]?.direction).toBe('up');
+  });
+
+  it('keeps missing horizon history explicitly unavailable', () => {
+    const changes = computeHorizonChanges(100, 1_000_000, [], []);
+    expect(changes).toHaveLength(7);
+    expect(changes.every((change) => (
+      change.referenceTime === null
+      && change.referencePrice === null
+      && change.changeRatio === null
+      && change.direction === 'flat'
+    ))).toBe(true);
+  });
+
+  it('counts down cleanly across one-minute boundaries', () => {
+    expect(getCandleCountdown(0)).toEqual({
+      remainingMs: 60_000,
+      remainingSeconds: 60,
+      label: '1:00',
+    });
+    expect(getCandleCountdown(59_000).label).toBe('0:01');
+    expect(getCandleCountdown(59_999).remainingSeconds).toBe(1);
+    expect(getCandleCountdown(60_000).label).toBe('1:00');
+  });
+
+  it('builds deterministic aligned long-range simulation history', () => {
+    const first = createSimulatedHistory('BTC', 1_800_000_000, 370, 86_400_000, 'qa', 120_000);
+    const second = createSimulatedHistory('BTC', 1_800_000_000, 370, 86_400_000, 'qa', 120_000);
+    expect(first).toEqual(second);
+    expect(first).toHaveLength(370);
+    expect(first.at(-1)?.close).toBeCloseTo(120_000, 6);
   });
 });

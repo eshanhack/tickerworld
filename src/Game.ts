@@ -153,6 +153,10 @@ export class Game {
       onEnter: () => this.enter(),
       onMuteToggle: () => this.audio.toggleMute(),
       onVolumeChange: (value) => this.audio.setVolume(value),
+      onMusicMuteToggle: () => this.audio.toggleMusicMuted(),
+      onMusicVolumeChange: (value) => this.audio.setMusicVolume(value),
+      onSfxMuteToggle: () => this.audio.toggleSfxMuted(),
+      onSfxVolumeChange: (value) => this.audio.setSfxVolume(value),
       onCompassToggle: (enabled) => {
         this.compassEnabled = enabled;
         safeWrite(COMPASS_KEY, String(enabled));
@@ -165,6 +169,7 @@ export class Game {
       },
       onVirtualInput: (x, forward, sprint) => this.player.setVirtualInput(x, forward, sprint),
       onJump: () => this.player.requestJump(),
+      onGlideChange: (held) => this.player.setGlideHeld(held),
     });
 
     try {
@@ -176,8 +181,10 @@ export class Game {
     this.hud.setReducedMotion(this.reducedMotion);
 
     this.audio.subscribe((state) => {
-      this.hud.setMuted(state.muted);
-      this.hud.setVolume(state.volume);
+      this.hud.setMusicMuted(state.musicMuted);
+      this.hud.setMusicVolume(state.musicVolume);
+      this.hud.setSfxMuted(state.sfxMuted);
+      this.hud.setSfxVolume(state.sfxVolume);
       if (state.status === 'resume-failed') this.hud.showToast('Tap the music button to wake the sound.');
     });
 
@@ -292,10 +299,17 @@ export class Game {
 
     if (!previous || state.presentationTick <= previous.presentationTick || state.direction === 'flat') return;
     if (state.price === null || previous.price === null) return;
-    const moveRatio = previous.price > 0 ? Math.abs(state.price - previous.price) / previous.price : 0;
+    const tickMoveRatio = previous.price > 0 ? Math.abs(state.price - previous.price) / previous.price : 0;
+    const minuteChange = state.horizonChanges.find((change) => change.horizon === '1m');
+    const minuteMoveRatio = Math.abs(minuteChange?.changeRatio ?? 0);
+    const minuteDirection = minuteChange?.direction ?? 'flat';
+    const useMinuteDirection = minuteMoveRatio >= Math.max(0.00012, tickMoveRatio * 1.5)
+      && minuteDirection !== 'flat';
+    const soundDirection = useMinuteDirection ? minuteDirection : state.direction;
+    const moveRatio = Math.max(tickMoveRatio, minuteMoveRatio);
     for (const monument of this.monuments.getForSymbol(state.symbol)) {
       const id = this.monumentIds.get(monument);
-      if (id) this.audio.playTick(id, state.direction, moveRatio);
+      if (id) this.audio.playTick(id, soundDirection, moveRatio);
     }
   }
 
@@ -425,8 +439,8 @@ export class Game {
         `chunks ${world.loadedChunks}/${world.desiredChunks} · queued ${world.queuedLoads}`,
         `props ${world.propInstances} · echoes ${world.activeEchoes}`,
         `market ${btcMarket.mode} · tick ${btcMarket.presentationTick} · candles ${btcMarket.candles.length}`,
-        `audio ${audioState.status} · muted ${audioState.muted}`,
-        `fox ${playerState.grounded ? 'grounded' : 'airborne'} · jumps ${playerState.jumpsUsed}/2 · vy ${playerState.verticalSpeed.toFixed(2)}`,
+        `audio ${audioState.status} · music ${Math.round(audioState.musicVolume * 100)}${audioState.musicMuted ? 'x' : ''} · fx ${Math.round(audioState.sfxVolume * 100)}${audioState.sfxMuted ? 'x' : ''}`,
+        `fox ${playerState.grounded ? 'grounded' : this.player.isGliding ? 'gliding' : 'airborne'} · jumps ${playerState.jumpsUsed}/2 · vy ${playerState.verticalSpeed.toFixed(2)}`,
         `pos ${this.player.position.x.toFixed(2)}, ${this.player.position.z.toFixed(2)} · yaw ${this.cameraRig.yaw.toFixed(2)}`,
         `textures ${this.renderer.info.memory.textures} · geometries ${this.renderer.info.memory.geometries}`,
       ].join('\n'));

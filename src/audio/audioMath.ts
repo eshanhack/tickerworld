@@ -1,5 +1,5 @@
 import type { AssetSymbol } from '../types';
-import type { AssetAudioProfile } from './types';
+import type { AssetAudioProfile, MarketMoveClass } from './types';
 
 export const ASSET_AUDIO_PROFILES: Readonly<Record<AssetSymbol, AssetAudioProfile>> = {
   BTC: { frequency: 220, accent: 0 },
@@ -21,6 +21,26 @@ export function clampUnit(value: number): number {
 export function normaliseMoveIntensity(moveRatio: number): number {
   if (!Number.isFinite(moveRatio)) return 0;
   return Math.sqrt(Math.min(Math.abs(moveRatio), 0.02) / 0.02);
+}
+
+/**
+ * A perceptual market-move curve. Tiny trade-to-trade changes stay delicate,
+ * while unusual one-minute moves quickly become expressive without reaching
+ * unbounded gain values.
+ */
+export function marketMoveSeverity(moveRatio: number): number {
+  if (!Number.isFinite(moveRatio)) return 0;
+  const magnitude = Math.abs(moveRatio);
+  return clampUnit(Math.log1p(magnitude / 0.00004) / Math.log1p(0.004 / 0.00004));
+}
+
+/** Thresholds are fractional moves: 0.001 is a 0.1% move. */
+export function classifyMarketMove(moveRatio: number): MarketMoveClass {
+  const magnitude = Number.isFinite(moveRatio) ? Math.abs(moveRatio) : 0;
+  if (magnitude >= 0.002) return 'exceptional';
+  if (magnitude >= 0.0006) return 'large';
+  if (magnitude >= 0.00012) return 'medium';
+  return 'small';
 }
 
 /** Keeps both notes of a market gesture inside the calm midrange. */

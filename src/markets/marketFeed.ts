@@ -1,12 +1,20 @@
 import { ASSET_SYMBOLS, type AssetState, type AssetSymbol, type Candle, type FeedMode, type MarketFeed } from '../types';
 import { FORCE_SIMULATION, WORLD_SEED } from '../config';
-import { BASE_PRICES, createSimulatedCandles, hashString, mulberry32, stepSimulation } from './simulator';
+import { BASE_PRICES, createSimulatedCandles, createSimulatedHistory, hashString, mulberry32, stepSimulation } from './simulator';
+import {
+  DAY_MS,
+  MINUTE_MS,
+  computeHorizonChanges,
+  createEmptyHorizonChanges,
+} from './horizons';
 
 const REST_URL = 'https://api.hyperliquid.xyz/info';
 const SOCKET_URL = 'wss://api.hyperliquid.xyz/ws';
 const SNAPSHOT_CANDLE_COUNT = 30;
-const MINUTE_MS = 60_000;
-const SNAPSHOT_LOOKBACK_MS = 36 * MINUTE_MS;
+export const MINUTE_HISTORY_COUNT = 66;
+export const DAILY_HISTORY_COUNT = 370;
+const MINUTE_SNAPSHOT_LOOKBACK_MS = (MINUTE_HISTORY_COUNT + 6) * MINUTE_MS;
+const DAILY_SNAPSHOT_LOOKBACK_MS = (DAILY_HISTORY_COUNT + 5) * DAY_MS;
 const SNAPSHOT_TIMEOUT_MS = 8_000;
 const PRESENTATION_INTERVAL_MS = 400;
 const PRESENTATION_POLL_MS = 50;
@@ -35,6 +43,14 @@ type HyperliquidSubscription =
   | { type: 'allMids' }
   | { type: 'trades'; coin: AssetSymbol }
   | { type: 'candle'; coin: AssetSymbol; interval: '1m' };
+
+type HyperliquidCandleInterval = '1m' | '1d';
+
+interface SnapshotBundle {
+  readonly chartCandles: Candle[];
+  readonly minuteHistory: Candle[];
+  readonly dailyHistory: Candle[];
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -128,26 +144,39 @@ function parseCandleItem(value: unknown, now: number): Candle | undefined {
   };
 }
 
-/** Parses REST snapshots, websocket objects, and compact candle tuples. */
-export function parseHyperliquidCandles(payload: unknown, now = Date.now()): Candle[] {
+/** Parses an ordered Hyperliquid history without coupling it to the 30-candle chart. */
+export function parseHyperliquidCandleHistory(
+  payload: unknown,
+  now = Date.now(),
+  maxCount = 5_000,
+): Candle[] {
   const byOpenTime = new Map<number, Candle>();
   for (const item of candleItems(payload)) {
     const candle = parseCandleItem(item, now);
     if (candle) byOpenTime.set(candle.openTime, candle);
   }
   const sorted = [...byOpenTime.values()].sort((left, right) => left.openTime - right.openTime);
-  return sorted.slice(-SNAPSHOT_CANDLE_COUNT).map((candle, index, source) => ({
+  return sorted.slice(-Math.max(1, Math.floor(maxCount))).map((candle, index, source) => ({
     ...candle,
     closed: index < source.length - 1 || candle.closed,
   }));
 }
 
-export function reconcileCandle(candles: readonly Candle[], incoming: Candle): Candle[] {
+/** Parses REST snapshots, websocket objects, and compact candle tuples. */
+export function parseHyperliquidCandles(payload: unknown, now = Date.now()): Candle[] {
+  return parseHyperliquidCandleHistory(payload, now, SNAPSHOT_CANDLE_COUNT);
+}
+
+export function reconcileCandle(
+  candles: readonly Candle[],
+  incoming: Candle,
+  maxCount = SNAPSHOT_CANDLE_COUNT,
+): Candle[] {
   const byOpenTime = new Map(candles.map((candle) => [candle.openTime, { ...candle }]));
   byOpenTime.set(incoming.openTime, { ...incoming });
   const next = [...byOpenTime.values()]
     .sort((left, right) => left.openTime - right.openTime)
-    .slice(-SNAPSHOT_CANDLE_COUNT);
+    .slice(-Math.max(1, Math.floor(maxCount)));
   const latestOpenTime = next.at(-1)?.openTime;
   return next.map((candle) => ({
     ...candle,
@@ -160,6 +189,7 @@ export function applyTradeToCandles(
   candles: readonly Candle[],
   price: number,
   tradeTime: number,
+  maxCount = SNAPSHOT_CANDLE_COUNT,
 ): TradeCandleUpdate {
   if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(tradeTime)) {
     return { candles: [...candles], accepted: false, rolled: false };
@@ -176,7 +206,7 @@ export function applyTradeToCandles(
     };
   }
   if (openTime < latest.openTime) {
-    return { candles: next.slice(-SNAPSHOT_CANDLE_COUNT), accepted: false, rolled: false };
+    return { candles: next.slice(-Math.max(1, Math.floor(maxCount))), accepted: false, rolled: false };
   }
 
   if (openTime === latest.openTime) {
@@ -187,12 +217,12 @@ export function applyTradeToCandles(
       close: price,
       closed: false,
     };
-    return { candles: next.slice(-SNAPSHOT_CANDLE_COUNT), accepted: true, rolled: false };
+    return { candles: next.slice(-Math.max(1, Math.floor(maxCount))), accepted: true, rolled: false };
   }
 
   next[next.length - 1] = { ...latest, closed: true };
   next.push({ openTime, open: price, high: price, low: price, close: price, closed: false });
-  return { candles: next.slice(-SNAPSHOT_CANDLE_COUNT), accepted: true, rolled: true };
+  return { candles: next.slice(-Math.max(1, Math.floor(maxCount))), accepted: true, rolled: true };
 }
 
 export function parseHyperliquidTrades(payload: unknown): ParsedTrade[] {
@@ -242,6 +272,8 @@ export class HyperliquidMarketFeed implements MarketFeed {
   private readonly pendingTrades = new Map<AssetSymbol, PendingTrade>();
   private readonly lastPresented = new Map<AssetSymbol, number>();
   private readonly lastTradeTime = new Map<AssetSymbol, number>();
+  private readonly minuteHistories = new Map<AssetSymbol, Candle[]>();
+  private readonly dailyHistories = new Map<AssetSymbol, Candle[]>();
   private socket: WebSocket | undefined;
   private simulationTimer: number | undefined;
   private presentationTimer: number | undefined;
@@ -258,12 +290,25 @@ export class HyperliquidMarketFeed implements MarketFeed {
   constructor() {
     const now = Date.now();
     for (const symbol of ASSET_SYMBOLS) {
-      const candles = FORCE_SIMULATION
-        ? createSimulatedCandles(symbol, now, SNAPSHOT_CANDLE_COUNT, WORLD_SEED)
+      const minuteHistory = FORCE_SIMULATION
+        ? createSimulatedCandles(symbol, now, MINUTE_HISTORY_COUNT, WORLD_SEED)
         : [];
+      const candles = minuteHistory.slice(-SNAPSHOT_CANDLE_COUNT);
       const price = FORCE_SIMULATION
         ? candles.at(-1)?.close ?? BASE_PRICES[symbol]
         : null;
+      const dailyHistory = FORCE_SIMULATION
+        ? createSimulatedHistory(
+          symbol,
+          now,
+          DAILY_HISTORY_COUNT,
+          DAY_MS,
+          `${WORLD_SEED}:daily`,
+          price ?? undefined,
+        )
+        : [];
+      this.minuteHistories.set(symbol, minuteHistory);
+      this.dailyHistories.set(symbol, dailyHistory);
       this.states.set(symbol, {
         symbol,
         instrument: symbol,
@@ -275,6 +320,9 @@ export class HyperliquidMarketFeed implements MarketFeed {
         mode: FORCE_SIMULATION ? 'simulated' : 'connecting',
         updatedAt: now,
         presentationTick: 0,
+        horizonChanges: FORCE_SIMULATION
+          ? computeHorizonChanges(price, now, minuteHistory, dailyHistory)
+          : createEmptyHorizonChanges(),
       });
       this.randoms.set(symbol, mulberry32(hashString(`${WORLD_SEED}:${symbol}:market`)));
       this.lastTradeTime.set(symbol, 0);
@@ -345,7 +393,26 @@ export class HyperliquidMarketFeed implements MarketFeed {
     for (const symbol of ASSET_SYMBOLS) {
       const random = this.randoms.get(symbol);
       if (!random) continue;
-      const next = stepSimulation(this.getState(symbol), random);
+      const now = Date.now();
+      const previous = this.getState(symbol);
+      const minuteHistory = this.minuteHistories.get(symbol) ?? [...previous.candles];
+      const historyState = stepSimulation(
+        { ...previous, candles: minuteHistory },
+        random,
+        now,
+        MINUTE_HISTORY_COUNT,
+      );
+      this.minuteHistories.set(symbol, [...historyState.candles]);
+      const next: AssetState = {
+        ...historyState,
+        candles: historyState.candles.slice(-SNAPSHOT_CANDLE_COUNT),
+        horizonChanges: computeHorizonChanges(
+          historyState.price,
+          now,
+          historyState.candles,
+          this.dailyHistories.get(symbol) ?? [],
+        ),
+      };
       this.states.set(symbol, next);
       this.emit(next);
     }
@@ -365,19 +432,27 @@ export class HyperliquidMarketFeed implements MarketFeed {
       if (generation !== this.syncGeneration || this.paused || this.disposed) return;
 
       const now = Date.now();
-      for (const [symbol, candles] of snapshots) {
+      for (const [symbol, snapshot] of snapshots) {
         const previous = this.getState(symbol);
-        const price = candles.at(-1)?.close ?? null;
+        const price = snapshot.chartCandles.at(-1)?.close ?? null;
+        this.minuteHistories.set(symbol, snapshot.minuteHistory);
+        this.dailyHistories.set(symbol, snapshot.dailyHistory);
         const state: AssetState = {
           ...previous,
           instrument: symbol,
           provider: 'hyperliquid',
-          candles,
+          candles: snapshot.chartCandles,
           price,
           previousPrice: price,
           direction: 'flat',
           mode: initial ? 'connecting' : 'reconnecting',
           updatedAt: now,
+          horizonChanges: computeHorizonChanges(
+            price,
+            now,
+            snapshot.minuteHistory,
+            snapshot.dailyHistory,
+          ),
         };
         this.states.set(symbol, state);
         this.lastTradeTime.set(symbol, 0);
@@ -391,33 +466,49 @@ export class HyperliquidMarketFeed implements MarketFeed {
     }
   }
 
-  private async fetchSnapshot(symbol: AssetSymbol): Promise<Candle[]> {
+  private async fetchSnapshot(symbol: AssetSymbol): Promise<SnapshotBundle> {
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), SNAPSHOT_TIMEOUT_MS);
     const now = Date.now();
     try {
-      const response = await fetch(REST_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          type: 'candleSnapshot',
-          req: {
-            coin: symbol,
-            interval: '1m',
-            startTime: now - SNAPSHOT_LOOKBACK_MS,
-            endTime: now,
-          },
-        }),
-        signal: controller.signal,
-        mode: 'cors',
-        cache: 'no-store',
-      });
-      if (!response.ok) throw new Error(`Hyperliquid history returned ${response.status}`);
-      const candles = parseHyperliquidCandles(await response.json(), now);
-      if (candles.length !== SNAPSHOT_CANDLE_COUNT) {
-        throw new Error(`Hyperliquid history returned ${candles.length} candles`);
+      const fetchInterval = async (
+        interval: HyperliquidCandleInterval,
+        startTime: number,
+        maxCount: number,
+      ): Promise<Candle[]> => {
+        const response = await fetch(REST_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: 'candleSnapshot',
+            req: {
+              coin: symbol,
+              interval,
+              startTime,
+              endTime: now,
+            },
+          }),
+          signal: controller.signal,
+          mode: 'cors',
+          cache: 'no-store',
+        });
+        if (!response.ok) throw new Error(`Hyperliquid history returned ${response.status}`);
+        return parseHyperliquidCandleHistory(await response.json(), now, maxCount);
+      };
+
+      const [minuteHistory, dailyHistory] = await Promise.all([
+        fetchInterval('1m', now - MINUTE_SNAPSHOT_LOOKBACK_MS, MINUTE_HISTORY_COUNT),
+        fetchInterval('1d', now - DAILY_SNAPSHOT_LOOKBACK_MS, DAILY_HISTORY_COUNT)
+          .catch(() => this.dailyHistories.get(symbol) ?? []),
+      ]);
+      if (minuteHistory.length < SNAPSHOT_CANDLE_COUNT) {
+        throw new Error(`Hyperliquid history returned ${minuteHistory.length} minute candles`);
       }
-      return candles;
+      return {
+        chartCandles: minuteHistory.slice(-SNAPSHOT_CANDLE_COUNT),
+        minuteHistory,
+        dailyHistory,
+      };
     } finally {
       window.clearTimeout(timeout);
     }
@@ -494,8 +585,14 @@ export class HyperliquidMarketFeed implements MarketFeed {
 
   private presentTrade(symbol: AssetSymbol, trade: PendingTrade, presentedAt: number): void {
     const previous = this.getState(symbol);
-    const candleUpdate = applyTradeToCandles(previous.candles, trade.price, trade.time);
+    const candleUpdate = applyTradeToCandles(
+      this.minuteHistories.get(symbol) ?? previous.candles,
+      trade.price,
+      trade.time,
+      MINUTE_HISTORY_COUNT,
+    );
     if (!candleUpdate.accepted) return;
+    this.minuteHistories.set(symbol, candleUpdate.candles);
     const oldPrice = previous.price;
     const direction = oldPrice === null
       ? 'flat'
@@ -506,13 +603,19 @@ export class HyperliquidMarketFeed implements MarketFeed {
           : 'flat';
     const state: AssetState = {
       ...previous,
-      candles: candleUpdate.candles,
+      candles: candleUpdate.candles.slice(-SNAPSHOT_CANDLE_COUNT),
       previousPrice: oldPrice ?? trade.price,
       price: trade.price,
       direction,
       mode: 'live',
       updatedAt: trade.time,
       presentationTick: previous.presentationTick + 1,
+      horizonChanges: computeHorizonChanges(
+        trade.price,
+        trade.time,
+        candleUpdate.candles,
+        this.dailyHistories.get(symbol) ?? [],
+      ),
     };
     this.states.set(symbol, state);
     this.lastTradeTime.set(symbol, trade.time);
@@ -532,9 +635,12 @@ export class HyperliquidMarketFeed implements MarketFeed {
       if (!incoming) continue;
 
       const previous = this.getState(symbol);
-      const previousOpen = previous.candles.at(-1)?.openTime;
-      const candles = reconcileCandle(previous.candles, incoming);
-      const latest = candles.at(-1);
+      const priorHistory = this.minuteHistories.get(symbol) ?? [...previous.candles];
+      const previousOpen = priorHistory.at(-1)?.openTime;
+      const minuteHistory = reconcileCandle(priorHistory, incoming, MINUTE_HISTORY_COUNT);
+      this.minuteHistories.set(symbol, minuteHistory);
+      const candles = minuteHistory.slice(-SNAPSHOT_CANDLE_COUNT);
+      const latest = minuteHistory.at(-1);
       const rolled = previousOpen !== undefined && latest !== undefined && latest.openTime > previousOpen;
       const updatesLatest = latest?.openTime === incoming.openTime;
       const nextPrice = updatesLatest ? incoming.close : previous.price;
@@ -555,6 +661,12 @@ export class HyperliquidMarketFeed implements MarketFeed {
         mode: 'live',
         updatedAt: Date.now(),
         presentationTick: rolled ? previous.presentationTick + 1 : previous.presentationTick,
+        horizonChanges: computeHorizonChanges(
+          nextPrice,
+          Date.now(),
+          minuteHistory,
+          this.dailyHistories.get(symbol) ?? [],
+        ),
       };
       this.states.set(symbol, state);
       this.emit(state);

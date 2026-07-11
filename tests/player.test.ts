@@ -26,12 +26,19 @@ describe('PlayerInputController', () => {
 
     emitKey(target, 'keydown', 'Space');
     expect(input.consumeJump()).toBe(true);
+    expect(input.state.jumpHeld).toBe(true);
     expect(input.consumeJump()).toBe(false);
     emitKey(target, 'keydown', 'Space', true);
     expect(input.consumeJump()).toBe(false);
     emitKey(target, 'keyup', 'Space');
+    expect(input.state.jumpHeld).toBe(false);
     emitKey(target, 'keydown', 'Space');
     expect(input.consumeJump()).toBe(true);
+    input.setVirtualGlide(true);
+    emitKey(target, 'keyup', 'Space');
+    expect(input.state.jumpHeld).toBe(true);
+    input.setVirtualGlide(false);
+    expect(input.state.jumpHeld).toBe(false);
     input.dispose();
   });
 });
@@ -82,6 +89,14 @@ describe('FoxPlayer', () => {
     input.setVirtualInput(0.35, 1, true);
     for (let frame = 0; frame < 240; frame += 1) {
       fox.update(1 / 60, 0, () => 0, () => 'grass');
+      if (frame % 12 === 0) {
+        fox.group.updateMatrixWorld(true);
+        for (const pawName of pawNames) {
+          const paw = fox.group.getObjectByName(pawName);
+          const bounds = new THREE.Box3().setFromObject(paw!);
+          expect(bounds.min.y, `${pawName} should stay above ground throughout its stride`).toBeGreaterThanOrEqual(-0.02);
+        }
+      }
     }
     fox.group.updateMatrixWorld(true);
 
@@ -149,6 +164,74 @@ describe('FoxPlayer', () => {
     update();
     expect(actions.filter((type) => type.includes('jump'))).toEqual(['jump', 'double-jump', 'jump']);
     fox.dispose();
+  });
+
+  it('glides while jump is held, streams its legs, and does not create extra jump edges', () => {
+    const fox = new FoxPlayer({ input: new PlayerInputController({ target: null, document: null }) });
+    const actions: string[] = [];
+    const update = () => fox.update(1 / 60, 0, () => 0, () => 'grass', undefined, (event) => actions.push(event.type));
+    update();
+    fox.requestJump();
+    fox.setGlideHeld(true);
+
+    for (let frame = 0; frame < 60; frame += 1) update();
+
+    expect(fox.isGliding).toBe(true);
+    expect(fox.snapshot.grounded).toBe(false);
+    expect(fox.position.y).toBeGreaterThan(2.2);
+    expect(fox.snapshot.verticalSpeed).toBeGreaterThan(-3.2);
+    expect(actions.filter((type) => type.includes('jump'))).toEqual(['jump']);
+    expect(fox.group.getObjectByName('FoxFrontLeftLegPivot')!.rotation.x).toBeGreaterThan(0.45);
+    expect(fox.group.getObjectByName('FoxHindLeftLegPivot')!.rotation.x).toBeLessThan(-0.3);
+    fox.dispose();
+  });
+
+  it('returns to a full fall when glide is released and lands gracefully', () => {
+    const fox = new FoxPlayer({ input: new PlayerInputController({ target: null, document: null }) });
+    const actions: string[] = [];
+    const update = () => fox.update(1 / 60, 0, () => 0, () => 'stone', undefined, (event) => actions.push(event.type));
+    update();
+    fox.requestJump();
+    fox.setGlideHeld(true);
+    for (let frame = 0; frame < 62; frame += 1) update();
+    const releaseHeight = fox.position.y;
+
+    fox.setGlideHeld(false);
+    update();
+    expect(fox.isGliding).toBe(false);
+    for (let frame = 0; frame < 90 && !fox.snapshot.grounded; frame += 1) update();
+
+    expect(fox.position.y).toBeLessThan(releaseHeight);
+    expect(fox.snapshot.grounded).toBe(true);
+    expect(fox.position.y).toBeCloseTo(0, 3);
+    expect(actions).toEqual(['jump', 'land']);
+    fox.dispose();
+  });
+
+  it('keeps glide physics while reducing the expressive pose in gentle-motion mode', () => {
+    const full = new FoxPlayer({ input: new PlayerInputController({ target: null, document: null }) });
+    const gentle = new FoxPlayer({
+      input: new PlayerInputController({ target: null, document: null }),
+      reducedMotion: true,
+    });
+    const advance = (fox: FoxPlayer): void => {
+      fox.update(1 / 60, 0, () => 0, () => 'grass');
+      fox.requestJump();
+      fox.setGlideHeld(true);
+      for (let frame = 0; frame < 60; frame += 1) {
+        fox.update(1 / 60, 0, () => 0, () => 'grass');
+      }
+    };
+
+    advance(full);
+    advance(gentle);
+    const fullReach = Math.abs(full.group.getObjectByName('FoxFrontLeftLegPivot')!.rotation.x);
+    const gentleReach = Math.abs(gentle.group.getObjectByName('FoxFrontLeftLegPivot')!.rotation.x);
+    expect(full.isGliding).toBe(true);
+    expect(gentle.isGliding).toBe(true);
+    expect(gentleReach).toBeLessThan(fullReach * 0.55);
+    full.dispose();
+    gentle.dispose();
   });
 
   it('disposes pooled magical geometry and materials exactly once', () => {

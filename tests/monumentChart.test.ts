@@ -1,4 +1,4 @@
-import { Group, Vector3 } from 'three';
+import { Group, Mesh, Vector3 } from 'three';
 import { describe, expect, it, vi } from 'vitest';
 import { ASSET_SYMBOLS, type AssetState, type Candle, type TickDirection } from '../src/types';
 import {
@@ -16,6 +16,9 @@ import { buildMedallion } from '../src/monuments/medallions';
 import { MEDALLION_CENTER, PLINTH_BOUNDS } from '../src/monuments/monumentGeometry';
 import { Monument } from '../src/monuments/Monument';
 import { TickTrailPool } from '../src/monuments/TickTrailPool';
+import { HorizonBadgePanel } from '../src/monuments/HorizonBadgePanel';
+import { createEmptyHorizonChanges } from '../src/markets';
+import { MONUMENT_CHART_HEIGHT, MONUMENT_CHART_WIDTH } from '../src/monuments/Monument';
 
 function candle(openTime: number, open: number, high: number, low: number, close: number, closed = true): Candle {
   return { openTime, open, high, low, close, closed };
@@ -38,6 +41,7 @@ function state(
     mode: 'live',
     updatedAt: Date.now(),
     presentationTick,
+    horizonChanges: createEmptyHorizonChanges(),
   };
 }
 
@@ -236,5 +240,52 @@ describe('monument chart math', () => {
     const echo = buildMedallion('BTC', 'echo');
     expect(echo.name).toBe('btc-echo-medallion');
     expect(echo.children.length).toBeLessThan(grand.children.length);
+  });
+
+  it('uses a taller, forward chart plane and keeps horizon badges grand-only', () => {
+    const grand = new Monument({ symbol: 'BTC', kind: 'grand' });
+    const echo = new Monument({ symbol: 'BTC', kind: 'echo' });
+    const grandChart = grand.root.getObjectByName('BTC-chart');
+    const echoChart = echo.root.getObjectByName('BTC-chart');
+
+    expect(MONUMENT_CHART_WIDTH).toBeGreaterThanOrEqual(14);
+    expect(MONUMENT_CHART_HEIGHT).toBeGreaterThanOrEqual(5.7);
+    expect(grandChart?.scale.y).toBe(1);
+    expect(grandChart?.position.z).toBeGreaterThan(3);
+    expect(echoChart?.scale.y).toBe(1);
+    expect(grand.root.getObjectByName('market-horizon-panel')).toBeDefined();
+    expect(echo.root.getObjectByName('market-horizon-panel')).toBeUndefined();
+    expect(grand.root.getObjectByName('horizon-badge-1y')).toBeDefined();
+
+    grand.dispose();
+    echo.dispose();
+  });
+
+  it('updates countdown and seven direction badges, then disposes shared resources once', () => {
+    const panel = new HorizonBadgePanel();
+    const changes = createEmptyHorizonChanges().map((change, index) => ({
+      ...change,
+      referenceTime: 1,
+      referencePrice: 100,
+      changeRatio: index === 0 ? 0.012 : index === 1 ? -0.02 : 0,
+      direction: index === 0 ? 'up' as const : index === 1 ? 'down' as const : 'flat' as const,
+    }));
+    panel.setChanges(changes);
+    panel.update(1, 59_000, 'live');
+
+    expect(panel.badgeCount).toBe(7);
+    expect(panel.countdownLabel).toBe('NEXT CANDLE  0:01');
+    const upCard = panel.root.getObjectByName('horizon-card-1m');
+    const downCard = panel.root.getObjectByName('horizon-card-15m');
+    expect(upCard).toBeInstanceOf(Mesh);
+    expect(downCard).toBeInstanceOf(Mesh);
+    expect((upCard as Mesh).material).not.toBe((downCard as Mesh).material);
+
+    const disposeGeometry = vi.spyOn((upCard as Mesh).geometry, 'dispose');
+    panel.dispose();
+    panel.dispose();
+    expect(disposeGeometry).toHaveBeenCalledTimes(1);
+    expect(panel.badgeCount).toBe(0);
+    expect(panel.root.children).toHaveLength(0);
   });
 });

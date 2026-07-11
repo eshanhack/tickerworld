@@ -5,10 +5,15 @@ export interface HudCallbacks {
   onEnter: () => void | Promise<void>;
   onMuteToggle: () => void;
   onVolumeChange: (value: number) => void;
+  onMusicMuteToggle: () => void;
+  onMusicVolumeChange: (value: number) => void;
+  onSfxMuteToggle: () => void;
+  onSfxVolumeChange: (value: number) => void;
   onCompassToggle: (enabled: boolean) => void;
   onReducedMotionToggle: (enabled: boolean) => void;
   onVirtualInput: (x: number, forward: number, sprint: boolean) => void;
   onJump: () => void;
+  onGlideChange: (held: boolean) => void;
 }
 
 interface NearbyView {
@@ -31,8 +36,10 @@ export class Hud {
   private readonly compassArrow: HTMLElement;
   private readonly compassLabel: HTMLElement;
   private readonly helpPanel: HTMLElement;
-  private readonly muteButton: HTMLButtonElement;
-  private readonly volumeInput: HTMLInputElement;
+  private readonly musicMuteButton: HTMLButtonElement;
+  private readonly musicVolumeInput: HTMLInputElement;
+  private readonly sfxMuteButton: HTMLButtonElement;
+  private readonly sfxVolumeInput: HTMLInputElement;
   private readonly compassButton: HTMLButtonElement;
   private readonly motionButton: HTMLButtonElement;
   private readonly toast: HTMLElement;
@@ -40,6 +47,7 @@ export class Hud {
   private readonly joystick: HTMLElement;
   private readonly joystickKnob: HTMLElement;
   private readonly jumpButton: HTMLButtonElement;
+  private readonly activeJumpPointers = new Set<number>();
   private joystickPointer: number | null = null;
   private joystickCenter = { x: 0, y: 0 };
   private compassEnabled = true;
@@ -62,7 +70,7 @@ export class Hud {
           <button class="enter-button" type="button" data-enter>
             <span>Enter the world</span><small>sound on</small>
           </button>
-          <div class="enter-controls"><kbd>WASD</kbd> roam <span>·</span> <kbd>Shift</kbd> run <span>·</span> <kbd>Space</kbd> jump twice <span>·</span> drag to look</div>
+          <div class="enter-controls"><kbd>WASD</kbd> roam <span>·</span> <kbd>Shift</kbd> run <span>·</span> hold <kbd>Space</kbd> to glide <span>·</span> drag to look</div>
         </div>
       </section>
 
@@ -80,8 +88,16 @@ export class Hud {
       <div class="hud-toast" role="status" aria-live="polite" data-toast></div>
 
       <div class="hud-actions">
-        <button class="round-action" type="button" aria-label="Mute sound" data-mute>♪</button>
-        <label class="volume-control" aria-label="Master volume"><input type="range" min="0" max="1" step="0.01" value="0.55" data-volume /></label>
+        <div class="audio-mixer" aria-label="Sound controls">
+          <div class="audio-channel">
+            <button class="channel-mute" type="button" aria-label="Mute music" data-music-mute><span>♪</span><strong>Music</strong></button>
+            <label aria-label="Music volume"><input type="range" min="0" max="1" step="0.01" value="1" data-music-volume /></label>
+          </div>
+          <div class="audio-channel">
+            <button class="channel-mute" type="button" aria-label="Mute sound effects" data-sfx-mute><span>✦</span><strong>FX</strong></button>
+            <label aria-label="Sound effects volume"><input type="range" min="0" max="1" step="0.01" value="1" data-sfx-volume /></label>
+          </div>
+        </div>
         <button class="round-action" type="button" aria-label="Show controls" data-help>?</button>
       </div>
 
@@ -92,7 +108,7 @@ export class Hud {
         <dl>
           <div><dt>Move</dt><dd>WASD or arrow keys</dd></div>
           <div><dt>Run</dt><dd>Hold Shift</dd></div>
-          <div><dt>Jump</dt><dd>Space (press twice to spin)</dd></div>
+          <div><dt>Jump</dt><dd>Space twice; hold to glide</dd></div>
           <div><dt>Look</dt><dd>Drag the world</dd></div>
           <div><dt>Zoom</dt><dd>Mouse wheel</dd></div>
         </dl>
@@ -102,7 +118,7 @@ export class Hud {
       </section>
 
       <div class="mobile-joystick" data-joystick aria-hidden="true"><div class="joystick-knob" data-joystick-knob></div></div>
-      <button class="mobile-jump" type="button" aria-label="Jump; tap again in the air to double jump" data-jump><span>&#10022;</span><small>JUMP</small></button>
+      <button class="mobile-jump" type="button" aria-label="Jump; hold to glide and tap again in the air to double jump" data-jump><span>&#10022;</span><small>JUMP · HOLD</small></button>
       <div class="rotate-device"><span>↻</span><strong>Turn your phone sideways</strong><small>Tickerworld likes a wider view.</small></div>
       <pre class="debug-panel is-hidden" data-debug></pre>
     `;
@@ -118,8 +134,10 @@ export class Hud {
     this.compassArrow = this.required('[data-compass-arrow]');
     this.compassLabel = this.required('[data-compass-label]');
     this.helpPanel = this.required('[data-help-panel]');
-    this.muteButton = this.required<HTMLButtonElement>('[data-mute]');
-    this.volumeInput = this.required<HTMLInputElement>('[data-volume]');
+    this.musicMuteButton = this.required<HTMLButtonElement>('[data-music-mute]');
+    this.musicVolumeInput = this.required<HTMLInputElement>('[data-music-volume]');
+    this.sfxMuteButton = this.required<HTMLButtonElement>('[data-sfx-mute]');
+    this.sfxVolumeInput = this.required<HTMLInputElement>('[data-sfx-volume]');
     this.compassButton = this.required<HTMLButtonElement>('[data-compass-setting]');
     this.motionButton = this.required<HTMLButtonElement>('[data-motion-setting]');
     this.toast = this.required('[data-toast]');
@@ -129,8 +147,10 @@ export class Hud {
     this.jumpButton = this.required<HTMLButtonElement>('[data-jump]');
 
     this.enterButton.addEventListener('click', this.enter);
-    this.muteButton.addEventListener('click', this.mute);
-    this.volumeInput.addEventListener('input', this.volume);
+    this.musicMuteButton.addEventListener('click', this.musicMute);
+    this.musicVolumeInput.addEventListener('input', this.musicVolume);
+    this.sfxMuteButton.addEventListener('click', this.sfxMute);
+    this.sfxVolumeInput.addEventListener('input', this.sfxVolume);
     this.required('[data-help]').addEventListener('click', this.toggleHelp);
     this.required('[data-close-help]').addEventListener('click', this.closeHelp);
     this.compassButton.addEventListener('click', this.toggleCompass);
@@ -141,6 +161,11 @@ export class Hud {
     this.joystick.addEventListener('pointerup', this.joystickEnd);
     this.joystick.addEventListener('pointercancel', this.joystickEnd);
     this.jumpButton.addEventListener('pointerdown', this.jump);
+    this.jumpButton.addEventListener('pointerup', this.jumpRelease);
+    this.jumpButton.addEventListener('pointercancel', this.jumpRelease);
+    this.jumpButton.addEventListener('lostpointercapture', this.jumpRelease);
+    window.addEventListener('blur', this.releaseAllJumps);
+    document.addEventListener('visibilitychange', this.releaseAllJumps);
     document.addEventListener('keydown', this.keydown);
   }
 
@@ -200,13 +225,33 @@ export class Hud {
   }
 
   setMuted(muted: boolean): void {
-    this.muteButton.textContent = muted ? '×' : '♪';
-    this.muteButton.classList.toggle('is-active', muted);
-    this.muteButton.setAttribute('aria-label', muted ? 'Unmute sound' : 'Mute sound');
+    this.setMusicMuted(muted);
+    this.setSfxMuted(muted);
   }
 
   setVolume(value: number): void {
-    this.volumeInput.value = String(value);
+    this.setMusicVolume(value);
+    this.setSfxVolume(value);
+  }
+
+  setMusicMuted(muted: boolean): void {
+    this.musicMuteButton.classList.toggle('is-active', muted);
+    this.musicMuteButton.querySelector('span')!.textContent = muted ? '×' : '♪';
+    this.musicMuteButton.setAttribute('aria-label', muted ? 'Unmute music' : 'Mute music');
+  }
+
+  setMusicVolume(value: number): void {
+    this.musicVolumeInput.value = String(value);
+  }
+
+  setSfxMuted(muted: boolean): void {
+    this.sfxMuteButton.classList.toggle('is-active', muted);
+    this.sfxMuteButton.querySelector('span')!.textContent = muted ? '×' : '✦';
+    this.sfxMuteButton.setAttribute('aria-label', muted ? 'Unmute sound effects' : 'Mute sound effects');
+  }
+
+  setSfxVolume(value: number): void {
+    this.sfxVolumeInput.value = String(value);
   }
 
   showToast(message: string): void {
@@ -223,14 +268,22 @@ export class Hud {
 
   dispose(): void {
     this.enterButton.removeEventListener('click', this.enter);
-    this.muteButton.removeEventListener('click', this.mute);
-    this.volumeInput.removeEventListener('input', this.volume);
+    this.musicMuteButton.removeEventListener('click', this.musicMute);
+    this.musicVolumeInput.removeEventListener('input', this.musicVolume);
+    this.sfxMuteButton.removeEventListener('click', this.sfxMute);
+    this.sfxVolumeInput.removeEventListener('input', this.sfxVolume);
     this.joystick.removeEventListener('pointerdown', this.joystickStart);
     this.joystick.removeEventListener('pointermove', this.joystickMove);
     this.joystick.removeEventListener('pointerup', this.joystickEnd);
     this.joystick.removeEventListener('pointercancel', this.joystickEnd);
     this.jumpButton.removeEventListener('pointerdown', this.jump);
+    this.jumpButton.removeEventListener('pointerup', this.jumpRelease);
+    this.jumpButton.removeEventListener('pointercancel', this.jumpRelease);
+    this.jumpButton.removeEventListener('lostpointercapture', this.jumpRelease);
+    window.removeEventListener('blur', this.releaseAllJumps);
+    document.removeEventListener('visibilitychange', this.releaseAllJumps);
     document.removeEventListener('keydown', this.keydown);
+    this.releaseAllJumps();
     if (this.pricePulseTimer !== undefined) window.clearTimeout(this.pricePulseTimer);
     this.root.remove();
   }
@@ -248,11 +301,26 @@ export class Hud {
     });
   };
 
-  private readonly mute = (): void => this.callbacks.onMuteToggle();
-  private readonly volume = (): void => this.callbacks.onVolumeChange(Number(this.volumeInput.value));
+  private readonly musicMute = (): void => this.callbacks.onMusicMuteToggle();
+  private readonly musicVolume = (): void => this.callbacks.onMusicVolumeChange(Number(this.musicVolumeInput.value));
+  private readonly sfxMute = (): void => this.callbacks.onSfxMuteToggle();
+  private readonly sfxVolume = (): void => this.callbacks.onSfxVolumeChange(Number(this.sfxVolumeInput.value));
   private readonly jump = (event: PointerEvent): void => {
     event.preventDefault();
+    if (this.activeJumpPointers.has(event.pointerId)) return;
+    this.activeJumpPointers.add(event.pointerId);
+    this.jumpButton.setPointerCapture(event.pointerId);
     this.callbacks.onJump();
+    this.callbacks.onGlideChange(true);
+  };
+  private readonly jumpRelease = (event: PointerEvent): void => {
+    this.activeJumpPointers.delete(event.pointerId);
+    this.callbacks.onGlideChange(this.activeJumpPointers.size > 0);
+  };
+  private readonly releaseAllJumps = (): void => {
+    if (this.activeJumpPointers.size === 0) return;
+    this.activeJumpPointers.clear();
+    this.callbacks.onGlideChange(false);
   };
   private readonly toggleHelp = (): void => {
     this.helpPanel.classList.toggle('is-hidden');

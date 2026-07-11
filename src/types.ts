@@ -15,6 +15,18 @@ export type MarketProvider = 'hyperliquid' | 'simulation';
 export type TickDirection = 'up' | 'down' | 'flat';
 export type SurfaceKind = 'grass' | 'sand' | 'stone';
 
+export const PRICE_HORIZONS = ['1m', '15m', '1h', '1d', '1w', '1mo', '1y'] as const;
+export type PriceHorizon = (typeof PRICE_HORIZONS)[number];
+
+export interface HorizonChange {
+  horizon: PriceHorizon;
+  referenceTime: number | null;
+  referencePrice: number | null;
+  /** Signed ratio where 0.012 means the price is up 1.2%. */
+  changeRatio: number | null;
+  direction: TickDirection;
+}
+
 export interface Candle {
   openTime: number;
   open: number;
@@ -35,6 +47,7 @@ export interface AssetState {
   mode: FeedMode;
   updatedAt: number;
   presentationTick: number;
+  horizonChanges: readonly HorizonChange[];
 }
 
 export interface MarketFeed {

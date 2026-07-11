@@ -10,7 +10,13 @@ export {
   pickAmbientResponseIndex,
   pickNonRepeatingIndex,
 } from './ambientMath';
-export { ASSET_AUDIO_PROFILES, marketGestureFrequencies, normaliseMoveIntensity } from './audioMath';
+export {
+  ASSET_AUDIO_PROFILES,
+  classifyMarketMove,
+  marketGestureFrequencies,
+  marketMoveSeverity,
+  normaliseMoveIntensity,
+} from './audioMath';
 export type {
   AssetAudioProfile,
   AudioEnvironment,
@@ -24,5 +30,6 @@ export type {
   FootstepSoundOptions,
   MonumentAudioSource,
   JumpSoundKind,
+  MarketMoveClass,
   TickSoundOptions,
 } from './types';

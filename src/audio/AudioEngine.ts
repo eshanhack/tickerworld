@@ -13,8 +13,10 @@ import {
 } from './ambientMath';
 import {
   ASSET_AUDIO_PROFILES,
+  classifyMarketMove,
   clampUnit,
   marketGestureFrequencies,
+  marketMoveSeverity,
   normaliseMoveIntensity,
 } from './audioMath';
 import type {
@@ -33,9 +35,17 @@ import type {
 
 const VOLUME_KEY = 'tickerworld:audio:volume';
 const MUTED_KEY = 'tickerworld:audio:muted';
+const MUSIC_VOLUME_KEY = 'tickerworld:audio:music-volume';
+const MUSIC_MUTED_KEY = 'tickerworld:audio:music-muted';
+const SFX_VOLUME_KEY = 'tickerworld:audio:sfx-volume';
+const SFX_MUTED_KEY = 'tickerworld:audio:sfx-muted';
 const MAX_MONUMENT_SOURCES = 24;
 const MAX_SCHEDULED_SOURCES = 48;
 const DEFAULT_VOLUME = 0.72;
+const MARKET_TICK_COOLDOWN_SECONDS = 0.18;
+const MARKET_ACCENT_COOLDOWN_SECONDS = 5;
+const MARKET_ACCENT_GLOBAL_COOLDOWN_SECONDS = 0.35;
+const MARKET_ACCENT_REARM_RATIO = 0.00042;
 
 interface MonumentGraph {
   readonly descriptor: MonumentAudioSource;
@@ -90,6 +100,28 @@ function readStoredMute(storage: Storage | null): boolean {
     return storage.getItem(MUTED_KEY) === 'true';
   } catch {
     return false;
+  }
+}
+
+function readStoredChannelVolume(storage: Storage | null, key: string, fallback: number): number {
+  if (!storage) return fallback;
+  try {
+    const stored = storage.getItem(key);
+    if (stored === null) return fallback;
+    const value = Number.parseFloat(stored);
+    return Number.isFinite(value) ? clampUnit(value) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function readStoredChannelMute(storage: Storage | null, key: string, fallback: boolean): boolean {
+  if (!storage) return fallback;
+  try {
+    const stored = storage.getItem(key);
+    return stored === null ? fallback : stored === 'true';
+  } catch {
+    return fallback;
   }
 }
 
@@ -152,6 +184,17 @@ export class AudioEngine {
   private disposed = false;
   private volumeValue: number;
   private mutedValue: boolean;
+  private musicVolumeValue: number;
+  private musicMutedValue: boolean;
+  private sfxVolumeValue: number;
+  private sfxMutedValue: boolean;
+  private readonly lastMarketTickAt = new Map<string, number>();
+  private readonly marketAccentState = new Map<string, {
+    tier: 'large' | 'exceptional';
+    at: number;
+    armed: boolean;
+  }>();
+  private lastGlobalMarketAccentAt = Number.NEGATIVE_INFINITY;
   private statusValue: AudioEngineState['status'];
   private reasonValue: string | undefined;
   private cachedListenerPose: AudioListenerPose = {
@@ -166,6 +209,17 @@ export class AudioEngine {
     this.random = options.random ?? Math.random;
     this.volumeValue = readStoredVolume(this.storage);
     this.mutedValue = readStoredMute(this.storage);
+    this.musicVolumeValue = readStoredChannelVolume(this.storage, MUSIC_VOLUME_KEY, this.volumeValue);
+    this.musicMutedValue = readStoredChannelMute(this.storage, MUSIC_MUTED_KEY, this.mutedValue);
+    this.sfxVolumeValue = readStoredChannelVolume(this.storage, SFX_VOLUME_KEY, this.volumeValue);
+    this.sfxMutedValue = readStoredChannelMute(this.storage, SFX_MUTED_KEY, this.mutedValue);
+    // Materialise split preferences on first run so subsequent channel edits
+    // never fall back to an unrelated legacy master value.
+    this.persist(MUSIC_VOLUME_KEY, String(this.musicVolumeValue));
+    this.persist(MUSIC_MUTED_KEY, String(this.musicMutedValue));
+    this.persist(SFX_VOLUME_KEY, String(this.sfxVolumeValue));
+    this.persist(SFX_MUTED_KEY, String(this.sfxMutedValue));
+    this.mutedValue = this.musicMutedValue && this.sfxMutedValue;
     this.statusValue = this.contextFactory ? 'locked' : 'unavailable';
     this.reasonValue = this.contextFactory ? undefined : 'Web Audio is not available in this browser.';
   }
@@ -177,6 +231,10 @@ export class AudioEngine {
       unlocked: this.statusValue === 'ready' || this.statusValue === 'suspended',
       volume: this.volumeValue,
       muted: this.mutedValue,
+      musicVolume: this.musicVolumeValue,
+      musicMuted: this.musicMutedValue,
+      sfxVolume: this.sfxVolumeValue,
+      sfxMuted: this.sfxMutedValue,
       ...(this.reasonValue ? { reason: this.reasonValue } : {}),
     };
   }
@@ -187,6 +245,22 @@ export class AudioEngine {
 
   public get muted(): boolean {
     return this.mutedValue;
+  }
+
+  public get musicVolume(): number {
+    return this.musicVolumeValue;
+  }
+
+  public get musicMuted(): boolean {
+    return this.musicMutedValue;
+  }
+
+  public get sfxVolume(): number {
+    return this.sfxVolumeValue;
+  }
+
+  public get sfxMuted(): boolean {
+    return this.sfxMutedValue;
   }
 
   public subscribe(listener: AudioStateListener): () => void {
@@ -311,21 +385,50 @@ export class AudioEngine {
     const moveRatio = typeof optionsOrDirection === 'string'
       ? legacyMoveRatio
       : (optionsOrDirection.moveRatio ?? 0);
-    if (direction === 'flat' || !this.canPlayEffect()) return;
+    if (direction === 'flat' || !this.canPlaySfx()) return;
     const graph = this.monumentGraphs.get(sourceId);
     if (!graph || !this.context) return;
 
     const profile = ASSET_AUDIO_PROFILES[graph.descriptor.symbol];
-    const intensity = normaliseMoveIntensity(moveRatio);
+    const severity = marketMoveSeverity(moveRatio);
+    const legacyIntensity = normaliseMoveIntensity(moveRatio);
+    const moveClass = classifyMarketMove(moveRatio);
     const now = this.context.currentTime;
+    const lastTick = this.lastMarketTickAt.get(sourceId) ?? Number.NEGATIVE_INFINITY;
+    if (now - lastTick < MARKET_TICK_COOLDOWN_SECONDS) return;
+    this.lastMarketTickAt.set(sourceId, now);
+
+    if (Math.abs(moveRatio) < MARKET_ACCENT_REARM_RATIO) {
+      const accent = this.marketAccentState.get(graph.descriptor.symbol);
+      if (accent && !accent.armed) {
+        this.marketAccentState.set(graph.descriptor.symbol, { ...accent, armed: true });
+      }
+    }
+
+    const accentTier = moveClass === 'large' || moveClass === 'exceptional' ? moveClass : null;
+    const exceptional = accentTier === 'exceptional';
+    const accentVoiceCount = direction === 'up'
+      ? (exceptional ? 6 : 4)
+      : (exceptional ? 5 : 4);
+    const hasAccentCapacity = this.scheduledSources.size <= MAX_SCHEDULED_SOURCES - accentVoiceCount;
+    if (accentTier && hasAccentCapacity && this.shouldPlayMarketAccent(graph.descriptor.symbol, accentTier, now)) {
+      if (direction === 'up') {
+        this.playMarketCelebration(graph.input, now, profile.frequency, severity, exceptional);
+      } else {
+        this.playMarketWarning(graph.input, now, profile.frequency, severity, exceptional);
+      }
+      return;
+    }
+
     const [first, second] = marketGestureFrequencies(profile.frequency, direction);
-    const peak = 0.026 + intensity * 0.035;
-    this.playGentleNote(graph.input, now, first, 0.34, peak * 0.72, profile.accent);
-    this.playGentleNote(graph.input, now + 0.13, second, 0.52, peak, profile.accent);
+    const peak = 0.014 + severity * 0.045 + legacyIntensity * 0.012;
+    const spacing = moveClass === 'small' ? 0.12 : 0.095;
+    this.playGentleNote(graph.input, now, first, 0.3, peak * 0.68, profile.accent);
+    this.playGentleNote(graph.input, now + spacing, second, 0.48, peak, profile.accent);
   }
 
   public playCandleClose(sourceId: string, intensity = 0.5): void {
-    if (!this.canPlayEffect() || !this.context) return;
+    if (!this.canPlaySfx() || !this.context) return;
     const graph = this.monumentGraphs.get(sourceId);
     if (!graph) return;
     const now = this.context.currentTime;
@@ -341,7 +444,7 @@ export class AudioEngine {
     optionsOrSurface: FootstepSoundOptions | SurfaceKind,
     legacySprinting = false,
   ): void {
-    if (!this.canPlayEffect() || !this.context || !this.sfxBus) return;
+    if (!this.canPlaySfx() || !this.context || !this.sfxBus) return;
     const surface = typeof optionsOrSurface === 'string' ? optionsOrSurface : optionsOrSurface.surface;
     const sprinting = typeof optionsOrSurface === 'string'
       ? legacySprinting
@@ -366,7 +469,7 @@ export class AudioEngine {
 
   /** A bright lift for the first jump and a higher magical flourish for the air jump. */
   public playJump(kind: JumpSoundKind): void {
-    if (!this.canPlayEffect() || !this.context || !this.sfxBus) return;
+    if (!this.canPlaySfx() || !this.context || !this.sfxBus) return;
     const now = this.context.currentTime;
     if (kind === 'double-jump') {
       this.playMagicalSweep(this.sfxBus, now, 523.25, 880, 0.52, 0.036);
@@ -380,7 +483,7 @@ export class AudioEngine {
 
   /** A surface-aware soft puff with a small, friendly settling chime. */
   public playLanding(surface: SurfaceKind, intensity = 0.5): void {
-    if (!this.canPlayEffect() || !this.context || !this.sfxBus) return;
+    if (!this.canPlaySfx() || !this.context || !this.sfxBus) return;
     const amount = clampUnit(intensity);
     const now = this.context.currentTime;
     const settings = this.footstepSettings(surface);
@@ -407,20 +510,78 @@ export class AudioEngine {
   public setVolume(volume: number): void {
     if (this.disposed) return;
     const next = clampUnit(volume);
-    if (next === this.volumeValue) return;
+    if (
+      next === this.volumeValue
+      && next === this.musicVolumeValue
+      && next === this.sfxVolumeValue
+    ) return;
     this.volumeValue = next;
+    this.musicVolumeValue = next;
+    this.sfxVolumeValue = next;
     this.persist(VOLUME_KEY, String(next));
-    this.applyMasterGain();
+    this.persist(MUSIC_VOLUME_KEY, String(next));
+    this.persist(SFX_VOLUME_KEY, String(next));
+    this.applyChannelGains();
     this.emit();
   }
 
   public toggleMute(force?: boolean): boolean {
     if (this.disposed) return this.mutedValue;
     this.mutedValue = force ?? !this.mutedValue;
+    this.musicMutedValue = this.mutedValue;
+    this.sfxMutedValue = this.mutedValue;
     this.persist(MUTED_KEY, String(this.mutedValue));
-    this.applyMasterGain();
+    this.persist(MUSIC_MUTED_KEY, String(this.musicMutedValue));
+    this.persist(SFX_MUTED_KEY, String(this.sfxMutedValue));
+    this.applyChannelGains();
     this.emit();
     return this.mutedValue;
+  }
+
+  public setMusicVolume(volume: number): void {
+    if (this.disposed) return;
+    const next = clampUnit(volume);
+    if (next === this.musicVolumeValue) return;
+    this.musicVolumeValue = next;
+    this.volumeValue = (this.musicVolumeValue + this.sfxVolumeValue) * 0.5;
+    this.persist(MUSIC_VOLUME_KEY, String(next));
+    this.persist(VOLUME_KEY, String(this.volumeValue));
+    this.applyChannelGains();
+    this.emit();
+  }
+
+  public setSfxVolume(volume: number): void {
+    if (this.disposed) return;
+    const next = clampUnit(volume);
+    if (next === this.sfxVolumeValue) return;
+    this.sfxVolumeValue = next;
+    this.volumeValue = (this.musicVolumeValue + this.sfxVolumeValue) * 0.5;
+    this.persist(SFX_VOLUME_KEY, String(next));
+    this.persist(VOLUME_KEY, String(this.volumeValue));
+    this.applyChannelGains();
+    this.emit();
+  }
+
+  public toggleMusicMuted(force?: boolean): boolean {
+    if (this.disposed) return this.musicMutedValue;
+    this.musicMutedValue = force ?? !this.musicMutedValue;
+    this.mutedValue = this.musicMutedValue && this.sfxMutedValue;
+    this.persist(MUSIC_MUTED_KEY, String(this.musicMutedValue));
+    this.persist(MUTED_KEY, String(this.mutedValue));
+    this.applyChannelGains();
+    this.emit();
+    return this.musicMutedValue;
+  }
+
+  public toggleSfxMuted(force?: boolean): boolean {
+    if (this.disposed) return this.sfxMutedValue;
+    this.sfxMutedValue = force ?? !this.sfxMutedValue;
+    this.mutedValue = this.musicMutedValue && this.sfxMutedValue;
+    this.persist(SFX_MUTED_KEY, String(this.sfxMutedValue));
+    this.persist(MUTED_KEY, String(this.mutedValue));
+    this.applyChannelGains();
+    this.emit();
+    return this.sfxMutedValue;
   }
 
   public setVisible(visible: boolean): void {
@@ -469,6 +630,8 @@ export class AudioEngine {
     for (const graph of this.monumentGraphs.values()) this.disposeMonumentGraph(graph);
     this.monumentGraphs.clear();
     this.desiredSources.clear();
+    this.lastMarketTickAt.clear();
+    this.marketAccentState.clear();
     for (const node of [this.ambientBus, this.sfxBus, this.masterBus, this.outputCompressor]) {
       if (node) safeDisconnect(node);
     }
@@ -514,23 +677,34 @@ export class AudioEngine {
     this.outputCompressor = compressor;
     this.applyMasterGain();
     this.applyEnvironmentMix();
+    this.applyChannelGains();
   }
 
   private applyMasterGain(): void {
     if (!this.masterBus || !this.context) return;
-    const target = this.mutedValue ? 0 : Math.pow(this.volumeValue, 1.65);
     const now = this.context.currentTime;
     this.masterBus.gain.cancelScheduledValues(now);
-    this.masterBus.gain.setTargetAtTime(target, now, 0.025);
+    // The legacy master API maps onto the two visible channels. Keeping this
+    // bus neutral prevents a hidden pre-migration mute from silencing them.
+    this.masterBus.gain.setTargetAtTime(1, now, 0.025);
   }
 
   private applyEnvironmentMix(): void {
     if (!this.context) return;
     const now = this.context.currentTime;
-    this.ambientBus?.gain.setTargetAtTime(0.4 + this.nightFactor * 0.012, now, 0.8);
     this.padToneFilter?.frequency.setTargetAtTime(1900 - this.nightFactor * 120, now, 1.4);
     this.atmosphereLowpass?.frequency.setTargetAtTime(780 - this.nightFactor * 90, now, 1.8);
     this.atmosphereGain?.gain.setTargetAtTime(0.0018 + this.nightFactor * 0.00025, now, 1.8);
+    this.applyChannelGains();
+  }
+
+  private applyChannelGains(): void {
+    if (!this.context) return;
+    const now = this.context.currentTime;
+    const musicLevel = this.musicMutedValue ? 0 : Math.pow(this.musicVolumeValue, 1.45);
+    const sfxLevel = this.sfxMutedValue ? 0 : Math.pow(this.sfxVolumeValue, 1.35);
+    this.ambientBus?.gain.setTargetAtTime((0.4 + this.nightFactor * 0.012) * musicLevel, now, 0.04);
+    this.sfxBus?.gain.setTargetAtTime(0.8 * sfxLevel, now, 0.025);
   }
 
   private syncMonumentGraphs(): void {
@@ -539,6 +713,7 @@ export class AudioEngine {
       if (!this.desiredSources.has(id)) {
         this.disposeMonumentGraph(graph);
         this.monumentGraphs.delete(id);
+        this.lastMarketTickAt.delete(id);
       }
     }
     for (const descriptor of this.desiredSources.values()) {
@@ -870,6 +1045,66 @@ export class AudioEngine {
     this.trackFiniteVoice(sources, nodes);
   }
 
+  private shouldPlayMarketAccent(
+    symbol: string,
+    tier: 'large' | 'exceptional',
+    now: number,
+  ): boolean {
+    const previous = this.marketAccentState.get(symbol);
+    const isUpgrade = tier === 'exceptional'
+      && previous?.tier === 'large'
+      && now - previous.at >= 1.2;
+    const isRearmed = !previous
+      || (previous.armed && now - previous.at >= MARKET_ACCENT_COOLDOWN_SECONDS);
+    if ((!isUpgrade && !isRearmed) || now - this.lastGlobalMarketAccentAt < MARKET_ACCENT_GLOBAL_COOLDOWN_SECONDS) {
+      return false;
+    }
+    this.marketAccentState.set(symbol, { tier, at: now, armed: false });
+    this.lastGlobalMarketAccentAt = now;
+    return true;
+  }
+
+  /** A short original rising fanfare for statistically unusual upward moves. */
+  private playMarketCelebration(
+    destination: AudioNode,
+    at: number,
+    baseFrequency: number,
+    severity: number,
+    exceptional: boolean,
+  ): void {
+    if (!this.context || this.scheduledSources.size > MAX_SCHEDULED_SOURCES - (exceptional ? 6 : 4)) return;
+    const root = Math.min(523.25, Math.max(246.94, baseFrequency));
+    const peak = 0.036 + severity * 0.036;
+    this.playGentleNote(destination, at, root, 0.62, peak * 0.72, -2);
+    this.playGentleNote(destination, at + 0.1, root * 1.2599, 0.78, peak * 0.88, 2);
+    this.playGentleNote(destination, at + 0.21, root * 1.4983, 1.05, peak, 0);
+    this.playMagicalSweep(destination, at + 0.04, root * 0.75, root * 1.5, 0.7, peak * 0.52);
+    if (exceptional) {
+      this.playGentleNote(destination, at + 0.36, Math.min(1046.5, root * 2), 1.35, peak * 1.04, 3);
+      this.playNoiseBurst(destination, at + 0.16, 0.16, 'bandpass', 1500, 0.008 + severity * 0.006);
+    }
+  }
+
+  /** A rounded descending warning gesture: noticeable, positional, and never alarm-level. */
+  private playMarketWarning(
+    destination: AudioNode,
+    at: number,
+    baseFrequency: number,
+    severity: number,
+    exceptional: boolean,
+  ): void {
+    if (!this.context || this.scheduledSources.size > MAX_SCHEDULED_SOURCES - (exceptional ? 5 : 4)) return;
+    const upper = Math.min(587.33, Math.max(329.63, baseFrequency * 1.26));
+    const peak = 0.034 + severity * 0.034;
+    this.playMagicalSweep(destination, at, upper, upper * 0.63, 0.78, peak);
+    this.playMagicalSweep(destination, at + 0.24, upper * 0.89, upper * 0.53, 0.86, peak * 0.88);
+    this.playDampedResonator(destination, at + 0.06, 164.81, 0.48, peak * 0.72);
+    this.playNoiseBurst(destination, at, 0.18, 'lowpass', 460, 0.006 + severity * 0.007);
+    if (exceptional) {
+      this.playMagicalSweep(destination, at + 0.52, upper * 0.75, upper * 0.45, 1.05, peak * 0.76);
+    }
+  }
+
   private playGentleNote(
     destination: AudioNode,
     at: number,
@@ -1065,6 +1300,12 @@ export class AudioEngine {
       && this.visible
       && this.context?.state === 'running'
       && this.scheduledSources.size < MAX_SCHEDULED_SOURCES;
+  }
+
+  private canPlaySfx(): boolean {
+    return !this.sfxMutedValue
+      && this.sfxVolumeValue > 0.001
+      && this.canPlayEffect();
   }
 
   private footstepSettings(surface: SurfaceKind): {

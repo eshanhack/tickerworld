@@ -39,8 +39,14 @@ export interface AudioEngineState {
   readonly unlocked: boolean;
   readonly volume: number;
   readonly muted: boolean;
+  readonly musicVolume: number;
+  readonly musicMuted: boolean;
+  readonly sfxVolume: number;
+  readonly sfxMuted: boolean;
   readonly reason?: string;
 }
+
+export type MarketMoveClass = 'small' | 'medium' | 'large' | 'exceptional';
 
 export interface AssetAudioProfile {
   readonly frequency: number;

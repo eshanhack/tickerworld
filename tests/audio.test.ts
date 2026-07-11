@@ -5,10 +5,12 @@ import {
   AMBIENT_PAD_VOICINGS,
   ASSET_AUDIO_PROFILES,
   AudioEngine,
+  classifyMarketMove,
   D_MAJOR_PENTATONIC_HZ,
   delayInRange,
   EMPTY_COLORED_NOISE_STATE,
   marketGestureFrequencies,
+  marketMoveSeverity,
   nextColoredNoiseSample,
   normaliseMoveIntensity,
   pickAmbientResponseIndex,
@@ -127,6 +129,10 @@ function makeFakeContext(): {
       return node as unknown as BiquadFilterNode;
     }),
     createDelay: vi.fn(() => createNode(['delayTime']) as unknown as DelayNode),
+    createPanner: vi.fn(() => {
+      const node = createNode(['positionX', 'positionY', 'positionZ']);
+      return node as unknown as PannerNode;
+    }),
     createDynamicsCompressor: vi.fn(() => {
       const node = createNode(['threshold', 'knee', 'ratio', 'attack', 'release']);
       return node as unknown as DynamicsCompressorNode;
@@ -183,6 +189,59 @@ describe('AudioEngine preferences and fallback', () => {
     restored.dispose();
   });
 
+  it('persists independent music and sound-effect preferences', () => {
+    const storage = new MemoryStorage();
+    const engine = new AudioEngine({ storage });
+
+    engine.setMusicVolume(0.28);
+    engine.setSfxVolume(0.84);
+    engine.toggleMusicMuted(true);
+    engine.toggleSfxMuted(false);
+
+    const restored = new AudioEngine({ storage });
+    expect(restored.state).toMatchObject({
+      musicVolume: 0.28,
+      musicMuted: true,
+      sfxVolume: 0.84,
+      sfxMuted: false,
+    });
+    expect(restored.musicVolume).toBe(0.28);
+    expect(restored.sfxVolume).toBe(0.84);
+    engine.dispose();
+    restored.dispose();
+  });
+
+  it('migrates legacy master preferences into visible channels without a hidden mute', async () => {
+    const storage = new MemoryStorage();
+    storage.setItem('tickerworld:audio:volume', '0.36');
+    storage.setItem('tickerworld:audio:muted', 'true');
+    const fake = makeFakeContext();
+    const engine = new AudioEngine({ storage, contextFactory: () => fake.context });
+
+    expect(engine.state).toMatchObject({
+      musicVolume: 0.36,
+      sfxVolume: 0.36,
+      musicMuted: true,
+      sfxMuted: true,
+    });
+    await engine.unlock();
+    expect(fake.nodes[1]?.gain?.setTargetAtTime).toHaveBeenCalledWith(1, 0, 0.025);
+
+    // The old API now controls both visible channels rather than an invisible
+    // master gain that could remain stuck at zero.
+    engine.toggleMute(false);
+    engine.setVolume(0.62);
+    expect(engine.state).toMatchObject({
+      volume: 0.62,
+      muted: false,
+      musicVolume: 0.62,
+      sfxVolume: 0.62,
+      musicMuted: false,
+      sfxMuted: false,
+    });
+    engine.dispose();
+  });
+
   it('reports unavailable cleanly when Web Audio is missing', async () => {
     const engine = new AudioEngine({ storage: null });
     expect(engine.state.status).toBe('unavailable');
@@ -204,6 +263,18 @@ describe('audio mapping', () => {
     expect(normaliseMoveIntensity(-0.005)).toBeCloseTo(0.5);
     expect(normaliseMoveIntensity(5)).toBe(1);
     expect(normaliseMoveIntensity(Number.NaN)).toBe(0);
+  });
+
+  it('classifies and scales market moves perceptually', () => {
+    expect(classifyMarketMove(0.00001)).toBe('small');
+    expect(classifyMarketMove(0.0002)).toBe('medium');
+    expect(classifyMarketMove(0.001)).toBe('large');
+    expect(classifyMarketMove(-0.004)).toBe('exceptional');
+    const severities = [0, 0.00005, 0.0005, 0.005].map(marketMoveSeverity);
+    expect(severities).toEqual([...severities].sort((a, b) => a - b));
+    expect(severities[0]).toBe(0);
+    expect(severities.at(-1)).toBe(1);
+    expect(marketMoveSeverity(Number.NaN)).toBe(0);
   });
 
   it('keeps both notes of every market gesture between 220 and 587 Hz', () => {
@@ -302,6 +373,107 @@ describe('AudioEngine lifecycle', () => {
       (source.stop?.mock.calls.length ?? 0) > 0
     ))).toBe(true);
     expect(fake.nodes.slice(1).every((node) => node.disconnect.mock.calls.length > 0)).toBe(true);
+    vi.useRealTimers();
+  });
+
+  it('uses hysteresis for large market accents and bounds tick voices', async () => {
+    vi.useFakeTimers();
+    const fake = makeFakeContext();
+    const engine = new AudioEngine({ contextFactory: () => fake.context, storage: null, random: () => 0.5 });
+    engine.setMonumentSources([{
+      id: 'grand:BTC',
+      symbol: 'BTC',
+      position: { x: 0, y: 2, z: 0 },
+    }]);
+    await engine.unlock();
+    const baselineOscillators = fake.oscillators.length;
+
+    engine.playTick('grand:BTC', { direction: 'up', moveRatio: 0.001 });
+    expect(fake.oscillators.length - baselineOscillators).toBe(4);
+
+    // The same sustained one-minute move cannot replay the fanfare every tick.
+    (fake.context as unknown as { currentTime: number }).currentTime = 0.4;
+    engine.playTick('grand:BTC', { direction: 'up', moveRatio: 0.001 });
+    expect(fake.oscillators.length - baselineOscillators).toBe(6);
+
+    // A quiet move rearms the accent, but the five-second cooldown still holds.
+    (fake.context as unknown as { currentTime: number }).currentTime = 0.8;
+    engine.playTick('grand:BTC', { direction: 'up', moveRatio: 0.00001 });
+    (fake.context as unknown as { currentTime: number }).currentTime = 1.2;
+    engine.playTick('grand:BTC', { direction: 'up', moveRatio: 0.001 });
+    expect(fake.oscillators.length - baselineOscillators).toBe(10);
+
+    (fake.context as unknown as { currentTime: number }).currentTime = 5.2;
+    engine.playTick('grand:BTC', { direction: 'up', moveRatio: 0.001 });
+    expect(fake.oscillators.length - baselineOscillators).toBe(14);
+
+    // Even pathological tick bursts stay inside the shared finite voice budget.
+    for (let index = 0; index < 100; index += 1) {
+      (fake.context as unknown as { currentTime: number }).currentTime = 6 + index * 0.2;
+      engine.playTick('grand:BTC', { direction: 'down', moveRatio: 0.0003 });
+    }
+    expect(fake.oscillators.length - baselineOscillators).toBeLessThanOrEqual(48);
+
+    engine.dispose();
+    expect(fake.nodes.slice(1).every((node) => node.disconnect.mock.calls.length > 0)).toBe(true);
+    vi.useRealTimers();
+  });
+
+  it('gives exceptional downward moves one bounded warning voice and respects FX mute', async () => {
+    vi.useFakeTimers();
+    const fake = makeFakeContext();
+    const engine = new AudioEngine({ contextFactory: () => fake.context, storage: null, random: () => 0.5 });
+    engine.setMonumentSources([{
+      id: 'grand:ETH',
+      symbol: 'ETH',
+      position: { x: 0, y: 2, z: 0 },
+    }]);
+    await engine.unlock();
+    const baselineOscillators = fake.oscillators.length;
+    const baselineBuffers = fake.bufferSources.length;
+
+    engine.playTick('grand:ETH', { direction: 'down', moveRatio: 0.004 });
+    expect(fake.oscillators.length - baselineOscillators).toBe(4);
+    expect(fake.bufferSources.length - baselineBuffers).toBe(1);
+
+    engine.toggleSfxMuted(true);
+    (fake.context as unknown as { currentTime: number }).currentTime = 10;
+    engine.playTick('grand:ETH', { direction: 'down', moveRatio: 0.004 });
+    engine.playJump('double-jump');
+    expect(fake.oscillators.length - baselineOscillators).toBe(4);
+    expect(fake.bufferSources.length - baselineBuffers).toBe(1);
+
+    engine.dispose();
+    vi.useRealTimers();
+  });
+
+  it('retries a saturated exceptional accent without spending its cooldown', async () => {
+    vi.useFakeTimers();
+    const fake = makeFakeContext();
+    const engine = new AudioEngine({ contextFactory: () => fake.context, storage: null, random: () => 0.5 });
+    engine.setMonumentSources([{
+      id: 'grand:BTC',
+      symbol: 'BTC',
+      position: { x: 0, y: 2, z: 0 },
+    }]);
+    await engine.unlock();
+
+    for (let index = 0; index < 15; index += 1) engine.playJump('double-jump');
+    const scheduled = (engine as unknown as {
+      scheduledSources: Set<AudioScheduledSourceNode>;
+    }).scheduledSources;
+    expect(scheduled.size).toBeGreaterThanOrEqual(44);
+
+    engine.playTick('grand:BTC', { direction: 'up', moveRatio: 0.004 });
+    scheduled.clear();
+    (fake.context as unknown as { currentTime: number }).currentTime = 0.3;
+    const oscillatorCount = fake.oscillators.length;
+    const bufferCount = fake.bufferSources.length;
+    engine.playTick('grand:BTC', { direction: 'up', moveRatio: 0.004 });
+
+    expect(fake.oscillators.length - oscillatorCount).toBe(5);
+    expect(fake.bufferSources.length - bufferCount).toBe(1);
+    engine.dispose();
     vi.useRealTimers();
   });
 

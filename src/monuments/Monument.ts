@@ -20,7 +20,7 @@ import {
 } from 'three';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 import { Text } from 'troika-three-text';
-import type { AssetState, AssetSymbol, Candle, TickDirection } from '../types';
+import type { AssetState, AssetSymbol, Candle, FeedMode, TickDirection } from '../types';
 import {
   MONUMENT_CANDLE_COUNT,
   MONUMENT_SHUNT_DURATION_SECONDS,
@@ -48,6 +48,7 @@ import {
 } from './monumentGeometry';
 import { SparklePool } from './SparklePool';
 import { TickTrailPool } from './TickTrailPool';
+import { HorizonBadgePanel } from './HorizonBadgePanel';
 
 export type { MonumentKind } from './medallions';
 
@@ -80,8 +81,10 @@ const COLORS = {
   lamp: 0xffd487,
 } as const;
 
-const CHART_WIDTH = 13.8;
-const CHART_HEIGHT = 5.15;
+export const MONUMENT_CHART_WIDTH = 14.4;
+export const MONUMENT_CHART_HEIGHT = 5.75;
+const CHART_WIDTH = MONUMENT_CHART_WIDTH;
+const CHART_HEIGHT = MONUMENT_CHART_HEIGHT;
 const LIVE_MARKER_X = CHART_WIDTH * 0.5 + 0.42;
 const tempObject = new Object3D();
 const tempCameraPosition = new Vector3();
@@ -122,6 +125,7 @@ export class Monument {
   private readonly priceText = new Text();
   private readonly sparkles = new SparklePool(24);
   private readonly tickTrail = new TickTrailPool(12);
+  private readonly horizonPanel: HorizonBadgePanel | null;
   private readonly activeBodyHighlight: Mesh<RoundedBoxGeometry, MeshStandardMaterial>;
   private readonly activeWickHighlight: Mesh<CylinderGeometry, MeshStandardMaterial>;
   private readonly pulseRingMaterial: MeshBasicMaterial;
@@ -156,6 +160,7 @@ export class Monument {
   private livePriceVelocity = 0;
   private activeChartSpring: ActiveChartSpring | null = null;
   private nightFactor = 0;
+  private feedMode: FeedMode = 'connecting';
 
   constructor(options: MonumentOptions) {
     this.symbol = options.symbol;
@@ -269,8 +274,7 @@ export class Monument {
     this.livePriceMarker.frustumCulled = false;
 
     this.chartGroup.name = `${this.symbol}-chart`;
-    this.chartGroup.position.set(0, 0.56, 0.46);
-    this.chartGroup.scale.y = 0.68;
+    this.chartGroup.position.set(0, 0.9, 3.15);
     this.chartGroup.add(
       this.livePriceGuide,
       this.greenWickInstances,
@@ -296,6 +300,7 @@ export class Monument {
     this.pulseRing.visible = false;
     this.chartGroup.add(this.pulseRing);
 
+    this.horizonPanel = this.kind === 'grand' ? new HorizonBadgePanel(options.fontUrl) : null;
     this.buildShrine(options.fontUrl);
     if (this.kind === 'grand') {
       this.buildFurniture();
@@ -343,6 +348,8 @@ export class Monument {
       return;
     }
 
+    this.feedMode = state.mode;
+    this.horizonPanel?.setChanges(state.horizonChanges);
     const nextCandles = selectChartCandles(state.candles);
     const rolled = didCandleWindowRoll(this.targetCandles, nextCandles);
     if (rolled) {
@@ -428,6 +435,7 @@ export class Monument {
     this.updateLivePrice(delta, elapsedSeconds);
     this.tickTrail.update(delta, this.displayedRange, CHART_HEIGHT, LIVE_MARKER_X);
     this.sparkles.update(delta);
+    this.horizonPanel?.update(elapsedSeconds, Date.now(), this.feedMode);
 
     for (const lamp of this.lamps) {
       const shimmer = 1 + Math.sin(elapsedSeconds * 1.7 + lamp.phase) * 0.025 * this.nightFactor;
@@ -491,6 +499,11 @@ export class Monument {
     }
     this.disposed = true;
     this.unmount();
+
+    if (this.horizonPanel) {
+      this.horizonPanel.root.removeFromParent();
+      this.horizonPanel.dispose();
+    }
 
     const geometries = new Set<{ dispose(): void }>();
     const materials = new Set<Material>();
@@ -596,7 +609,7 @@ export class Monument {
     card.scale.set(this.kind === 'echo' ? 3.5 : 4.25, 1.02, 0.12);
     card.position.z = -0.1;
     card.castShadow = true;
-    this.billboardGroup.position.set(0, 6.82, 0.34);
+    this.billboardGroup.position.set(0, 6.72, 3.15);
     this.billboardGroup.add(card);
 
     this.priceText.text = '$—';
@@ -616,6 +629,7 @@ export class Monument {
       this.priceText.sync();
     }
     this.billboardGroup.add(this.priceText);
+    if (this.horizonPanel) this.billboardGroup.add(this.horizonPanel.root);
     this.root.add(this.billboardGroup);
   }
 
@@ -638,7 +652,7 @@ export class Monument {
         bench.add(leg);
       }
       bench.add(seat, back);
-      bench.position.set(side * 6.35, 0, 2.6);
+      bench.position.set(side * 6.95, 0, 0.35);
       bench.rotation.y = side * -0.34;
       bench.traverse((object) => {
         if (object instanceof Mesh) {
@@ -662,8 +676,8 @@ export class Monument {
     const lampPositions: ReadonlyArray<readonly [number, number]> = [
       [-6.4, -4.5],
       [6.4, -4.5],
-      [-7.4, 5.2],
-      [7.4, 5.2],
+      [-8.4, 4.8],
+      [8.4, 4.8],
     ];
     lampPositions.forEach(([x, z], index) => {
       const pole = new Mesh(poleGeometry, metalMaterial);
@@ -687,8 +701,8 @@ export class Monument {
     const bushMaterial = new MeshStandardMaterial({ color: COLORS.bush, roughness: 0.92, flatShading: true });
     const flowerMaterial = new MeshStandardMaterial({ color: COLORS.flower, roughness: 0.8 });
     const positions: ReadonlyArray<readonly [number, number]> = [
-      [-5.1, 5.7],
-      [5.1, 5.7],
+      [-6.15, 2.0],
+      [6.15, 2.0],
       [-7.1, -0.6],
       [7.1, -0.6],
     ];

@@ -1,12 +1,30 @@
 export {
   HEARTBEAT_INTERVAL_MS,
+  DAILY_HISTORY_COUNT,
   HyperliquidMarketFeed,
+  MINUTE_HISTORY_COUNT,
   applyTradeToCandles,
   buildHyperliquidSubscriptions,
   computeReconnectDelay,
   isSocketActivityStale,
   parseHyperliquidCandles,
+  parseHyperliquidCandleHistory,
   parseHyperliquidTrades,
   reconcileCandle,
 } from './marketFeed';
-export { BASE_PRICES, createSimulatedCandles, hashString, mulberry32, stepSimulation } from './simulator';
+export {
+  DAY_MS,
+  HORIZON_DURATIONS_MS,
+  MINUTE_MS,
+  computeHorizonChanges,
+  createEmptyHorizonChanges,
+  getCandleCountdown,
+} from './horizons';
+export {
+  BASE_PRICES,
+  createSimulatedCandles,
+  createSimulatedHistory,
+  hashString,
+  mulberry32,
+  stepSimulation,
+} from './simulator';
