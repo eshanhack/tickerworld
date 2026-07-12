@@ -19,9 +19,10 @@ const template = `<!doctype html><html><head>
   <title>Tickerworld</title></head><body><div id="app"></div></body></html>`;
 
 describe('static market entry shells', () => {
-  it('defines all eight launch routes', () => {
+  it('defines every live and demo launch route', () => {
     expect(MARKET_SHELLS.map(([slug]) => slug)).toEqual([
       'btc', 'eth', 'sol', 'xrp', 'doge', 'bnb', 'link', 'avax',
+      'wti', 'test',
     ]);
   });
 
@@ -38,6 +39,19 @@ describe('static market entry shells', () => {
     expect(html).toContain('Enter BTC world');
     expect(html).toContain('No signup · no wallet · sound starts after tap');
     expect(html).not.toMatch(/\$[\d,.]+/);
+  });
+
+  it('labels TEST as simulated and WTI as the live CL crude-oil world', () => {
+    const test = renderMarketShell(template, 'test', 'TEST');
+    expect(test).toContain('TEST WORLD · SIMULATED');
+    expect(test).toContain('Enter TEST lab');
+    expect(test).toContain('deliberately wild simulated market');
+    expect(test).toContain('https://tickerworld.io/social/test.png');
+
+    const wti = renderMarketShell(template, 'wti', 'WTI');
+    expect(wti).toContain('WTI WORLD · LIVE');
+    expect(wti).toContain('CL crude-oil perpetual');
+    expect(wti).toContain('https://tickerworld.io/social/wti.png');
   });
 
   it('marks the admin shell as noindex', () => {

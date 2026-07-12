@@ -103,6 +103,8 @@ function parseNewsItem(value: unknown): NewsItem | undefined {
     || value.scope === 'BNB'
     || value.scope === 'LINK'
     || value.scope === 'AVAX'
+    || value.scope === 'WTI'
+    || value.scope === 'TEST'
     ? value.scope
     : 'global';
   if (

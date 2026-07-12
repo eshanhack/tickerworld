@@ -90,10 +90,16 @@ function symbolForMarket(market: MarketSlug): AssetSymbol {
 }
 
 function marketForSymbol(symbol: string): MarketSlug | null {
+  if (symbol.toLowerCase() === 'xyz:cl') return 'wti';
   const upper = symbol.toUpperCase() as AssetSymbol;
-  return (ASSET_SYMBOLS as readonly string[]).includes(upper)
+  return upper !== 'TEST' && (ASSET_SYMBOLS as readonly string[]).includes(upper)
     ? upper.toLowerCase() as MarketSlug
     : null;
+}
+
+function coinForSymbol(symbol: AssetSymbol): string | null {
+  if (symbol === 'TEST') return null;
+  return symbol === 'WTI' ? 'xyz:CL' : symbol;
 }
 
 /** One process-wide Hyperliquid connection and bounded 30-candle windows. */
@@ -176,13 +182,15 @@ export class HyperliquidMarketRelay implements MarketRelay {
     const endTime = this.now();
     const startTime = endTime - 32 * 60_000;
     await Promise.allSettled(ASSET_SYMBOLS.map(async (symbol) => {
+      const coin = coinForSymbol(symbol);
+      if (!coin) return;
       const requestedAt = this.now();
       const response = await this.fetcher(HTTP_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           type: 'candleSnapshot',
-          req: { coin: symbol, interval: '1m', startTime, endTime },
+          req: { coin, interval: '1m', startTime, endTime },
         }),
         signal: AbortSignal.timeout(8_000),
       });
@@ -221,7 +229,10 @@ export class HyperliquidMarketRelay implements MarketRelay {
       this.openCount += 1;
       if (this.openCount > 1) void this.bootstrap();
       socket.send(JSON.stringify({ method: 'subscribe', subscription: { type: 'allMids' } }));
-      for (const coin of ASSET_SYMBOLS) {
+      socket.send(JSON.stringify({ method: 'subscribe', subscription: { type: 'allMids', dex: 'xyz' } }));
+      for (const symbol of ASSET_SYMBOLS) {
+        const coin = coinForSymbol(symbol);
+        if (!coin) continue;
         socket.send(JSON.stringify({
           method: 'subscribe',
           subscription: { type: 'candle', coin, interval: '1m' },

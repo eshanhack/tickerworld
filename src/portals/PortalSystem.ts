@@ -39,6 +39,8 @@ const DESTINATION_COLORS: Readonly<Record<AssetSymbol, number>> = {
   BNB: 0xe3bd69,
   LINK: 0x7e9ccb,
   AVAX: 0xd9857d,
+  WTI: 0x7f8f88,
+  TEST: 0xd68bd8,
 };
 
 interface PortalVisual {
@@ -266,13 +268,13 @@ export class PortalSystem implements GameSystem {
   private createLabel(route: PortalRoute, side: 'front' | 'back'): Text {
     const label = new Text();
     label.name = `${route.id}-${side}-label`;
-    label.fontSize = 0.5;
+    label.fontSize = 0.46;
     label.color = PALETTE.cream;
     label.anchorX = 'center';
     label.anchorY = 'middle';
     label.textAlign = 'center';
-    label.maxWidth = 4.2;
-    label.lineHeight = 1.08;
+    label.maxWidth = 4.6;
+    label.lineHeight = 1.12;
     label.outlineWidth = '3%';
     label.outlineColor = PALETTE.ink;
     label.outlineOpacity = 0.62;

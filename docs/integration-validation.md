@@ -4,6 +4,10 @@ Validated locally on 12 July 2026 with Node 22-compatible tooling. Production
 provider activation remains intentionally blocked by the checklist in
 `production-readiness.md`.
 
+This evidence records the then-supported eight crypto routes. The current
+ten-world topology adds WTI and the TEST lab, so those two routes require fresh
+release-gate and browser evidence rather than being implied by this historical run.
+
 ## Automated evidence
 
 - `npm run verify:release`: 221 client/root tests and 61 server-package tests
@@ -16,7 +20,7 @@ provider activation remains intentionally blocked by the checklist in
   resources bounded and disposed them cleanly.
 - Root and server production dependency audits reported zero vulnerabilities.
 - The production bundle keeps `solanaWalletClient` in a separate dynamic chunk.
-- Vercel's local platform router returned HTML for `/`, all eight market
+- Vercel's local platform router returned HTML for `/`, all eight then-supported market
   routes, and `/admin` (with `X-Robots-Tag: noindex, nofollow`), while
   `/api/news` remained JSON and truthfully reported `unconfigured`.
 
@@ -37,7 +41,7 @@ provider activation remains intentionally blocked by the checklist in
   and automatically joined a fresh healthy shard.
 - Portrait displayed the rotate-device veil above extension controls. Landscape
   rendered the game and safe-area HUD without console/page errors.
-- A production Vite preview returned HTML for all eight direct market slugs and
+- A production Vite preview returned HTML for all eight then-supported direct market slugs and
   `/admin`; the admin application rendered its fail-closed unconfigured state.
 - Anonymous preview entry requested neither the Solana wallet chunk nor a room
   endpoint, proving the solo production bundle does not eagerly load wallet code.

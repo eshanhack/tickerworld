@@ -35,6 +35,8 @@ import type {
   MarketAccentSoundOptions,
   MonumentAudioSource,
   TradePulseSoundOptions,
+  VegetationSoundOptions,
+  VegetationSoundKind,
 } from './types';
 
 const VOLUME_KEY = 'tickerworld:audio:volume';
@@ -63,6 +65,14 @@ interface AmbientPadVoice {
   readonly index: number;
   readonly gain: GainNode;
   readonly sources: readonly OscillatorNode[];
+  readonly nodes: readonly AudioNode[];
+}
+
+interface RainAmbienceGraph {
+  readonly source: AudioBufferSourceNode;
+  readonly highpass: BiquadFilterNode;
+  readonly lowpass: BiquadFilterNode;
+  readonly gain: GainNode;
   readonly nodes: readonly AudioNode[];
 }
 
@@ -190,6 +200,7 @@ export class AudioEngine {
   private readonly finiteNodes = new Set<AudioNode>();
   private readonly ambientSources = new Set<AudioScheduledSourceNode>();
   private readonly ambientNodes = new Set<AudioNode>();
+  private readonly rainGraphs = new Set<RainAmbienceGraph>();
   private readonly tempPosition = new Vector3();
   private readonly tempForward = new Vector3();
   private readonly tempUp = new Vector3();
@@ -208,6 +219,8 @@ export class AudioEngine {
   private ambientEchoInput: DelayNode | null = null;
   private currentPadVoice: AmbientPadVoice | null = null;
   private ambientStarted = false;
+  private activeRainGraph: RainAmbienceGraph | null = null;
+  private rainIntensity = 0;
   private keyTimer: ReturnType<typeof setTimeout> | null = null;
   private padTimer: ReturnType<typeof setTimeout> | null = null;
   private lastKeyIndex = -1;
@@ -224,6 +237,7 @@ export class AudioEngine {
   private sfxMutedValue: boolean;
   private lastNewsAlertAt = Number.NEGATIVE_INFINITY;
   private lastThunderAt = Number.NEGATIVE_INFINITY;
+  private lastVegetationAt = Number.NEGATIVE_INFINITY;
   private statusValue: AudioEngineState['status'];
   private reasonValue: string | undefined;
   private cachedListenerPose: AudioListenerPose = {
@@ -319,6 +333,7 @@ export class AudioEngine {
     if (this.disposed || !this.contextFactory) return Promise.resolve(false);
     if (this.context?.state === 'running') {
       this.startAmbient();
+      this.syncRainAmbience();
       this.setStatus(this.visible ? 'ready' : 'suspended');
       return Promise.resolve(true);
     }
@@ -358,6 +373,7 @@ export class AudioEngine {
           return false;
         }
         this.setStatus(this.visible ? 'ready' : 'suspended');
+        this.syncRainAmbience();
         if (!this.visible) void this.suspendContext();
         return true;
       })
@@ -647,6 +663,158 @@ export class AudioEngine {
     this.playNoiseBurst(this.sfxBus, now + 0.19, 0.72, 'lowpass', 360, peak * 0.38);
   }
 
+  /** Keeps one soft filtered rain bed alive only while a storm is visible. */
+  public setRainIntensity(intensity: number): void {
+    if (this.disposed) return;
+    this.rainIntensity = clampUnit(intensity);
+    this.syncRainAmbience();
+  }
+
+  public playVegetationRustle(options: VegetationSoundOptions): void;
+  public playVegetationRustle(kind: VegetationSoundKind, intensity?: number): void;
+  public playVegetationRustle(
+    optionsOrKind: VegetationSoundOptions | VegetationSoundKind,
+    legacyIntensity = 0.5,
+  ): void {
+    if (!this.canPlaySfx() || !this.context || !this.sfxBus) return;
+    const kind = typeof optionsOrKind === 'string' ? optionsOrKind : optionsOrKind.kind;
+    const intensity = clampUnit(
+      typeof optionsOrKind === 'string'
+        ? legacyIntensity
+        : optionsOrKind.intensity ?? legacyIntensity,
+    );
+    const now = this.context.currentTime;
+    if (now - this.lastVegetationAt < 0.105) return;
+    this.lastVegetationAt = now;
+    if (kind === 'shrub') {
+      this.playNoiseBurst(this.sfxBus, now, 0.19, 'bandpass', 690, 0.009 + intensity * 0.017);
+      this.playNoiseBurst(this.sfxBus, now + 0.018, 0.13, 'lowpass', 1_150, 0.004 + intensity * 0.007);
+      return;
+    }
+    this.playNoiseBurst(this.sfxBus, now, 0.115, 'bandpass', 940, 0.005 + intensity * 0.011);
+  }
+
+  /** A bounded HRTF flyby used by the WTI world's pooled aircraft events. */
+  public playJetFlyby(position: AudioPosition, intensity = 0.7): void {
+    if (!this.canPlaySfx() || !this.context || this.scheduledSources.size > MAX_SCHEDULED_SOURCES - 2) {
+      return;
+    }
+    const amount = clampUnit(intensity);
+    const spatial = this.createPositionalEffectBus(position, 82, 0.5 + amount * 0.5);
+    if (!spatial) return;
+    const now = this.context.currentTime;
+    const duration = 2.15;
+    const noise = this.context.createBufferSource();
+    const noiseFilter = this.context.createBiquadFilter();
+    const noiseGain = this.context.createGain();
+    noise.buffer = this.getTransientNoiseBuffer();
+    noise.loop = true;
+    noiseFilter.type = 'bandpass';
+    noiseFilter.frequency.value = 620 + amount * 430;
+    noiseFilter.Q.value = 0.42;
+    noiseGain.gain.setValueAtTime(0.0001, now);
+    noiseGain.gain.exponentialRampToValueAtTime(0.025 + amount * 0.035, now + 0.32);
+    noiseGain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+    noise.connect(noiseFilter);
+    noiseFilter.connect(noiseGain);
+    noiseGain.connect(spatial.input);
+
+    const engine = this.context.createOscillator();
+    const engineFilter = this.context.createBiquadFilter();
+    const engineGain = this.context.createGain();
+    engine.type = 'sawtooth';
+    engine.frequency.setValueAtTime(128 + amount * 34, now);
+    engine.frequency.exponentialRampToValueAtTime(69 + amount * 15, now + duration);
+    engineFilter.type = 'lowpass';
+    engineFilter.frequency.value = 470;
+    engineFilter.Q.value = 0.5;
+    engineGain.gain.setValueAtTime(0.0001, now);
+    engineGain.gain.exponentialRampToValueAtTime(0.012 + amount * 0.018, now + 0.24);
+    engineGain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+    engine.connect(engineFilter);
+    engineFilter.connect(engineGain);
+    engineGain.connect(spatial.input);
+
+    spatial.panner.positionX.setValueAtTime(position.x - 7, now);
+    spatial.panner.positionX.setTargetAtTime(position.x + 7, now + 0.28, 0.62);
+    noise.start(now, this.random() * Math.max(0, this.getTransientNoiseBuffer().duration - 0.02));
+    noise.stop(now + duration + 0.03);
+    engine.start(now);
+    engine.stop(now + duration + 0.03);
+    this.trackFiniteVoice(
+      [noise, engine],
+      [
+        noise, noiseFilter, noiseGain,
+        engine, engineFilter, engineGain,
+        ...spatial.nodes,
+      ],
+    );
+  }
+
+  /** A rounded, distance-bounded HRTF blast for WTI world set dressing. */
+  public playDistantExplosion(position: AudioPosition, intensity = 0.7): void {
+    if (!this.canPlaySfx() || !this.context || this.scheduledSources.size > MAX_SCHEDULED_SOURCES - 3) {
+      return;
+    }
+    const amount = clampUnit(intensity);
+    const spatial = this.createPositionalEffectBus(position, 96, 0.52 + amount * 0.48);
+    if (!spatial) return;
+    const now = this.context.currentTime;
+
+    const body = this.context.createBufferSource();
+    const bodyFilter = this.context.createBiquadFilter();
+    const bodyGain = this.context.createGain();
+    body.buffer = this.getTransientNoiseBuffer();
+    bodyFilter.type = 'lowpass';
+    bodyFilter.frequency.value = 330 + amount * 180;
+    bodyFilter.Q.value = 0.48;
+    bodyGain.gain.setValueAtTime(0.0001, now);
+    bodyGain.gain.exponentialRampToValueAtTime(0.045 + amount * 0.07, now + 0.012);
+    bodyGain.gain.exponentialRampToValueAtTime(0.0001, now + 1.42);
+    body.connect(bodyFilter);
+    bodyFilter.connect(bodyGain);
+    bodyGain.connect(spatial.input);
+
+    const crack = this.context.createBufferSource();
+    const crackFilter = this.context.createBiquadFilter();
+    const crackGain = this.context.createGain();
+    crack.buffer = this.getTransientNoiseBuffer();
+    crackFilter.type = 'bandpass';
+    crackFilter.frequency.value = 820;
+    crackFilter.Q.value = 0.65;
+    crackGain.gain.setValueAtTime(0.0001, now);
+    crackGain.gain.exponentialRampToValueAtTime(0.018 + amount * 0.024, now + 0.004);
+    crackGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.24);
+    crack.connect(crackFilter);
+    crackFilter.connect(crackGain);
+    crackGain.connect(spatial.input);
+
+    const rumble = this.context.createOscillator();
+    const rumbleGain = this.context.createGain();
+    rumble.type = 'sine';
+    rumble.frequency.setValueAtTime(61, now);
+    rumble.frequency.exponentialRampToValueAtTime(34, now + 1.35);
+    rumbleGain.gain.setValueAtTime(0.0001, now);
+    rumbleGain.gain.exponentialRampToValueAtTime(0.028 + amount * 0.044, now + 0.018);
+    rumbleGain.gain.exponentialRampToValueAtTime(0.0001, now + 1.48);
+    rumble.connect(rumbleGain);
+    rumbleGain.connect(spatial.input);
+
+    body.start(now, this.random() * 0.05, 1.48);
+    crack.start(now, this.random() * 0.12, 0.28);
+    rumble.start(now);
+    rumble.stop(now + 1.5);
+    this.trackFiniteVoice(
+      [body, crack, rumble],
+      [
+        body, bodyFilter, bodyGain,
+        crack, crackFilter, crackGain,
+        rumble, rumbleGain,
+        ...spatial.nodes,
+      ],
+    );
+  }
+
   /** A separate soft cue for portal channel start, cancellation, and arrival. */
   public playPortalChime(stage: 'start' | 'cancel' | 'complete'): void {
     if (!this.canPlaySfx() || !this.context || !this.sfxBus) return;
@@ -756,6 +924,7 @@ export class AudioEngine {
     this.visible = visible;
     if (!visible) {
       this.clearAmbientTimers();
+      this.stopRainAmbience(0.08);
       if (this.context) {
         this.setStatus('suspended');
         void this.suspendContext();
@@ -774,6 +943,7 @@ export class AudioEngine {
       .then(() => {
         if (this.disposed || !this.visible) return;
         this.startAmbient();
+        this.syncRainAmbience();
         this.scheduleNextKey();
         this.scheduleNextPad();
         this.setStatus('ready');
@@ -790,6 +960,9 @@ export class AudioEngine {
     this.disposed = true;
     this.clearAmbientTimers();
     this.stopAmbient();
+    this.stopRainAmbience(0);
+    for (const graph of this.rainGraphs) this.cleanupRainGraph(graph);
+    this.rainGraphs.clear();
     for (const source of this.scheduledSources) safeStop(source);
     for (const node of this.finiteNodes) safeDisconnect(node);
     this.scheduledSources.clear();
@@ -870,6 +1043,37 @@ export class AudioEngine {
     const sfxLevel = this.sfxMutedValue ? 0 : Math.pow(this.sfxVolumeValue, 1.35);
     this.ambientBus?.gain.setTargetAtTime((0.4 + this.nightFactor * 0.012) * musicLevel, now, 0.04);
     this.sfxBus?.gain.setTargetAtTime(sfxLevel, now, 0.025);
+  }
+
+  private createPositionalEffectBus(
+    position: AudioPosition,
+    maxDistance: number,
+    trim: number,
+  ): { input: GainNode; panner: PannerNode; nodes: readonly AudioNode[] } | null {
+    if (!this.context || !this.sfxBus) return null;
+    const distance = Math.hypot(
+      position.x - this.proximityPosition.x,
+      position.y - this.proximityPosition.y,
+      position.z - this.proximityPosition.z,
+    );
+    if (!Number.isFinite(distance) || distance >= maxDistance) return null;
+    const fullRadius = 12;
+    const progress = clampUnit((distance - fullRadius) / Math.max(1, maxDistance - fullRadius));
+    const proximity = distance <= fullRadius ? 1 : (1 - progress) ** 2;
+    const input = this.context.createGain();
+    const panner = this.context.createPanner();
+    input.gain.value = clampUnit(trim) * proximity;
+    panner.panningModel = 'HRTF';
+    panner.distanceModel = 'inverse';
+    panner.refDistance = 1;
+    panner.maxDistance = maxDistance + 1;
+    panner.rolloffFactor = 0;
+    panner.positionX.value = position.x;
+    panner.positionY.value = position.y;
+    panner.positionZ.value = position.z;
+    input.connect(panner);
+    panner.connect(this.sfxBus);
+    return { input, panner, nodes: [input, panner] };
   }
 
   private syncMonumentGraphs(): void {
@@ -1086,6 +1290,85 @@ export class AudioEngine {
     this.lastKeyIndex = -1;
     this.lastPadIndex = -1;
     this.ambientStarted = false;
+  }
+
+  private syncRainAmbience(): void {
+    if (!this.context || !this.sfxBus || !this.visible || this.rainIntensity <= 0.01) {
+      if (this.activeRainGraph) this.stopRainAmbience(1.15);
+      return;
+    }
+    const now = this.context.currentTime;
+    if (!this.activeRainGraph) {
+      // A rapid hide/show can leave one source finishing its short fade while
+      // the new storm bed begins. Never retain more than that single tail.
+      while (this.rainGraphs.size >= 2) {
+        const oldest = this.rainGraphs.values().next().value as RainAmbienceGraph | undefined;
+        if (!oldest) break;
+        safeStop(oldest.source);
+        this.cleanupRainGraph(oldest);
+      }
+      const source = this.context.createBufferSource();
+      const highpass = this.context.createBiquadFilter();
+      const lowpass = this.context.createBiquadFilter();
+      const gain = this.context.createGain();
+      source.buffer = this.getTransientNoiseBuffer();
+      source.loop = true;
+      highpass.type = 'highpass';
+      highpass.frequency.value = 1_050;
+      highpass.Q.value = 0.25;
+      lowpass.type = 'lowpass';
+      lowpass.frequency.value = 4_800;
+      lowpass.Q.value = 0.2;
+      gain.gain.setValueAtTime(0.0001, now);
+      source.connect(highpass);
+      highpass.connect(lowpass);
+      lowpass.connect(gain);
+      gain.connect(this.sfxBus);
+      const graph: RainAmbienceGraph = {
+        source,
+        highpass,
+        lowpass,
+        gain,
+        nodes: [source, highpass, lowpass, gain],
+      };
+      source.addEventListener('ended', () => this.cleanupRainGraph(graph), { once: true });
+      source.start(now, this.random() * Math.max(0, this.getTransientNoiseBuffer().duration - 0.02));
+      this.activeRainGraph = graph;
+      this.rainGraphs.add(graph);
+    }
+    const target = 0.006 + this.rainIntensity * 0.017;
+    this.activeRainGraph.gain.gain.cancelScheduledValues(now);
+    this.activeRainGraph.gain.gain.setTargetAtTime(target, now, 0.38);
+    this.activeRainGraph.lowpass.frequency.setTargetAtTime(
+      4_100 + this.rainIntensity * 1_300,
+      now,
+      0.75,
+    );
+  }
+
+  private stopRainAmbience(fadeSeconds: number): void {
+    const graph = this.activeRainGraph;
+    if (!graph || !this.context) return;
+    this.activeRainGraph = null;
+    const now = this.context.currentTime;
+    const fade = Math.max(0, fadeSeconds);
+    graph.gain.gain.cancelScheduledValues(now);
+    if (fade <= 0.001) {
+      graph.gain.gain.setValueAtTime(0.0001, now);
+    } else {
+      graph.gain.gain.setTargetAtTime(0.0001, now, Math.max(0.02, fade * 0.28));
+    }
+    try {
+      graph.source.stop(now + fade);
+    } catch {
+      this.cleanupRainGraph(graph);
+    }
+  }
+
+  private cleanupRainGraph(graph: RainAmbienceGraph): void {
+    if (this.activeRainGraph === graph) this.activeRainGraph = null;
+    this.rainGraphs.delete(graph);
+    for (const node of graph.nodes) safeDisconnect(node);
   }
 
   private scheduleNextKey(

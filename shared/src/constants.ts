@@ -7,6 +7,8 @@ export const ASSET_SYMBOLS = [
   'BNB',
   'LINK',
   'AVAX',
+  'WTI',
+  'TEST',
 ] as const;
 
 export const MARKET_SLUGS = [
@@ -18,6 +20,8 @@ export const MARKET_SLUGS = [
   'bnb',
   'link',
   'avax',
+  'wti',
+  'test',
 ] as const;
 
 export const ANIMAL_KINDS = [

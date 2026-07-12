@@ -25,7 +25,7 @@ export interface EchoPlacementDescriptor {
   scale: number;
 }
 
-export type PropKind = 'tree' | 'bush' | 'rock' | 'flower' | 'lamp' | 'bench';
+export type PropKind = 'tree' | 'bush' | 'rock' | 'flower' | 'grass' | 'lamp' | 'bench';
 
 export interface PropPlacement {
   kind: PropKind;
@@ -217,6 +217,10 @@ export function generateChunkLayout(options: ChunkLayoutOptions): ChunkLayout {
   addNaturalProps('bush', 3 + Math.floor(random() * 5), 2.4);
   addNaturalProps('rock', 2 + Math.floor(random() * 4), 2.2);
   addNaturalProps('flower', 7 + Math.floor(random() * 8), 0.75);
+  // Ground foliage shares one instanced draw with the flower clusters. A
+  // generous count makes the bounded worlds feel planted without adding
+  // individual meshes, materials, or frame-time-dependent randomness.
+  addNaturalProps('grass', 20 + Math.floor(random() * 14), 0.48);
 
   const addPathProp = (kind: 'lamp' | 'bench', wanted: number): void => {
     let placed = 0;

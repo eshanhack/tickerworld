@@ -1,7 +1,15 @@
 import { ASSET_SYMBOLS, type AssetState, type AssetSymbol, type Candle, type FeedMode, type MarketFeed } from '../types';
 import type { CompactMarketMid, RelayedMarketState } from '../../shared/src/index.js';
 import { FORCE_SIMULATION, WORLD_SEED } from '../config';
-import { BASE_PRICES, createSimulatedCandles, createSimulatedHistory, hashString, mulberry32, stepSimulation } from './simulator';
+import {
+  BASE_PRICES,
+  createSimulatedCandles,
+  createSimulatedHistory,
+  hashString,
+  mulberry32,
+  stepSimulation,
+  stepTestSimulation,
+} from './simulator';
 import {
   DAY_MS,
   MINUTE_MS,
@@ -41,9 +49,9 @@ interface ParsedTrade extends PendingTrade {
 }
 
 type HyperliquidSubscription =
-  | { type: 'allMids' }
-  | { type: 'trades'; coin: AssetSymbol }
-  | { type: 'candle'; coin: AssetSymbol; interval: '1m' };
+  | { type: 'allMids'; dex?: 'xyz' }
+  | { type: 'trades'; coin: string }
+  | { type: 'candle'; coin: string; interval: '1m' };
 
 type HyperliquidCandleInterval = '1m' | '1d';
 
@@ -66,8 +74,15 @@ function finiteNumber(value: unknown): number | undefined {
 
 function toAssetSymbol(value: unknown): AssetSymbol | undefined {
   if (typeof value !== 'string') return undefined;
+  if (value.toLowerCase() === 'xyz:cl') return 'WTI';
   const symbol = value.toUpperCase() as AssetSymbol;
-  return ASSET_SYMBOLS.includes(symbol) ? symbol : undefined;
+  return ASSET_SYMBOLS.includes(symbol) && symbol !== 'TEST' ? symbol : undefined;
+}
+
+/** Maps Tickerworld's friendly symbol onto Hyperliquid's canonical coin id. */
+export function hyperliquidCoinForSymbol(symbol: AssetSymbol): string | null {
+  if (symbol === 'TEST') return null;
+  return symbol === 'WTI' ? 'xyz:CL' : symbol;
 }
 
 function looksLikeCandleTuple(value: unknown[]): boolean {
@@ -241,9 +256,14 @@ export function parseHyperliquidTrades(payload: unknown): ParsedTrade[] {
 }
 
 export function buildHyperliquidSubscriptions(activeSymbol?: AssetSymbol): HyperliquidSubscription[] {
-  const symbols = activeSymbol ? [activeSymbol] : ASSET_SYMBOLS;
+  const symbols = (activeSymbol ? [activeSymbol] : ASSET_SYMBOLS)
+    .flatMap((symbol) => {
+      const coin = hyperliquidCoinForSymbol(symbol);
+      return coin ? [coin] : [];
+    });
   return [
     { type: 'allMids' },
+    { type: 'allMids', dex: 'xyz' },
     ...symbols.flatMap((coin): HyperliquidSubscription[] => [
       { type: 'trades', coin },
       { type: 'candle', coin, interval: '1m' },
@@ -311,14 +331,15 @@ export class HyperliquidMarketFeed implements MarketFeed {
   constructor() {
     const now = Date.now();
     for (const symbol of ASSET_SYMBOLS) {
-      const minuteHistory = FORCE_SIMULATION
+      const simulated = FORCE_SIMULATION || symbol === 'TEST';
+      const minuteHistory = simulated
         ? createSimulatedCandles(symbol, now, MINUTE_HISTORY_COUNT, WORLD_SEED)
         : [];
       const candles = minuteHistory.slice(-SNAPSHOT_CANDLE_COUNT);
-      const price = FORCE_SIMULATION
+      const price = simulated
         ? candles.at(-1)?.close ?? BASE_PRICES[symbol]
         : null;
-      const dailyHistory = FORCE_SIMULATION
+      const dailyHistory = simulated
         ? createSimulatedHistory(
           symbol,
           now,
@@ -333,16 +354,16 @@ export class HyperliquidMarketFeed implements MarketFeed {
       this.states.set(symbol, {
         symbol,
         instrument: symbol,
-        provider: FORCE_SIMULATION ? 'simulation' : 'hyperliquid',
+        provider: simulated ? 'simulation' : 'hyperliquid',
         candles,
         price,
         previousPrice: price,
         direction: 'flat',
-        mode: FORCE_SIMULATION ? 'simulated' : 'connecting',
-        updateKind: FORCE_SIMULATION ? 'simulation' : 'snapshot',
+        mode: simulated ? 'simulated' : 'connecting',
+        updateKind: simulated ? 'simulation' : 'snapshot',
         updatedAt: now,
         presentationTick: 0,
-        horizonChanges: FORCE_SIMULATION
+        horizonChanges: simulated
           ? computeHorizonChanges(price, now, minuteHistory, dailyHistory)
           : createEmptyHorizonChanges(),
       });
@@ -384,6 +405,7 @@ export class HyperliquidMarketFeed implements MarketFeed {
     this.lastPresented.delete(symbol);
     this.lastTradeTime.set(symbol, 0);
     if (FORCE_SIMULATION || !this.started || this.paused) return;
+    if (symbol === 'TEST') this.relayActive = false;
     if (this.relayActive) {
       this.setAllModes('reconnecting');
       return;
@@ -396,7 +418,7 @@ export class HyperliquidMarketFeed implements MarketFeed {
 
   /** Warms a destination during portal dwell without changing the visible chart. */
   async prefetchMarket(symbol: AssetSymbol): Promise<void> {
-    if (FORCE_SIMULATION || this.relayActive || this.disposed || symbol === this.activeSymbol) return;
+    if (FORCE_SIMULATION || symbol === 'TEST' || this.relayActive || this.disposed || symbol === this.activeSymbol) return;
     const cached = this.prefetchedSnapshots.get(symbol);
     if (cached && Date.now() - cached.fetchedAt < 20_000) return;
     try {
@@ -411,6 +433,12 @@ export class HyperliquidMarketFeed implements MarketFeed {
   setRelayAvailable(available: boolean, directFallbackAllowed = true): void {
     if (FORCE_SIMULATION || this.disposed) return;
     this.directFallbackAllowed = directFallbackAllowed;
+    // TEST is deliberately client-simulated so it remains a dependable event
+    // lab even when a multiplayer room relay is available.
+    if (this.activeSymbol === 'TEST') {
+      this.relayActive = false;
+      return;
+    }
     if (available) {
       if (this.relayActive) return;
       this.relayActive = true;
@@ -433,7 +461,7 @@ export class HyperliquidMarketFeed implements MarketFeed {
 
   /** Applies one server-coalesced active chart and compact portal mids. */
   acceptRelayState(state: RelayedMarketState, mids: readonly CompactMarketMid[] = []): void {
-    if (FORCE_SIMULATION || this.disposed || state.instrument !== this.activeSymbol) return;
+    if (FORCE_SIMULATION || this.disposed || this.activeSymbol === 'TEST' || state.instrument !== this.activeSymbol) return;
     if (!this.relayActive) this.setRelayAvailable(true, this.directFallbackAllowed);
     this.applyCompactMids(mids, state.publishedAt);
     const previous = this.getState(state.instrument);
@@ -506,10 +534,10 @@ export class HyperliquidMarketFeed implements MarketFeed {
   }
 
   private startTimers(): void {
-    if (FORCE_SIMULATION) {
-      this.simulationTimer = window.setInterval(() => this.stepSimulations(), PRESENTATION_INTERVAL_MS);
-      return;
-    }
+    // TEST runs in every build; the explicit QA flag additionally simulates
+    // every market. Keeping one timer avoids multiplying work by route changes.
+    this.simulationTimer = window.setInterval(() => this.stepSimulations(), PRESENTATION_INTERVAL_MS);
+    if (FORCE_SIMULATION) return;
     this.presentationTimer = window.setInterval(() => this.flushTrades(), PRESENTATION_POLL_MS);
     this.watchdogTimer = window.setInterval(() => this.watchdog(), 4_000);
     this.heartbeatTimer = window.setInterval(() => this.sendHeartbeat(), HEARTBEAT_INTERVAL_MS);
@@ -517,18 +545,25 @@ export class HyperliquidMarketFeed implements MarketFeed {
 
   private stepSimulations(): void {
     if (this.paused || this.disposed) return;
-    for (const symbol of ASSET_SYMBOLS) {
+    const symbols: readonly AssetSymbol[] = FORCE_SIMULATION ? ASSET_SYMBOLS : ['TEST'];
+    for (const symbol of symbols) {
       const random = this.randoms.get(symbol);
       if (!random) continue;
       const now = Date.now();
       const previous = this.getState(symbol);
       const minuteHistory = this.minuteHistories.get(symbol) ?? [...previous.candles];
-      const historyState = stepSimulation(
-        { ...previous, candles: minuteHistory },
-        random,
-        now,
-        MINUTE_HISTORY_COUNT,
-      );
+      const historyState = symbol === 'TEST'
+        ? stepTestSimulation(
+          { ...previous, candles: minuteHistory },
+          now,
+          MINUTE_HISTORY_COUNT,
+        )
+        : stepSimulation(
+          { ...previous, candles: minuteHistory },
+          random,
+          now,
+          MINUTE_HISTORY_COUNT,
+        );
       this.minuteHistories.set(symbol, [...historyState.candles]);
       const next: AssetState = {
         ...historyState,
@@ -551,6 +586,11 @@ export class HyperliquidMarketFeed implements MarketFeed {
     this.connectPending = true;
     this.clearReconnect();
     this.pendingTrades.clear();
+    if (this.activeSymbol === 'TEST') {
+      this.connectPending = false;
+      this.connect(generation);
+      return;
+    }
     this.setAllModes(initial ? 'connecting' : 'reconnecting');
 
     try {
@@ -599,6 +639,8 @@ export class HyperliquidMarketFeed implements MarketFeed {
   }
 
   private async fetchSnapshot(symbol: AssetSymbol): Promise<SnapshotBundle> {
+    const coin = hyperliquidCoinForSymbol(symbol);
+    if (!coin) throw new Error(`${symbol} is a simulated Tickerworld market`);
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), SNAPSHOT_TIMEOUT_MS);
     const now = Date.now();
@@ -614,7 +656,7 @@ export class HyperliquidMarketFeed implements MarketFeed {
           body: JSON.stringify({
             type: 'candleSnapshot',
             req: {
-              coin: symbol,
+              coin,
               interval,
               startTime,
               endTime: now,
@@ -670,7 +712,7 @@ export class HyperliquidMarketFeed implements MarketFeed {
           socket.send(JSON.stringify({ method: 'subscribe', subscription }));
         }
         this.reconnectAttempt = 0;
-        this.setAllModes('live');
+        if (this.activeSymbol !== 'TEST') this.setAllModes('live');
       });
       socket.addEventListener('message', (event) => {
         if (this.socket === socket) this.handleMessage(String(event.data));
@@ -912,6 +954,7 @@ export class HyperliquidMarketFeed implements MarketFeed {
   private setAllModes(mode: FeedMode): void {
     const symbol = this.activeSymbol;
     const previous = this.getState(symbol);
+    if (symbol === 'TEST') return;
     if (previous.mode === mode) return;
     const state: AssetState = { ...previous, mode, updateKind: 'snapshot' };
     this.states.set(symbol, state);

@@ -35,6 +35,10 @@ export const GRAND_MONUMENTS: ReadonlyArray<{
   { symbol: 'BNB', x: -420, z: -240, scale: 1 },
   { symbol: 'LINK', x: -80, z: 520, scale: 0.95 },
   { symbol: 'AVAX', x: 510, z: -400, scale: 1 },
+  // WTI and TEST provide two additional portal bearings. These coordinates
+  // shape roads only; bounded worlds still instantiate one central monument.
+  { symbol: 'WTI', x: 450, z: 780, scale: 1 },
+  { symbol: 'TEST', x: -620, z: 0, scale: 1 },
 ];
 
 export const PALETTE = {

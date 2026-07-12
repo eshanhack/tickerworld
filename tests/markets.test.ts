@@ -18,6 +18,7 @@ import {
   parseHyperliquidTrades,
   reconcileCandle,
   stepSimulation,
+  stepTestSimulation,
 } from '../src/markets';
 
 describe('market candle helpers', () => {
@@ -129,28 +130,56 @@ describe('market candle helpers', () => {
     expect(first.updateKind).toBe('simulation');
   });
 
+  it('cycles TEST through calm and exceptional moves in both directions', () => {
+    const candles = createSimulatedCandles('TEST', 1_800_000, 30, 'event-lab');
+    const price = candles.at(-1)!.close;
+    let state: AssetState = {
+      symbol: 'TEST', instrument: 'TEST', provider: 'simulation', candles, price, previousPrice: price,
+      direction: 'flat', mode: 'simulated', updateKind: 'simulation', updatedAt: 1_800_000,
+      presentationTick: 0, horizonChanges: createEmptyHorizonChanges(),
+    };
+    const ratios: number[] = [];
+    for (let index = 0; index < 16; index += 1) {
+      state = stepTestSimulation(state, 1_800_000 + index * 400);
+      const active = state.candles.at(-1)!;
+      ratios.push((state.price! / active.open) - 1);
+    }
+    expect(ratios.some((ratio) => Math.abs(ratio) < 0.00007)).toBe(true);
+    expect(ratios.some((ratio) => ratio >= 0.001)).toBe(true);
+    expect(ratios.some((ratio) => ratio <= -0.001)).toBe(true);
+  });
+
   it('keeps a combined socket healthy when any stream is active', () => {
     const now = 50_000;
     expect(isSocketActivityStale([1_000, 49_500, 2_000], now)).toBe(false);
     expect(isSocketActivityStale([1_000, 2_000, 3_000], now, 12_000)).toBe(true);
   });
 
-  it('builds one all-mids and sixteen asset subscriptions', () => {
+  it('builds both dex mid streams and every real asset subscription', () => {
     const subscriptions = buildHyperliquidSubscriptions();
-    expect(subscriptions).toHaveLength(17);
+    expect(subscriptions).toHaveLength(20);
     expect(subscriptions[0]).toEqual({ type: 'allMids' });
+    expect(subscriptions[1]).toEqual({ type: 'allMids', dex: 'xyz' });
     expect(subscriptions).toContainEqual({ type: 'trades', coin: 'AVAX' });
+    expect(subscriptions).toContainEqual({ type: 'trades', coin: 'xyz:CL' });
+    expect(subscriptions).not.toContainEqual({ type: 'trades', coin: 'TEST' });
     expect(subscriptions).toContainEqual({ type: 'candle', coin: 'BTC', interval: '1m' });
   });
 
   it('limits the browser fallback to one active chart plus compact mids', () => {
     expect(buildHyperliquidSubscriptions('ETH')).toEqual([
       { type: 'allMids' },
+      { type: 'allMids', dex: 'xyz' },
       { type: 'trades', coin: 'ETH' },
       { type: 'candle', coin: 'ETH', interval: '1m' },
     ]);
-    expect(parseHyperliquidMids({ mids: { BTC: '64123.5', ETH: 3120, BAD: 1, SOL: 'nope' } }))
-      .toEqual({ BTC: 64123.5, ETH: 3120 });
+    expect(buildHyperliquidSubscriptions('TEST')).toEqual([
+      { type: 'allMids' },
+      { type: 'allMids', dex: 'xyz' },
+    ]);
+    expect(parseHyperliquidMids({ mids: {
+      BTC: '64123.5', ETH: 3120, 'xyz:CL': '73.42', BAD: 1, SOL: 'nope',
+    } })).toEqual({ BTC: 64123.5, ETH: 3120, WTI: 73.42 });
   });
 
   it('accepts server-coalesced active charts and silent portal mids', () => {

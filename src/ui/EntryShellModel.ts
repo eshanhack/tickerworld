@@ -11,6 +11,24 @@ export interface EntryShellModel {
 }
 
 export function entryShellForMarket(symbol: AssetSymbol): EntryShellModel {
+  if (symbol === 'TEST') {
+    return {
+      symbol,
+      kicker: 'TEST WORLD · SIMULATED',
+      title: 'Tickerworld',
+      description: 'A deliberately wild demo market for testing trades, sounds, fireworks, and sky events.',
+      enterLabel: 'Enter TEST lab',
+    };
+  }
+  if (symbol === 'WTI') {
+    return {
+      symbol,
+      kicker: 'WTI WORLD · LIVE',
+      title: 'Tickerworld',
+      description: 'Walk inside the live CL crude-oil perpetual chart with other tiny animals.',
+      enterLabel: 'Enter WTI world',
+    };
+  }
   return {
     symbol,
     kicker: `${symbol} WORLD · LIVE`,

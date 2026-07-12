@@ -1,5 +1,6 @@
 import { Client, type Room } from '@colyseus/sdk';
 import {
+  ASSET_SYMBOLS,
   CLIENT_MESSAGES,
   MARKET_ROOM_NAME,
   MOVE_SEND_RATE_HZ,
@@ -57,6 +58,32 @@ import {
   type GuestIdentity,
   type SignedGuestIdentity,
 } from './identity';
+
+const LIVE_MARKET_SYMBOLS = new Set<string>(ASSET_SYMBOLS.filter((symbol) => symbol !== 'TEST'));
+
+function boundRelayedMarketMids(value: unknown): CompactMarketMid[] {
+  if (!Array.isArray(value)) return [];
+  const bounded: CompactMarketMid[] = [];
+  const seen = new Set<string>();
+  for (const candidate of value) {
+    if (!candidate || typeof candidate !== 'object') continue;
+    const mid = candidate as Partial<CompactMarketMid>;
+    if (
+      typeof mid.instrument !== 'string'
+      || !LIVE_MARKET_SYMBOLS.has(mid.instrument)
+      || seen.has(mid.instrument)
+      || typeof mid.price !== 'number'
+      || !Number.isFinite(mid.price)
+      || mid.price <= 0
+      || typeof mid.upstreamAt !== 'number'
+      || !Number.isFinite(mid.upstreamAt)
+    ) continue;
+    seen.add(mid.instrument);
+    bounded.push(mid as CompactMarketMid);
+    if (bounded.length >= LIVE_MARKET_SYMBOLS.size) break;
+  }
+  return bounded;
+}
 
 type RoomMatchClient = Pick<Client, 'joinOrCreate' | 'joinById'>;
 
@@ -609,7 +636,7 @@ export class RoomClientSystem implements GameSystem {
       });
       room.onMessage<readonly CompactMarketMid[]>(SERVER_MESSAGES.marketMids, (mids) => {
         if (!isCurrentRoom()) return;
-        const bounded = Array.isArray(mids) ? mids.slice(0, 8) : [];
+        const bounded = boundRelayedMarketMids(mids);
         for (const listener of this.marketMidsListeners) listener(bounded);
         this.flushPendingMarketState();
       });

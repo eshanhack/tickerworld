@@ -78,7 +78,7 @@ function onboardingCopy(snapshot: OnboardingSnapshot): {
 } {
   switch (snapshot.currentStep) {
     case 'identity':
-      return { title: 'Choose your look', body: 'Sixteen creatures and color charms are ready.', cta: 'Open wardrobe' };
+      return { title: 'Choose your creature', body: 'Eight distinct animals are ready to roam.', cta: 'Open wardrobe' };
     case 'move-jump': {
       const moved = snapshot.completedActions.has('move');
       const jumped = snapshot.completedActions.has('jump');
@@ -210,7 +210,7 @@ export class Hud {
 
       <section class="onboarding-hint is-hidden" aria-live="polite" data-onboarding>
         <div class="onboarding-orb" aria-hidden="true">&#10022;</div>
-        <div><small data-onboarding-progress>1 / 5</small><strong data-onboarding-title>Choose your look</strong><p data-onboarding-body>Sixteen creatures and color charms are ready.</p></div>
+        <div><small data-onboarding-progress>1 / 5</small><strong data-onboarding-title>Choose your creature</strong><p data-onboarding-body>Eight distinct animals are ready to roam.</p></div>
         <button type="button" data-onboarding-cta>Open wardrobe</button>
       </section>
 
@@ -235,7 +235,7 @@ export class Hud {
           <div class="audio-channel"><button class="channel-mute" type="button" aria-label="Mute music" data-music-mute><span>&#9834;</span><strong>Music</strong></button><label aria-label="Music volume"><input type="range" min="0" max="1" step="0.01" value="1" data-music-volume /></label></div>
           <div class="audio-channel"><button class="channel-mute" type="button" aria-label="Mute sound effects" data-sfx-mute><span>&#10022;</span><strong>FX</strong></button><label aria-label="Sound effects volume"><input type="range" min="0" max="1" step="0.01" value="1" data-sfx-volume /></label></div>
         </div>
-        <button type="button" class="compass-setting wardrobe-setting" data-settings-wardrobe><span>Creature wardrobe</span><strong>16 LOOKS</strong></button>
+        <button type="button" class="compass-setting wardrobe-setting" data-settings-wardrobe><span>Creature wardrobe</span><strong>8 CREATURES</strong></button>
         <button type="button" class="compass-setting" data-compass-setting><span>Monument whisper</span><strong>ON</strong></button>
         <button type="button" class="compass-setting motion-setting" data-motion-setting><span>Gentle motion</span><strong>OFF</strong></button>
         <p>Live prices use Hyperliquid perpetual market data. If the feed drops, genuine values pause while Tickerworld reconnects. For ambience, not financial advice.</p>
@@ -452,7 +452,9 @@ export class Hud {
       ? `${Math.max(0, Math.round(view.ageMs / 1_000))}s old`
       : null;
     this.nearbyMode.textContent = view.mode === 'live'
-      ? 'LIVE · HYPERLIQUID'
+      ? view.symbol === 'WTI'
+        ? 'LIVE · HYPERLIQUID · CL PERP'
+        : 'LIVE · HYPERLIQUID'
       : view.mode === 'connecting'
         ? 'CONNECTING'
         : view.mode === 'reconnecting'
@@ -461,7 +463,7 @@ export class Hud {
             : reconnectingAge
               ? `RECONNECTING · ${reconnectingAge}`
               : 'RECONNECTING'
-          : 'SIMULATED · QA';
+          : view.symbol === 'TEST' ? 'SIMULATED · TEST LAB' : 'SIMULATED · QA';
     this.nearbyMode.className = `market-mode ${view.mode === 'reconnecting' && view.price === null ? 'connecting' : view.mode}`;
     this.nearbyPanel.style.setProperty('--nearby-distance', `${Math.min(1, view.distance / 80)}`);
   }

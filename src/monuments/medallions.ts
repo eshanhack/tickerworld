@@ -27,6 +27,9 @@ const COLORS = {
   bnb: 0xf3ce72,
   link: 0x91addf,
   avax: 0xea8d86,
+  wti: 0x66746e,
+  wtiBand: 0xe0b96c,
+  test: 0xd58ddd,
 } as const;
 
 function material(color: number, emissiveIntensity = 0.04): MeshStandardMaterial {
@@ -198,6 +201,49 @@ function buildAvax(group: Group, simplified: boolean): void {
   addMesh(group, new ConeGeometry(0.58, 0.95, 3), material(COLORS.cream, 0.08), [0, 3.5, -1.1], [0, 0, Math.PI]);
 }
 
+/** A toy-scale oil barrel replaces the usual coin crest in WTI world. */
+function buildWti(group: Group, simplified: boolean): void {
+  const barrel = material(COLORS.wti, 0.07);
+  const band = material(COLORS.wtiBand, 0.1);
+  const height = simplified ? 4.4 : 5.15;
+  const radius = simplified ? 1.9 : 2.25;
+  addMesh(
+    group,
+    new CylinderGeometry(radius, radius * 1.04, height, 20),
+    barrel,
+    [0, 4.25, MEDALLION_CENTER.z],
+  );
+  for (const y of [4.25 - height * 0.38, 4.25, 4.25 + height * 0.38]) {
+    addMesh(
+      group,
+      new TorusGeometry(radius * 1.015, simplified ? 0.11 : 0.15, 6, 28),
+      band,
+      [0, y, MEDALLION_CENTER.z],
+      [Math.PI * 0.5, 0, 0],
+    );
+  }
+  if (!simplified) {
+    // A simple raised drop reads clearly without relying on texture assets.
+    addMesh(group, new ConeGeometry(0.62, 1.35, 16), band, [0, 4.58, -2.15], [0, 0, Math.PI]);
+    addMesh(group, new CylinderGeometry(0.62, 0.62, 0.72, 16), band, [0, 3.82, -2.15]);
+  }
+}
+
+function buildTest(group: Group, simplified: boolean): void {
+  const violet = material(COLORS.test, 0.16);
+  const cream = material(COLORS.cream, 0.13);
+  addMesh(
+    group,
+    new OctahedronGeometry(simplified ? 2.15 : 2.55, 1),
+    violet,
+    [0, MEDALLION_CENTER.y, MEDALLION_CENTER.z],
+    [0, Math.PI * 0.25, 0],
+    [1, 1, 0.58],
+  );
+  addRaisedBar(group, cream, 0.55, simplified ? 2.8 : 3.35, -0.48, 4.95, -0.54);
+  addRaisedBar(group, cream, 0.55, simplified ? 2.5 : 3.0, 0.5, 4.02, -0.54);
+}
+
 export function buildMedallion(symbol: AssetSymbol, kind: MonumentKind): Group {
   const group = new Group();
   group.name = `${symbol.toLowerCase()}-${kind}-medallion`;
@@ -226,6 +272,8 @@ export function buildMedallion(symbol: AssetSymbol, kind: MonumentKind): Group {
     case 'BNB': buildBnb(group, simplified); break;
     case 'LINK': buildLink(group, simplified); break;
     case 'AVAX': buildAvax(group, simplified); break;
+    case 'WTI': buildWti(group, simplified); break;
+    case 'TEST': buildTest(group, simplified); break;
   }
 
   return group;

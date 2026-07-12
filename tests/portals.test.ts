@@ -19,12 +19,12 @@ import {
 } from '../src/portals';
 
 describe('fixed portal routes', () => {
-  it('provides seven unique destinations in the original road slots for every world', () => {
+  it('provides every other destination in stable road slots for every world', () => {
     const btcRoutes = createPortalRoutes('BTC');
-    expect(btcRoutes).toHaveLength(7);
+    expect(btcRoutes).toHaveLength(ASSET_SYMBOLS.length - 1);
     for (const activeMarket of ASSET_SYMBOLS) {
       const routes = createPortalRoutes(activeMarket);
-      expect(routes).toHaveLength(7);
+      expect(routes).toHaveLength(ASSET_SYMBOLS.length - 1);
       expect(new Set(routes.map(({ destination }) => destination))).toEqual(
         new Set(ASSET_SYMBOLS.filter((symbol) => symbol !== activeMarket)),
       );
@@ -76,16 +76,23 @@ describe('fixed portal routes', () => {
       price: 1234.5,
       population: 1_204,
       connectionMode: 'online',
+      feedMode: 'live',
     })).toMatchObject({
       priceText: '$1,234.5',
       populationText: '1,204 PEOPLE',
-      text: `${route.destination}\n1,204 PEOPLE`,
+      marketText: 'LIVE',
+      text: `${route.destination}\nLIVE · 1,204 HERE`,
     });
     expect(createPortalLabelModel(route, {
       price: null,
       population: null,
       connectionMode: 'offline',
-    })).toMatchObject({ priceText: '$—', populationText: 'OFFLINE' });
+      feedMode: 'live',
+    })).toMatchObject({
+      priceText: '$—',
+      populationText: 'OFFLINE',
+      text: `${route.destination}\nLIVE · — HERE`,
+    });
     expect(formatPortalPopulation(0, 'online')).toBe('0 PEOPLE');
     expect(formatPortalPopulation(1, 'online')).toBe('1 PERSON');
     expect(formatPortalPopulation(Number.NaN, 'online')).toBe('— PEOPLE');
@@ -125,7 +132,7 @@ describe('portal dwell state', () => {
 });
 
 describe('PortalSystem presentation', () => {
-  it('builds seven shared-geometry portals, updates labels, and requests one trip', () => {
+  it('builds shared-geometry portals, updates labels, and requests one trip', () => {
     const parent = new THREE.Group();
     const travel = vi.fn();
     const system = new PortalSystem({ parent, activeMarket: 'BTC', onTravelRequested: travel });
@@ -133,9 +140,18 @@ describe('PortalSystem presentation', () => {
     expect(route).toBeDefined();
     if (!route) return;
     expect(parent.children).toContain(system.root);
-    expect(system.getDebugStats()).toMatchObject({ activeMarket: 'BTC', portals: 7, labels: 14 });
+    expect(system.getDebugStats()).toMatchObject({
+      activeMarket: 'BTC',
+      portals: ASSET_SYMBOLS.length - 1,
+      labels: (ASSET_SYMBOLS.length - 1) * 2,
+    });
 
-    system.setLiveData(route.destination, { price: 42.25, population: 18, connectionMode: 'online' });
+    system.setLiveData(route.destination, {
+      price: 42.25,
+      population: 18,
+      connectionMode: 'online',
+      feedMode: 'live',
+    });
     const texts: Text[] = [];
     const ringGeometries = new Set<THREE.BufferGeometry>();
     system.root.traverse((object) => {
@@ -143,7 +159,7 @@ describe('PortalSystem presentation', () => {
       if (object.name.endsWith('-ring') && object instanceof THREE.Mesh) ringGeometries.add(object.geometry);
     });
     expect(ringGeometries.size).toBe(1);
-    expect(texts.filter(({ text }) => text === `${route.destination}\n18 PEOPLE`)).toHaveLength(2);
+    expect(texts.filter(({ text }) => text === `${route.destination}\nLIVE · 18 HERE`)).toHaveLength(2);
     expect(texts.every(({ text }) => !text.includes('$42.25'))).toBe(true);
 
     system.setPlayerProbe({ x: route.x, z: route.z, grounded: true });
@@ -164,7 +180,9 @@ describe('PortalSystem presentation', () => {
     system.setActiveMarket('SOL');
     expect(system.getRoutes().map(({ destination }) => destination)).not.toContain('SOL');
     expect(system.getRoutes().map(({ destination }) => destination)).toContain('BTC');
-    expect(system.getDebugStats()).toMatchObject({ activeMarket: 'SOL', portals: 7 });
+    expect(system.getDebugStats()).toMatchObject({
+      activeMarket: 'SOL', portals: ASSET_SYMBOLS.length - 1,
+    });
     system.dispose();
   });
 });

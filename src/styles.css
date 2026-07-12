@@ -561,7 +561,9 @@ canvas {
   box-sizing: border-box;
   padding-top: max(12px, env(safe-area-inset-top));
   padding-right: max(12px, env(safe-area-inset-right));
-  padding-bottom: max(12px, env(safe-area-inset-bottom));
+  /* Keep both the default card and every dragged position above the bottom
+     action row. News must never make wardrobe/emote/settings controls inert. */
+  padding-bottom: max(88px, calc(env(safe-area-inset-bottom) + 72px));
   padding-left: max(12px, env(safe-area-inset-left));
   visibility: hidden;
   pointer-events: none;
@@ -591,7 +593,10 @@ canvas {
   top: 0;
   left: 0;
   width: min(22.5rem, calc(100vw - 1.5rem));
-  max-height: min(26rem, calc(100vh - 1.5rem));
+  /* Match the geometric safe boundary so long posts scroll instead of growing
+     down across the footer controls on short desktop windows. */
+  max-height: min(26rem, calc(100vh - 100px));
+  max-height: min(26rem, calc(100dvh - 100px));
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   overflow: visible;
@@ -851,6 +856,15 @@ html.is-launch-capture body::after {
 .is-hidden { visibility: hidden; }
 
 @media (hover: none), (pointer: coarse) {
+  .news-safe-area-probe {
+    /* Reserve jump + emote controls as well as browser/device safe areas. */
+    padding-bottom: max(200px, calc(env(safe-area-inset-bottom) + 184px));
+  }
+  .news-overlay-card {
+    /* The touch layout's jump/emote stack is taller than the desktop footer. */
+    max-height: min(26rem, calc(100vh - 212px));
+    max-height: min(26rem, calc(100dvh - 212px));
+  }
   .mobile-joystick { display: block; }
   .mobile-jump { display: grid; }
   .enter-controls { display: none; }
@@ -1133,6 +1147,14 @@ html.is-launch-capture body::after {
   opacity: 0;
   pointer-events: none;
   visibility: hidden;
+}
+
+/* News is a draggable companion card, so its reserved safe area keeps the
+   footer controls usable instead of treating the post like a blocking modal. */
+.hud[data-large-overlay="news"]:not([data-large-overlay=""]) :is(.hud-actions, .social-chat-toggle, .share-toggle) {
+  opacity: 1;
+  pointer-events: auto;
+  visibility: visible;
 }
 
 @media (max-width: 1050px) {

@@ -28,6 +28,21 @@ export interface WorldPosition {
   z: number;
 }
 
+export type VegetationKind = 'grass' | 'shrub';
+
+export interface VegetationContact {
+  readonly kind: VegetationKind;
+  /** 0 at the foliage edge and 1 at its centre. */
+  readonly intensity: number;
+}
+
+export interface VegetationInteractionEvent extends VegetationContact {
+  readonly x: number;
+  readonly z: number;
+  /** Horizontal character speed in world units per second. */
+  readonly speed: number;
+}
+
 export interface WorldSystemOptions {
   seed?: string;
   chunkSize?: number;
@@ -40,6 +55,7 @@ export interface WorldSystemOptions {
   dayDurationSeconds?: number;
   reducedMotion?: boolean;
   onThunder?: (intensity: number) => void;
+  onVegetationInteraction?: (event: VegetationInteractionEvent) => void;
   onEchoPlacementsChanged?: (placements: readonly EchoPlacementDescriptor[]) => void;
 }
 
@@ -58,6 +74,9 @@ export interface WorldDebugStats {
   riseFlashIntensity: number;
   rainIntensity: number;
   activeRainDrops: number;
+  grassInstances: number;
+  shrubInstances: number;
+  bendingVegetation: number;
 }
 
 export type DropFlashTier = 'large' | 'exceptional';
@@ -90,7 +109,25 @@ interface InstancePool {
   capacity: number;
 }
 
-const DAY_SECONDS = 10 * 60;
+interface VegetationInstance {
+  readonly kind: VegetationKind;
+  readonly poolName: 'flowers' | 'bushes';
+  readonly index: number;
+  readonly x: number;
+  readonly y: number;
+  readonly z: number;
+  readonly scaleX: number;
+  readonly scaleY: number;
+  readonly scaleZ: number;
+  readonly rotationY: number;
+  readonly radius: number;
+  bend: number;
+  bendX: number;
+  bendZ: number;
+}
+
+/** A complete session-relative day, dusk, night, and dawn cycle. */
+export const DEFAULT_DAY_DURATION_SECONDS = 18 * 60;
 const LOAD_BUDGET = 3;
 const UNLOAD_BUDGET = 4;
 const LAMP_LIGHT_COUNT = 4;
@@ -100,6 +137,9 @@ const LAMP_MOTE_CAPACITY = LAMP_LIGHT_COUNT * LAMP_MOTES_PER_LIGHT;
 const RAIN_DROP_CAPACITY = 144;
 const RAIN_RADIUS = 19;
 const RAIN_COLUMN_HEIGHT = 17;
+const VEGETATION_GRID_SIZE = 5;
+const VEGETATION_SOUND_COOLDOWN_SECONDS = 0.3;
+const WORLD_UP = new THREE.Vector3(0, 1, 0);
 
 function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value));
@@ -148,6 +188,7 @@ export class WorldSystem {
     placements: readonly EchoPlacementDescriptor[],
   ) => void;
   private readonly onThunder?: (intensity: number) => void;
+  private readonly onVegetationInteraction?: (event: VegetationInteractionEvent) => void;
   private readonly terrainRoot = new THREE.Group();
   private readonly propRoot = new THREE.Group();
   private readonly lightRoot = new THREE.Group();
@@ -193,8 +234,13 @@ export class WorldSystem {
   private readonly tempMatrix = new THREE.Matrix4();
   private readonly tempPosition = new THREE.Vector3();
   private readonly tempQuaternion = new THREE.Quaternion();
+  private readonly tempTiltQuaternion = new THREE.Quaternion();
   private readonly tempScale = new THREE.Vector3();
   private readonly tempColor = new THREE.Color();
+  private readonly tempBendDirection = new THREE.Vector3();
+  private readonly vegetationGrid = new Map<string, VegetationInstance[]>();
+  private readonly activeVegetation = new Set<VegetationInstance>();
+  private readonly previousVegetationPlayer = new THREE.Vector2();
   private activeEchoes: EchoPlacementDescriptor[] = [];
   private centerChunkX = Number.NaN;
   private centerChunkZ = Number.NaN;
@@ -211,6 +257,11 @@ export class WorldSystem {
   private marketFlashStartIntensity = 0;
   private marketFlashIntensity = 0;
   private previousWeatherElapsed: number | null = null;
+  private previousVegetationElapsed: number | null = null;
+  private hasPreviousVegetationPlayer = false;
+  private lastVegetationSoundAt = Number.NEGATIVE_INFINITY;
+  private grassInstanceCount = 0;
+  private shrubInstanceCount = 0;
   private readonly firedThunder = new Set<string>();
   private reducedMotion: boolean;
   private disposed = false;
@@ -227,9 +278,13 @@ export class WorldSystem {
     this.monuments = options.monuments ? [...options.monuments] : [...GRAND_MONUMENTS];
     this.echoSuppressionRadius = options.echoSuppressionRadius
       ?? ECHO_GRAND_SUPPRESSION_RADIUS;
-    this.dayDurationSeconds = Math.max(60, options.dayDurationSeconds ?? DAY_SECONDS);
+    this.dayDurationSeconds = Math.max(
+      60,
+      options.dayDurationSeconds ?? DEFAULT_DAY_DURATION_SECONDS,
+    );
     this.reducedMotion = options.reducedMotion ?? false;
     this.onThunder = options.onThunder;
+    this.onVegetationInteraction = options.onVegetationInteraction;
     this.onEchoPlacementsChanged = options.onEchoPlacementsChanged;
     this.weatherSeed = hashSeed(this.seed);
     this.terrain = new TerrainSampler({
@@ -360,6 +415,25 @@ export class WorldSystem {
     return this.rainingValue;
   }
 
+  /** Smoothed 0..1 rain level used by the weather audio mix. */
+  get rainLevel(): number {
+    return this.rainIntensity;
+  }
+
+  /** Returns nearby foliage without allocating or scanning the whole world. */
+  sampleVegetation(x: number, z: number): VegetationContact | null {
+    let strongest: VegetationContact | null = null;
+    for (const instance of this.nearbyVegetation(x, z)) {
+      const distance = Math.hypot(x - instance.x, z - instance.z);
+      if (distance >= instance.radius) continue;
+      const intensity = clamp01(1 - distance / instance.radius);
+      if (!strongest || intensity > strongest.intensity) {
+        strongest = { kind: instance.kind, intensity };
+      }
+    }
+    return strongest;
+  }
+
   getLoadedChunkDescriptors(): readonly ChunkDescriptor[] {
     return [...this.chunks.values()].map((record) => record.layout.descriptor);
   }
@@ -384,6 +458,9 @@ export class WorldSystem {
       riseFlashIntensity: this.marketFlashDirection === 'up' ? this.marketFlashIntensity : 0,
       rainIntensity: this.rainIntensity,
       activeRainDrops: this.rainLines.geometry.drawRange.count / 2,
+      grassInstances: this.grassInstanceCount,
+      shrubInstances: this.shrubInstanceCount,
+      bendingVegetation: this.activeVegetation.size,
     };
   }
 
@@ -438,15 +515,16 @@ export class WorldSystem {
     this.updateDayNight(playerPosition, elapsedSeconds);
     this.updateLampLights(playerPosition, elapsedSeconds);
     this.updateWeather(playerPosition, elapsedSeconds);
+    this.updateVegetation(playerPosition, elapsedSeconds);
   }
 
   private createPools(): Record<PoolName, InstancePool> {
     const chunkCapacity = this.maxChunks;
     const trunkGeometry = this.trackGeometry(new THREE.CylinderGeometry(0.5, 0.62, 1, 6));
     const crownGeometry = this.trackGeometry(new THREE.DodecahedronGeometry(1, 0));
-    const bushGeometry = this.trackGeometry(new THREE.DodecahedronGeometry(1, 0));
+    const bushGeometry = this.trackGeometry(new THREE.IcosahedronGeometry(1, 1));
     const rockGeometry = this.trackGeometry(new THREE.DodecahedronGeometry(1, 0));
-    const flowerGeometry = this.trackGeometry(new THREE.OctahedronGeometry(1, 0));
+    const flowerGeometry = this.trackGeometry(this.createGroundFoliageGeometry());
     const lampPostGeometry = this.trackGeometry(new THREE.CylinderGeometry(0.5, 0.58, 1, 8));
     const lampGlobeGeometry = this.trackGeometry(new THREE.SphereGeometry(0.5, 8, 6));
     const benchGeometry = this.trackGeometry(new THREE.BoxGeometry(1, 1, 1));
@@ -477,6 +555,7 @@ export class WorldSystem {
       color: PALETTE.pink,
       flatShading: true,
       roughness: 0.8,
+      side: THREE.DoubleSide,
     }));
     const lampPost = this.trackMaterial(new THREE.MeshStandardMaterial({
       color: PALETTE.stoneDark,
@@ -505,12 +584,51 @@ export class WorldSystem {
       treeCrowns: this.createPool('TreeCrowns', crownGeometry, leaves, chunkCapacity * 9),
       bushes: this.createPool('Bushes', bushGeometry, bush, chunkCapacity * 8),
       rocks: this.createPool('Rocks', rockGeometry, rock, chunkCapacity * 6),
-      flowers: this.createPool('Flowers', flowerGeometry, flower, chunkCapacity * 15),
+      // Wildflowers and green grass share this one pool/material. Instance
+      // colour preserves their distinct look while keeping the draw budget at
+      // the existing nine prop calls.
+      flowers: this.createPool('Flowers', flowerGeometry, flower, chunkCapacity * 52),
       lampPosts: this.createPool('LampPosts', lampPostGeometry, lampPost, chunkCapacity * 2),
       lampGlobes: this.createPool('LampGlobes', lampGlobeGeometry, this.lampGlobeMaterial, chunkCapacity * 2),
       benches: this.createPool('Benches', benchGeometry, bench, chunkCapacity),
       ponds: this.createPool('Ponds', pondGeometry, water, chunkCapacity),
     };
+  }
+
+  private createGroundFoliageGeometry(): THREE.BufferGeometry {
+    const positions: number[] = [];
+    const indices: number[] = [];
+    const bladeCount = 5;
+    for (let blade = 0; blade < bladeCount; blade += 1) {
+      const angle = blade / bladeCount * Math.PI * 2;
+      const cos = Math.cos(angle);
+      const sin = Math.sin(angle);
+      const width = blade % 2 === 0 ? 0.15 : 0.12;
+      const height = 0.78 + (blade % 3) * 0.11;
+      const lean = (blade % 2 === 0 ? 1 : -1) * 0.08;
+      const base = positions.length / 3;
+      const points = [
+        [-width, 0],
+        [width, 0],
+        [width * 0.62 + lean, height * 0.55],
+        [lean, height],
+        [-width * 0.62 + lean, height * 0.55],
+      ] as const;
+      for (const [side, y] of points) {
+        positions.push(side * cos, y, side * sin);
+      }
+      indices.push(
+        base, base + 1, base + 2,
+        base, base + 2, base + 4,
+        base + 4, base + 2, base + 3,
+      );
+    }
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geometry.setIndex(indices);
+    geometry.computeVertexNormals();
+    geometry.computeBoundingSphere();
+    return geometry;
   }
 
   private createPool(
@@ -696,6 +814,10 @@ export class WorldSystem {
       ponds: 0,
     };
     this.lampPositions.length = 0;
+    this.vegetationGrid.clear();
+    this.activeVegetation.clear();
+    this.grassInstanceCount = 0;
+    this.shrubInstanceCount = 0;
     const echoes: EchoPlacementDescriptor[] = [];
 
     const write = (
@@ -708,11 +830,11 @@ export class WorldSystem {
       scaleZ: number,
       rotationY: number,
       color?: THREE.Color,
-    ): void => {
+    ): number | null => {
       const pool = this.pools[poolName];
       const index = counts[poolName];
       if (index >= pool.capacity) {
-        return;
+        return null;
       }
       this.tempPosition.set(x, y, z);
       this.tempQuaternion.setFromAxisAngle(THREE.Object3D.DEFAULT_UP, rotationY);
@@ -723,6 +845,7 @@ export class WorldSystem {
         pool.mesh.setColorAt(index, color);
       }
       counts[poolName] = index + 1;
+      return index;
     };
 
     for (const record of this.chunks.values()) {
@@ -761,7 +884,7 @@ export class WorldSystem {
       scaleZ: number,
       rotationY: number,
       color?: THREE.Color,
-    ) => void,
+    ) => number | null,
   ): void {
     switch (prop.kind) {
       case 'tree': {
@@ -794,13 +917,13 @@ export class WorldSystem {
         );
         break;
       }
-      case 'bush':
+      case 'bush': {
         this.tempColor.set(0x77a77a).offsetHSL(
           (prop.colorVariant - 0.5) * 0.025,
           0,
           (prop.colorVariant - 0.5) * 0.08,
         );
-        write(
+        const index = write(
           'bushes',
           prop.x,
           prop.y + 0.58 * prop.scaleY,
@@ -811,7 +934,27 @@ export class WorldSystem {
           prop.rotationY,
           this.tempColor,
         );
+        if (index !== null) {
+          this.registerVegetation({
+            kind: 'shrub',
+            poolName: 'bushes',
+            index,
+            x: prop.x,
+            y: prop.y + 0.58 * prop.scaleY,
+            z: prop.z,
+            scaleX: 0.9 * prop.scaleX,
+            scaleY: 0.68 * prop.scaleY,
+            scaleZ: 0.9 * prop.scaleZ,
+            rotationY: prop.rotationY,
+            radius: 1.05 * Math.max(prop.scaleX, prop.scaleZ),
+            bend: 0,
+            bendX: 0,
+            bendZ: 0,
+          });
+          this.shrubInstanceCount += 1;
+        }
         break;
+      }
       case 'rock':
         this.tempColor.set(PALETTE.stone).offsetHSL(
           0,
@@ -848,6 +991,44 @@ export class WorldSystem {
           prop.rotationY,
           this.tempColor,
         );
+        break;
+      }
+      case 'grass': {
+        this.tempColor.set(PALETTE.grassAlt).offsetHSL(
+          (prop.colorVariant - 0.5) * 0.045,
+          0.04,
+          (prop.colorVariant - 0.5) * 0.1,
+        );
+        const index = write(
+          'flowers',
+          prop.x,
+          prop.y + 0.025,
+          prop.z,
+          0.72 * prop.scaleX,
+          0.72 * prop.scaleY,
+          0.72 * prop.scaleZ,
+          prop.rotationY,
+          this.tempColor,
+        );
+        if (index !== null) {
+          this.registerVegetation({
+            kind: 'grass',
+            poolName: 'flowers',
+            index,
+            x: prop.x,
+            y: prop.y + 0.025,
+            z: prop.z,
+            scaleX: 0.72 * prop.scaleX,
+            scaleY: 0.72 * prop.scaleY,
+            scaleZ: 0.72 * prop.scaleZ,
+            rotationY: prop.rotationY,
+            radius: 0.64 * Math.max(prop.scaleX, prop.scaleZ),
+            bend: 0,
+            bendX: 0,
+            bendZ: 0,
+          });
+          this.grassInstanceCount += 1;
+        }
         break;
       }
       case 'lamp': {
@@ -888,6 +1069,137 @@ export class WorldSystem {
           prop.rotationY,
         );
         break;
+    }
+  }
+
+  private vegetationGridKey(x: number, z: number): string {
+    return `${Math.floor(x / VEGETATION_GRID_SIZE)}:${Math.floor(z / VEGETATION_GRID_SIZE)}`;
+  }
+
+  private registerVegetation(instance: VegetationInstance): void {
+    const key = this.vegetationGridKey(instance.x, instance.z);
+    const cell = this.vegetationGrid.get(key);
+    if (cell) cell.push(instance);
+    else this.vegetationGrid.set(key, [instance]);
+  }
+
+  private nearbyVegetation(x: number, z: number): VegetationInstance[] {
+    const centerX = Math.floor(x / VEGETATION_GRID_SIZE);
+    const centerZ = Math.floor(z / VEGETATION_GRID_SIZE);
+    const nearby: VegetationInstance[] = [];
+    for (let offsetZ = -1; offsetZ <= 1; offsetZ += 1) {
+      for (let offsetX = -1; offsetX <= 1; offsetX += 1) {
+        const cell = this.vegetationGrid.get(`${centerX + offsetX}:${centerZ + offsetZ}`);
+        if (cell) nearby.push(...cell);
+      }
+    }
+    return nearby;
+  }
+
+  private updateVegetation(player: WorldPosition, elapsedSeconds: number): void {
+    const delta = this.previousVegetationElapsed === null
+      ? 1 / 60
+      : Math.min(0.1, Math.max(0, elapsedSeconds - this.previousVegetationElapsed));
+    const travelled = this.hasPreviousVegetationPlayer
+      ? Math.hypot(
+        player.x - this.previousVegetationPlayer.x,
+        player.z - this.previousVegetationPlayer.y,
+      )
+      : 0;
+    const speed = delta > 0.0001 ? travelled / delta : 0;
+    const movementX = this.hasPreviousVegetationPlayer
+      ? player.x - this.previousVegetationPlayer.x
+      : 0;
+    const movementZ = this.hasPreviousVegetationPlayer
+      ? player.z - this.previousVegetationPlayer.y
+      : 0;
+    this.previousVegetationElapsed = elapsedSeconds;
+    this.previousVegetationPlayer.set(player.x, player.z);
+    this.hasPreviousVegetationPlayer = true;
+
+    const nearby = this.nearbyVegetation(player.x, player.z);
+    const nearbySet = new Set(nearby);
+    const work = new Set([...this.activeVegetation, ...nearby]);
+    let strongest: VegetationInteractionEvent | null = null;
+    let flowersChanged = false;
+    let bushesChanged = false;
+
+    for (const instance of work) {
+      const dx = instance.x - player.x;
+      const dz = instance.z - player.z;
+      const distance = Math.hypot(dx, dz);
+      const touching = nearbySet.has(instance) && distance < instance.radius;
+      const contact = touching ? clamp01(1 - distance / instance.radius) : 0;
+      const maxBend = this.reducedMotion
+        ? 0.11
+        : instance.kind === 'shrub' ? 0.34 : 0.5;
+      const targetBend = contact * maxBend;
+      const response = targetBend > instance.bend ? 16 : 5.2;
+      const blend = 1 - Math.exp(-response * Math.max(delta, 1 / 240));
+      instance.bend = THREE.MathUtils.lerp(instance.bend, targetBend, blend);
+
+      if (touching) {
+        const directionLength = Math.hypot(dx, dz);
+        const fallbackLength = Math.hypot(movementX, movementZ);
+        const targetX = directionLength > 0.001
+          ? dx / directionLength
+          : fallbackLength > 0.001 ? movementX / fallbackLength : 0;
+        const targetZ = directionLength > 0.001
+          ? dz / directionLength
+          : fallbackLength > 0.001 ? movementZ / fallbackLength : 1;
+        instance.bendX = THREE.MathUtils.lerp(instance.bendX, targetX, blend);
+        instance.bendZ = THREE.MathUtils.lerp(instance.bendZ, targetZ, blend);
+        if (!strongest || contact > strongest.intensity) {
+          strongest = {
+            kind: instance.kind,
+            intensity: contact,
+            x: instance.x,
+            z: instance.z,
+            speed,
+          };
+        }
+      }
+
+      const stillMoving = instance.bend > 0.002 || targetBend > 0.002;
+      if (stillMoving) this.activeVegetation.add(instance);
+      else this.activeVegetation.delete(instance);
+      if (!stillMoving && instance.bend === 0) continue;
+
+      this.tempBendDirection.set(
+        instance.bendX * instance.bend,
+        1,
+        instance.bendZ * instance.bend,
+      ).normalize();
+      this.tempTiltQuaternion.setFromUnitVectors(WORLD_UP, this.tempBendDirection);
+      this.tempQuaternion.setFromAxisAngle(WORLD_UP, instance.rotationY);
+      this.tempTiltQuaternion.multiply(this.tempQuaternion);
+      this.tempPosition.set(instance.x, instance.y, instance.z);
+      this.tempScale.set(
+        instance.scaleX * (1 + instance.bend * 0.05),
+        instance.scaleY * (1 - instance.bend * 0.12),
+        instance.scaleZ * (1 + instance.bend * 0.05),
+      );
+      this.tempMatrix.compose(
+        this.tempPosition,
+        this.tempTiltQuaternion,
+        this.tempScale,
+      );
+      this.pools[instance.poolName].mesh.setMatrixAt(instance.index, this.tempMatrix);
+      if (instance.poolName === 'flowers') flowersChanged = true;
+      else bushesChanged = true;
+      if (!stillMoving) instance.bend = 0;
+    }
+
+    if (flowersChanged) this.pools.flowers.mesh.instanceMatrix.needsUpdate = true;
+    if (bushesChanged) this.pools.bushes.mesh.instanceMatrix.needsUpdate = true;
+    if (
+      strongest
+      && strongest.intensity >= 0.12
+      && strongest.speed >= 0.22
+      && elapsedSeconds - this.lastVegetationSoundAt >= VEGETATION_SOUND_COOLDOWN_SECONDS
+    ) {
+      this.lastVegetationSoundAt = elapsedSeconds;
+      this.onVegetationInteraction?.(strongest);
     }
   }
 
@@ -1101,6 +1413,10 @@ export class WorldSystem {
     this.sharedGeometries.clear();
     this.sharedMaterials.clear();
     this.firedThunder.clear();
+    this.vegetationGrid.clear();
+    this.activeVegetation.clear();
+    this.grassInstanceCount = 0;
+    this.shrubInstanceCount = 0;
     this.terrain.clearCache();
 
     if (this.scene.background === this.skyColor) {

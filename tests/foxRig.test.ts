@@ -164,11 +164,13 @@ describe('FoxRig hierarchy and silhouette', () => {
     disposeRig(rig);
   });
 
-  it('accepts only the premium skin paired with the selected animal', () => {
+  it('round-trips compatible legacy skin ids without rendering color charms', () => {
     const rig = new FoxRig();
     rig.setAnimal('rabbit', 'amethyst-rabbit');
     expect(rig.skin).toBe('amethyst-rabbit');
-    expect(rig.root.getObjectByName('PremiumAnimalCrest')).toBeInstanceOf(THREE.Mesh);
+    expect(rig.root.getObjectByName('PremiumAnimalCrest')).toBeUndefined();
+    expect((rig.root.getObjectByName('RabbitBody') as THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial>)
+      .material.color.getHex()).toBe(0xc0a5c8);
 
     rig.setAnimal('rabbit', 'sunrise-fox');
     expect(rig.skin).toBe('base');
@@ -181,7 +183,7 @@ describe('FoxRig hierarchy and silhouette', () => {
     const fur = (rig.root.getObjectByName('FoxTorso') as THREE.Mesh).material as THREE.Material;
     const furDispose = vi.spyOn(fur, 'dispose');
     rig.setAnimal('frog');
-    const oldRoot = rig.root.getObjectByName('AnimalAppearanceHead')!;
+    const oldRoot = rig.root.getObjectByName('AnimalModel-frog')!;
     const geometrySpies: Array<ReturnType<typeof vi.spyOn>> = [];
     oldRoot.traverse((object) => {
       if (object instanceof THREE.Mesh) geometrySpies.push(vi.spyOn(object.geometry, 'dispose'));

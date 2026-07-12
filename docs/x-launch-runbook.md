@@ -30,7 +30,7 @@ All are positive flags: `false` disables the feature.
 | `ENABLE_PURCHASES` | `false` | Keep quotes and grants unavailable |
 | `ENABLE_ADMIN_ACTIONS` | `false` until admin smoke passes | Stop remote moderation mutations |
 
-`MARKET_RELAY_ENABLED=true`, `MAX_PROCESS_CONNECTIONS=400`, `MAX_ROOMS=16`, and
+`MARKET_RELAY_ENABLED=true`, `MAX_PROCESS_CONNECTIONS=400`, `MAX_ROOMS=18`, and
 `MAX_MARKET_SHARDS=8` are the single-process launch ceiling. Do not start a second process until
 Redis Presence/Driver and distributed safety/admission state are implemented.
 
@@ -42,8 +42,8 @@ Redis Presence/Driver and distributed safety/admission state are implemented.
 4. Verify `/healthz`, `/readyz`, `/api/capabilities`, market age, news cache mode, and structured logs.
 5. Run two real bots through join, movement, emote, chat, block, invite, and portal transfer.
 6. Deploy the Vercel client from `main`.
-7. Verify all eight direct market shells, `/admin` noindex, five trust pages, news truthfulness, and
-   solo fallback. The smoke also requires eight unique 1200×630 JPEG route cards; a missing card
+7. Verify all ten direct tickerworld shells, `/admin` noindex, five trust pages, news truthfulness, and
+   solo fallback. The smoke also requires ten unique 1200×630 route cards; a missing card
    that falls through to the SPA is a launch failure, not an acceptable placeholder.
 8. Run the private soft launch. Start with 50 invited people, then increase only while telemetry and
    resource limits remain healthy.

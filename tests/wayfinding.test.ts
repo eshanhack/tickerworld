@@ -33,21 +33,22 @@ describe('canonical road-sign layout', () => {
     expect(formatWayfindingDistance(Number.NaN)).toBe('0m');
   });
 
-  it('maps exactly fourteen directed signs onto the seven real BTC spokes', () => {
+  it('maps two directed descriptors onto every canonical BTC spoke', () => {
     const roads = createCanonicalRoadDescriptors();
     const signs = createRoadSignDescriptors();
-    expect(roads).toHaveLength(7);
-    expect(signs).toHaveLength(14);
-    expect(new Set(signs.map((sign) => sign.id)).size).toBe(14);
+    const roadCount = GRAND_MONUMENTS.length - 1;
+    expect(roads).toHaveLength(roadCount);
+    expect(signs).toHaveLength(roadCount * 2);
+    expect(new Set(signs.map((sign) => sign.id)).size).toBe(roadCount * 2);
     expect(new Set(signs.map((sign) => sign.roadId))).toEqual(
       new Set(roads.map((road) => road.id)),
     );
 
     const outbound = signs.filter((sign) => sign.origin.symbol === 'BTC');
     const returns = signs.filter((sign) => sign.destination.symbol === 'BTC');
-    expect(outbound).toHaveLength(7);
-    expect(returns).toHaveLength(7);
-    expect(new Set(outbound.map((sign) => sign.destination.symbol)).size).toBe(7);
+    expect(outbound).toHaveLength(roadCount);
+    expect(returns).toHaveLength(roadCount);
+    expect(new Set(outbound.map((sign) => sign.destination.symbol)).size).toBe(roadCount);
     expect(returns.every((sign) => sign.origin.symbol !== 'BTC')).toBe(true);
     expect(signs.every((sign) => (
       sign.label === `↑ ${sign.destination.symbol} · ${formatWayfindingDistance(sign.distance)}`
@@ -109,7 +110,7 @@ describe('canonical road-sign layout', () => {
     expect(new Set(btcSigns.map((sign) => sign.shoulder))).toEqual(new Set([-1, 1]));
 
     const exclusions = createRoadSignExclusionPoints();
-    expect(exclusions).toHaveLength(14);
+    expect(exclusions).toHaveLength((GRAND_MONUMENTS.length - 1) * 2);
     expect(exclusions.every((point) => point.radius === ROAD_SIGN_PROP_CLEARANCE)).toBe(true);
     expect(exclusions.map(({ x, z }) => ({ x, z }))).toEqual(
       first.map(({ x, z }) => ({ x, z })),
@@ -121,14 +122,15 @@ describe('canonical road-sign layout', () => {
     expect(createRoadSignDescriptors(cloned)).toEqual(createRoadSignDescriptors());
   });
 
-  it('reuses the seven canonical bearings and replaces the active outer slot with BTC', () => {
+  it('reuses canonical bearings and replaces the active outer slot with BTC', () => {
     const btc = createMarketRoadSignDescriptors('BTC');
     const eth = createMarketRoadSignDescriptors('ETH');
-    expect(btc).toHaveLength(7);
-    expect(eth).toHaveLength(7);
+    const roadCount = GRAND_MONUMENTS.length - 1;
+    expect(btc).toHaveLength(roadCount);
+    expect(eth).toHaveLength(roadCount);
     expect(eth.map((sign) => sign.bearing)).toEqual(btc.map((sign) => sign.bearing));
     expect(eth.map((sign) => sign.destination.symbol).sort()).toEqual(
-      ['AVAX', 'BNB', 'BTC', 'DOGE', 'LINK', 'SOL', 'XRP'],
+      GRAND_MONUMENTS.map(({ symbol }) => symbol).filter((symbol) => symbol !== 'ETH').sort(),
     );
     expect(eth.every((sign) => sign.destination.symbol !== 'ETH')).toBe(true);
   });
@@ -167,21 +169,22 @@ describe('canonical road-sign layout', () => {
 });
 
 describe('WayfindingSystem presentation', () => {
-  it('rebuilds seven bounded-world signs when the active market changes', () => {
+  it('rebuilds every bounded-world descriptor when the active market changes', () => {
     const parent = new THREE.Group();
     const system = new WayfindingSystem({ parent, activeMarket: 'BTC' });
-    expect(system.descriptors).toHaveLength(7);
+    const roadCount = GRAND_MONUMENTS.length - 1;
+    expect(system.descriptors).toHaveLength(roadCount);
     expect(system.descriptors.some((sign) => sign.destination.symbol === 'BTC')).toBe(false);
 
     system.setActiveMarket('SOL');
-    expect(system.descriptors).toHaveLength(7);
+    expect(system.descriptors).toHaveLength(roadCount);
     expect(system.descriptors.filter((sign) => sign.destination.symbol === 'BTC')).toHaveLength(1);
     expect(system.descriptors.some((sign) => sign.destination.symbol === 'SOL')).toBe(false);
-    expect(system.root.children).toHaveLength(7);
+    expect(system.root.children).toHaveLength(roadCount);
     system.dispose();
   });
 
-  it('builds fourteen low, fixed, double-sided one-destination signs', () => {
+  it('builds low, fixed, double-sided one-destination signs', () => {
     const parent = new THREE.Group();
     const system = new WayfindingSystem({
       parent,
@@ -199,12 +202,13 @@ describe('WayfindingSystem presentation', () => {
     });
 
     expect(parent.children).toContain(system.root);
-    expect(system.descriptors).toHaveLength(14);
-    expect(signs).toHaveLength(14);
+    const signCount = (GRAND_MONUMENTS.length - 1) * 2;
+    expect(system.descriptors).toHaveLength(signCount);
+    expect(signs).toHaveLength(signCount);
     expect(signs.every((sign) => sign.position.y === 4.25)).toBe(true);
-    expect(boards).toHaveLength(14);
-    expect(labels).toHaveLength(28);
-    expect(caps).toHaveLength(28);
+    expect(boards).toHaveLength(signCount);
+    expect(labels).toHaveLength(signCount * 2);
+    expect(caps).toHaveLength(signCount * 2);
     expect(new Set(boards.map((board) => board.geometry)).size).toBe(1);
     expect(new Set(boards.map((board) => board.material)).size).toBeLessThanOrEqual(4);
     expect(labels.every((label) => label.position.y < 2.2)).toBe(true);

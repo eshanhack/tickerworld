@@ -10,6 +10,7 @@ import {
 } from '../../shared/src/index.js';
 import type { GameSystem } from '../types';
 import { resolveAnimalAppearance } from '../player/animalAppearance';
+import { animalMotionProfile } from '../player/animalProfiles';
 import {
   clipSpeech,
   interpolateRemotePose,
@@ -114,6 +115,15 @@ export interface RemoteAvatarSystemOptions {
   readonly interpolationDelayMs?: number;
   readonly cullDistance?: number;
   readonly localPosition?: () => Readonly<THREE.Vector3>;
+  /**
+   * Opts the local player into the same camera-facing, chart-aware nameplate
+   * treatment as remote players. The label remains hidden until a username is
+   * saved, so anonymous play keeps the original clean silhouette.
+   */
+  readonly localNameplate?: {
+    readonly animal: () => AnimalKind;
+    readonly username?: string | null;
+  };
   readonly viewport?: () => RemoteAvatarViewport;
   readonly occlusionBounds?: () => readonly ScreenBounds[];
   readonly now?: () => number;
@@ -226,6 +236,9 @@ export class RemoteAvatarSystem implements GameSystem {
   private readonly slotByActor = new Map<string, RemoteSlot>();
   private readonly blocked = new Set<string>();
   private readonly pendingSpeech = new Map<string, { text: string; expiresAt: number }>();
+  private readonly localNameplate?: Text;
+  private readonly localAnimal?: () => AnimalKind;
+  private localUsername: string | null = null;
   private readonly material = new THREE.MeshStandardMaterial({
     color: 0xffffff,
     roughness: 0.84,
@@ -320,8 +333,25 @@ export class RemoteAvatarSystem implements GameSystem {
       });
       this.hideMatrices(index);
     }
+    if (options.localNameplate) {
+      this.localAnimal = options.localNameplate.animal;
+      this.localUsername = options.localNameplate.username?.trim() || null;
+      const nameplate = new Text();
+      nameplate.name = 'local-player-nameplate';
+      configureLabel(nameplate, options.fontUrl, false);
+      this.localNameplate = nameplate;
+      this.root.add(nameplate);
+      this.renderLocalUsername();
+    }
     this.flushMatrices();
     options.parent.add(this.root);
+  }
+
+  /** Updates the local label immediately; networking is deliberately optional. */
+  setLocalUsername(username: string | null): void {
+    if (!this.localNameplate || this.disposed) return;
+    this.localUsername = username?.trim() || null;
+    this.renderLocalUsername();
   }
 
   setPlayers(players: readonly NetPlayerState[], receivedAt = this.now()): void {
@@ -418,13 +448,16 @@ export class RemoteAvatarSystem implements GameSystem {
         this.hideMatrices(slot.index);
         continue;
       }
-      slot.gaitPhase += Math.max(0, deltaSeconds) * (2.4 + Math.min(8, pose.speed) * 1.18);
+      slot.gaitPhase += Math.max(0, deltaSeconds)
+        * (2.4 + Math.min(8, pose.speed) * 1.18)
+        * animalMotionProfile(slot.animal).gaitScale;
       this.writeAvatar(slot, pose, occlusions);
       if (slot.speechExpiresAt <= now && slot.speech.text) {
         slot.speech.text = '';
         this.syncText(slot.speech);
       }
     }
+    this.writeLocalNameplate(occlusions);
     this.flushMatrices();
   }
 
@@ -437,6 +470,7 @@ export class RemoteAvatarSystem implements GameSystem {
   setLabelsVisible(visible: boolean): void {
     this.labelsVisible = visible;
     if (visible) return;
+    if (this.localNameplate) this.localNameplate.visible = false;
     for (const slot of this.slots) {
       slot.nameplate.visible = false;
       slot.speech.visible = false;
@@ -451,7 +485,7 @@ export class RemoteAvatarSystem implements GameSystem {
       drawCalls: this.allPools.length,
       geometries: new Set(this.allPools.map((pool) => pool.geometry)).size,
       materials: 1,
-      labels: this.slots.length * 2,
+      labels: this.slots.length * 2 + (this.localNameplate ? 1 : 0),
     };
   }
 
@@ -465,6 +499,8 @@ export class RemoteAvatarSystem implements GameSystem {
       slot.speech.removeFromParent();
       slot.samples.length = 0;
     }
+    this.localNameplate?.dispose();
+    this.localNameplate?.removeFromParent();
     const geometries = new Set(this.allPools.map((pool) => pool.geometry));
     for (const geometry of geometries) geometry.dispose();
     this.material.dispose();
@@ -535,11 +571,35 @@ export class RemoteAvatarSystem implements GameSystem {
     this.syncText(slot.nameplate);
   }
 
+  private renderLocalUsername(): void {
+    const nameplate = this.localNameplate;
+    if (!nameplate) return;
+    nameplate.text = this.localUsername ?? '';
+    nameplate.visible = Boolean(this.localUsername) && this.visible && this.labelsVisible;
+    this.syncText(nameplate);
+  }
+
+  private writeLocalNameplate(occlusions: readonly ScreenBounds[]): void {
+    const nameplate = this.localNameplate;
+    if (!nameplate || !this.localUsername || !this.labelsVisible) {
+      if (nameplate) nameplate.visible = false;
+      return;
+    }
+    const local = this.localPosition();
+    const animal = this.localAnimal?.() ?? 'fox';
+    const profile = ANIMAL_PROFILES[validAnimal(animal)];
+    const proportionalHeight = profile.height * (animalMotionProfile(animal).modelScale / 0.9);
+    nameplate.visible = true;
+    nameplate.position.set(local.x, local.y + proportionalHeight + 0.28, local.z);
+    nameplate.quaternion.copy(this.camera.quaternion);
+    this.setTextOpacity(nameplate, this.labelOpacity(nameplate.position, 2.6, occlusions));
+  }
+
   private writeAvatar(slot: RemoteSlot, pose: RemotePose, occlusions: readonly ScreenBounds[]): void {
     const profile = ANIMAL_PROFILES[slot.animal];
     this.position.set(pose.x, pose.y, pose.z);
     this.quaternion.setFromAxisAngle(THREE.Object3D.DEFAULT_UP, pose.yaw);
-    this.scale.setScalar(0.92);
+    this.scale.setScalar(animalMotionProfile(slot.animal).modelScale);
     this.rootMatrix.compose(this.position, this.quaternion, this.scale);
     const bob = pose.grounded ? Math.sin(slot.gaitPhase * 2) * Math.min(0.06, pose.speed * 0.009) : 0.07;
     const movement = Math.min(1, pose.speed / 7.15);
@@ -563,7 +623,9 @@ export class RemoteAvatarSystem implements GameSystem {
       this.crest.mesh.setMatrixAt(slot.index, this.localMatrix);
     }
 
-    const labelY = pose.y + profile.height + 0.28;
+    const labelY = pose.y
+      + profile.height * (animalMotionProfile(slot.animal).modelScale / 0.9)
+      + 0.28;
     slot.nameplate.position.set(pose.x, labelY, pose.z);
     slot.nameplate.quaternion.copy(this.camera.quaternion);
     slot.speech.position.set(pose.x, labelY + 0.42, pose.z);

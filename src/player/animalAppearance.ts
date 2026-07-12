@@ -91,6 +91,7 @@ export const PREMIUM_SKIN_ANIMAL: Readonly<Record<PremiumSkinId, AnimalKind>> = 
   'alpine-frog': 'frog',
 };
 
+/** Legacy palettes remain typed so old room/profile payloads can be decoded. */
 const PREMIUM_PALETTES: Readonly<Record<PremiumSkinId, AnimalAppearancePalette>> = {
   'sunrise-fox': {
     primary: 0xe9865f,
@@ -166,7 +167,15 @@ export function resolveAnimalAppearance(
   return {
     animal,
     skin,
-    palette: skin === 'base' ? BASE_ANIMAL_PALETTES[animal] : PREMIUM_PALETTES[skin],
-    premium: skin !== 'base',
+    // Color charms were removed from the playable wardrobe. We still retain
+    // and round-trip a valid legacy skin id during protocol-version overlap,
+    // but every creature renders in its canonical species palette and never
+    // receives the old crest/charm geometry.
+    palette: BASE_ANIMAL_PALETTES[animal],
+    premium: false,
   };
 }
+
+// Keep the legacy table referenced in production builds so protocol skew can
+// be diagnosed without reintroducing those looks into the wardrobe.
+void PREMIUM_PALETTES;

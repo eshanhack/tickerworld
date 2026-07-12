@@ -385,8 +385,9 @@ describe('RoomClientSystem identity transitions', () => {
       instrument: 'BTC', candles: [], candle: null, price: 64_000,
       upstreamAt: 1, publishedAt: 2, ageMs: 1, stale: false,
     } as const;
-    const mids = Array.from({ length: 9 }, (_, index) => ({
-      instrument: 'BTC' as const,
+    const instruments = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'BNB', 'LINK', 'AVAX', 'WTI', 'TEST'] as const;
+    const mids = instruments.map((instrument, index) => ({
+      instrument,
       price: 64_000 + index,
       upstreamAt: 1,
     }));
@@ -394,7 +395,7 @@ describe('RoomClientSystem identity transitions', () => {
     firstRoom.emit(SERVER_MESSAGES.marketMids, mids);
     expect(order).toEqual(['mids', 'market']);
     expect(onMarket).toHaveBeenCalledWith(state);
-    expect(onMids).toHaveBeenCalledWith(mids.slice(0, 8));
+    expect(onMids).toHaveBeenCalledWith(mids.slice(0, 9));
 
     await system.switchMarket('eth');
     firstRoom.emit(SERVER_MESSAGES.market, { ...state, price: 1 });

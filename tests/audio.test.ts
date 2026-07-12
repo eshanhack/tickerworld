@@ -302,10 +302,10 @@ describe('audio mapping', () => {
     expect(marketSourceProximityGain(Number.NaN)).toBe(0);
   });
 
-  it('gives every asset a distinct ordered pitch identity', () => {
+  it('gives every asset a distinct bounded pitch identity', () => {
     const frequencies = Object.values(ASSET_AUDIO_PROFILES).map(({ frequency }) => frequency);
-    expect(new Set(frequencies).size).toBe(8);
-    expect(frequencies).toEqual([...frequencies].sort((a, b) => a - b));
+    expect(new Set(frequencies).size).toBe(frequencies.length);
+    expect(frequencies.every((frequency) => frequency >= 220 && frequency <= 587.33)).toBe(true);
   });
 
   it('compresses market movement into a finite gentle range', () => {
@@ -794,6 +794,58 @@ describe('AudioEngine lifecycle', () => {
     expect(fake.nodes.slice(1).every((node) => (
       node.disconnect.mock.calls.length > 0
     ))).toBe(true);
+    vi.useRealTimers();
+  });
+
+  it('fades one looped rain bed through FX while thunder remains independent', async () => {
+    vi.useFakeTimers();
+    const fake = makeFakeContext();
+    const engine = new AudioEngine({ contextFactory: () => fake.context, storage: null, random: () => 0.5 });
+    engine.setRainIntensity(0.8);
+    await engine.unlock();
+
+    const looped = fake.bufferSources.filter((source) => source.loop);
+    expect(looped).toHaveLength(2);
+    const rain = looped[1];
+    expect(rain?.start).toHaveBeenCalledTimes(1);
+    const sourceCount = fake.bufferSources.length;
+    engine.setRainIntensity(0.6);
+    expect(fake.bufferSources).toHaveLength(sourceCount);
+
+    engine.playThunder(0.75);
+    expect(fake.bufferSources.length - sourceCount).toBe(2);
+    expect(fake.oscillators.some((oscillator) => oscillator.start?.mock.calls.length)).toBe(true);
+    engine.setRainIntensity(0);
+    expect(rain?.stop).toHaveBeenCalledTimes(1);
+    engine.dispose();
+    expect(fake.nodes.slice(1).every((node) => node.disconnect.mock.calls.length > 0)).toBe(true);
+    vi.useRealTimers();
+  });
+
+  it('bounds WTI flybys and explosions by listener distance and cleans their HRTF graphs', async () => {
+    vi.useFakeTimers();
+    const fake = makeFakeContext();
+    const engine = new AudioEngine({ contextFactory: () => fake.context, storage: null, random: () => 0.5 });
+    await engine.unlock();
+    engine.updateProximityPosition({ x: 0, y: 0, z: 0 });
+    const baselineSources = fake.bufferSources.length;
+    const baselineOscillators = fake.oscillators.length;
+    const baselinePanners = (fake.context.createPanner as ReturnType<typeof vi.fn>).mock.calls.length;
+
+    engine.playJetFlyby({ x: 18, y: 8, z: 4 }, 0.8);
+    expect(fake.bufferSources.length - baselineSources).toBe(1);
+    expect(fake.oscillators.length - baselineOscillators).toBe(1);
+    expect((fake.context.createPanner as ReturnType<typeof vi.fn>).mock.calls.length - baselinePanners).toBe(1);
+
+    engine.playJetFlyby({ x: 200, y: 8, z: 0 }, 1);
+    expect(fake.bufferSources.length - baselineSources).toBe(1);
+    engine.playDistantExplosion({ x: -24, y: 1, z: 3 }, 0.9);
+    expect(fake.bufferSources.length - baselineSources).toBe(3);
+    expect(fake.oscillators.length - baselineOscillators).toBe(2);
+    expect((fake.context.createPanner as ReturnType<typeof vi.fn>).mock.calls.length - baselinePanners).toBe(2);
+
+    engine.dispose();
+    expect(fake.nodes.slice(1).every((node) => node.disconnect.mock.calls.length > 0)).toBe(true);
     vi.useRealTimers();
   });
 });

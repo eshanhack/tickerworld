@@ -48,7 +48,7 @@ function fakeBrowser(pathname = '/') {
 }
 
 describe('market route resolution', () => {
-  it('resolves all eight canonical market slugs', () => {
+  it('resolves every canonical market slug', () => {
     for (const slug of MARKET_SLUGS) {
       expect(resolveMarketRoute(`/${slug}`)).toMatchObject({
         kind: 'market',
@@ -87,7 +87,7 @@ describe('market route resolution', () => {
       title: "PEPE isn't open yet",
     });
     if (route.kind !== 'chooser') return;
-    expect(route.choices).toHaveLength(8);
+    expect(route.choices).toHaveLength(MARKET_SLUGS.length);
     expect(route.choices.map(({ path }) => path)).toEqual(MARKET_SLUGS.map((slug) => `/${slug}`));
   });
 });

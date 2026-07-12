@@ -25,6 +25,7 @@ export function marketSourceProximityGain(distance: number): number {
 
 export const ASSET_AUDIO_PROFILES: Readonly<Record<AssetSymbol, AssetAudioProfile>> = {
   BTC: { frequency: 220, accent: 0 },
+  WTI: { frequency: 233.08, accent: -8 },
   ETH: { frequency: 246.94, accent: -4 },
   SOL: { frequency: 277.18, accent: 3 },
   XRP: { frequency: 293.66, accent: -7 },
@@ -32,6 +33,7 @@ export const ASSET_AUDIO_PROFILES: Readonly<Record<AssetSymbol, AssetAudioProfil
   BNB: { frequency: 369.99, accent: -2 },
   LINK: { frequency: 440, accent: 4 },
   AVAX: { frequency: 493.88, accent: -5 },
+  TEST: { frequency: 523.25, accent: 9 },
 };
 
 /**

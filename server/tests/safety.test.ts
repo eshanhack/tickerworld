@@ -1,4 +1,4 @@
-import { normalizeYaw } from '@tickerworld/shared';
+import { MARKET_SLUGS, normalizeYaw } from '@tickerworld/shared';
 import { createServer } from 'node:http';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { installTrustedPeerCapture } from '../src/app.js';
@@ -164,21 +164,21 @@ describe('launch safety controls', () => {
     expect(admissions.reserve('anon_a', 'ip_a', 'btc', 1_006)).toBeTruthy();
   });
 
-  it('reserves eight rooms for other markets even when one market is hot', () => {
+  it('reserves a room for every other market even when BTC is hot', () => {
     const admissions = new AdmissionControl({
       maxProcessConnections: 400,
-      maxRooms: 16,
+      maxRooms: 18,
       maxMarketShards: 8,
       maxConcurrentConnectionsPerIp: 20,
       actorJoinsPerMinute: 12,
       ipJoinsPerMinute: 30,
     });
     for (let index = 0; index < 8; index += 1) admissions.registerRoom(`btc-${index}`, 'btc');
-    for (const market of ['eth', 'sol', 'xrp', 'doge', 'bnb', 'link', 'avax'] as const) {
+    for (const market of MARKET_SLUGS.filter((market) => market !== 'btc')) {
       admissions.registerRoom(`${market}-0`, market);
     }
     admissions.registerRoom('eth-1', 'eth');
-    expect(admissions.snapshot().rooms).toBe(16);
+    expect(admissions.snapshot().rooms).toBe(18);
     expect(() => admissions.registerRoom('sol-1', 'sol')).toThrowError('process_capacity');
   });
 
@@ -218,7 +218,7 @@ describe('launch safety controls', () => {
     expect(config.databaseSsl).toBe('verify-full');
     expect(config.limits).toMatchObject({
       maxProcessConnections: 400,
-      maxRooms: 16,
+      maxRooms: 18,
       maxMarketShards: 8,
     });
     expect(() => loadConfig({

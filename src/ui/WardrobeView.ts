@@ -36,17 +36,6 @@ const BASE_LOOKS: Readonly<Record<AnimalKind, Omit<WardrobeEntry, 'animal' | 'sk
   axolotl: { sigil: 'AX', primary: '#d99aa8', secondary: '#f5ced5' },
 };
 
-const COLOR_LOOKS: readonly WardrobeEntry[] = [
-  { animal: 'fox', skin: 'sunrise-fox', label: 'Sunrise Fox', sigil: 'SUN', primary: '#e9865f', secondary: '#ffe9bd' },
-  { animal: 'penguin', skin: 'bluebell-penguin', label: 'Bluebell Penguin', sigil: 'BLU', primary: '#647ea4', secondary: '#e7e9f1' },
-  { animal: 'frog', skin: 'alpine-frog', label: 'Alpine Frog', sigil: 'ALP', primary: '#6fa78b', secondary: '#dcebc4' },
-  { animal: 'duck', skin: 'golden-duck', label: 'Golden Duck', sigil: 'GLD', primary: '#e9be4f', secondary: '#ffedaa' },
-  { animal: 'bear', skin: 'honey-bear', label: 'Honey Bear', sigil: 'HNY', primary: '#b98854', secondary: '#f0d4a3' },
-  { animal: 'rabbit', skin: 'amethyst-rabbit', label: 'Amethyst Rabbit', sigil: 'AME', primary: '#9c83be', secondary: '#eadff4' },
-  { animal: 'cat', skin: 'tide-cat', label: 'Tide Cat', sigil: 'TIDE', primary: '#6d9da8', secondary: '#dce9df' },
-  { animal: 'axolotl', skin: 'aurora-axolotl', label: 'Aurora Axolotl', sigil: 'AUR', primary: '#8ecbc4', secondary: '#e5f0d6' },
-] as const;
-
 export function baseWardrobeEntries(): readonly WardrobeEntry[] {
   return ANIMAL_KINDS.map((animal) => ({
     animal,
@@ -57,11 +46,13 @@ export function baseWardrobeEntries(): readonly WardrobeEntry[] {
 }
 
 export function colorWardrobeEntries(): readonly WardrobeEntry[] {
-  return COLOR_LOOKS;
+  // Kept as a compatibility export for callers compiled against the previous
+  // wardrobe API. Color charms are no longer a selectable character layer.
+  return [];
 }
 
 export function freeWardrobeEntries(): readonly WardrobeEntry[] {
-  return [...baseWardrobeEntries(), ...colorWardrobeEntries()];
+  return baseWardrobeEntries();
 }
 
 export function normalizeWardrobeUsername(value: string): string | null {
@@ -114,7 +105,7 @@ export class WardrobeView {
     title.id = 'wardrobe-title';
     title.textContent = 'Make this wanderer yours';
     const copy = document.createElement('p');
-    copy.textContent = 'Choose any creature, color charm, and display name. Every look is ready to use.';
+    copy.textContent = 'Choose a creature with its own size, movement, jumps, and personality.';
 
     const nameForm = document.createElement('form');
     nameForm.className = 'wardrobe-name-form';
@@ -150,8 +141,7 @@ export class WardrobeView {
     nameForm.append(nameLabel, this.nameInput, saveName, clearName, this.nameStatus);
 
     const baseSection = this.createLookSection('Creatures', baseWardrobeEntries(), 'Classic');
-    const colorSection = this.createLookSection('Color charms', colorWardrobeEntries(), 'Charm');
-    this.element.append(close, kicker, title, copy, nameForm, baseSection, colorSection);
+    this.element.append(close, kicker, title, copy, nameForm, baseSection);
     parent.append(this.element);
     this.setSelected(this.selectedAnimal, this.selectedSkin);
   }
@@ -161,10 +151,12 @@ export class WardrobeView {
     this.element.setAttribute('aria-hidden', String(!open));
   }
 
-  public setSelected(animal: AnimalKind, skin: SkinId): void {
+  public setSelected(animal: AnimalKind, _skin: SkinId): void {
     this.selectedAnimal = animal;
-    this.selectedSkin = skin;
-    const selectedKey = appearanceKey(animal, skin);
+    // Old persisted skin ids remain legal protocol values, but the wardrobe
+    // now has one canonical look per species.
+    this.selectedSkin = 'base';
+    const selectedKey = appearanceKey(animal, 'base');
     for (const [key, button] of this.buttons) {
       const selected = key === selectedKey;
       button.classList.toggle('is-selected', selected);

@@ -17,7 +17,7 @@ export interface RoadVector {
   readonly z: number;
 }
 
-/** One of the seven canonical, bidirectional roads radiating from BTC. */
+/** One of the nine canonical, bidirectional roads radiating from BTC. */
 export interface CanonicalRoadDescriptor {
   readonly id: string;
   readonly btc: WayfindingCoordinate;
@@ -103,7 +103,7 @@ function minimumDistanceToChosen(position: RoadVector, chosen: readonly RoadVect
 
 /**
  * Builds the fixed BTC spoke graph. Shoulder choice is deterministic and
- * greedily maximises space between the seven signs clustered around BTC.
+ * greedily maximises space between the nine legacy signs clustered around BTC.
  */
 export function createCanonicalRoadDescriptors(
   monuments: readonly WayfindingCoordinate[] = GRAND_MONUMENTS,
@@ -180,7 +180,7 @@ function directedSign(
   };
 }
 
-/** Creates seven outbound BTC signs and seven return-to-BTC signs. */
+/** Creates nine outbound and nine return-to-BTC legacy sign descriptors. */
 export function createRoadSignDescriptors(
   monuments: readonly WayfindingCoordinate[] = GRAND_MONUMENTS,
 ): readonly RoadSignDescriptor[] {
@@ -213,7 +213,7 @@ export function createRoadSignDescriptors(
 }
 
 /**
- * Builds the seven signs visible in a bounded market world. The canonical BTC
+ * Builds the nine legacy signs for a bounded ticker world. The canonical BTC
  * spokes keep their bearings; in an outer market's former slot the sign points
  * back to BTC, matching the portal occupying that road.
  */

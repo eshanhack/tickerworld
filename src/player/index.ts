@@ -21,6 +21,8 @@ export {
   resolveAnimalAppearance,
 } from './animalAppearance';
 export type { AnimalAppearancePalette, AnimalAppearanceProfile } from './animalAppearance';
+export { ANIMAL_MOTION_PROFILES, animalMotionProfile } from './animalProfiles';
+export type { AnimalAnimationStyle, AnimalMotionProfile } from './animalProfiles';
 export {
   FOX_LEG_KEYS,
   isFoxLegInContact,

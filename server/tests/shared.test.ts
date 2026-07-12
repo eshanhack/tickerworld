@@ -1,5 +1,6 @@
 import {
   ACCEPTED_PROTOCOL_VERSIONS,
+  MARKET_SLUGS,
   PODIUM_EXCLUSION_RADIUS,
   SPAWN_SLOT_COUNT,
   SPAWN_SLOT_SPACING,
@@ -44,11 +45,11 @@ describe('shared multiplayer contracts', () => {
     expect(isAllowedWorldXZ(inner.x, inner.z)).toBe(true);
   });
 
-  it('maps each market to seven unique portal destinations', () => {
-    for (const market of ['btc', 'eth', 'sol', 'xrp', 'doge', 'bnb', 'link', 'avax'] as const) {
+  it('maps each market to every other unique portal destination', () => {
+    for (const market of MARKET_SLUGS) {
       const routes = createPortalRoutes(market);
-      expect(routes).toHaveLength(7);
-      expect(new Set(routes.map((route) => route.to)).size).toBe(7);
+      expect(routes).toHaveLength(MARKET_SLUGS.length - 1);
+      expect(new Set(routes.map((route) => route.to)).size).toBe(MARKET_SLUGS.length - 1);
       expect(routes.every((route) => Math.abs(Math.hypot(route.x, route.z) - 24) < 0.000001)).toBe(true);
     }
   });

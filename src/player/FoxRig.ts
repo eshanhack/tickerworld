@@ -125,6 +125,19 @@ interface AppearanceMaterials {
   readonly highlight: THREE.MeshStandardMaterial;
 }
 
+interface AnimatedSpeciesPart {
+  readonly object: THREE.Object3D;
+  readonly position: THREE.Vector3;
+  readonly rotation: THREE.Euler;
+  readonly scale: THREE.Vector3;
+}
+
+interface SpeciesVisualRig {
+  readonly animal: Exclude<AnimalKind, 'fox'>;
+  readonly root: THREE.Group;
+  readonly parts: ReadonlyMap<string, AnimatedSpeciesPart>;
+}
+
 export const FOX_RIG_PROPORTIONS = Object.freeze({
   torsoLength: 1.82,
   torsoWidth: 0.82,
@@ -241,6 +254,8 @@ export class FoxRig {
   private readonly tail: TailRig[] = [];
   private readonly materials: RigMaterials;
   private readonly appearanceRoots: THREE.Group[] = [];
+  private readonly foxVisualMeshes: THREE.Mesh[] = [];
+  private speciesVisual: SpeciesVisualRig | null = null;
   private readonly plantBounds = new THREE.Box3();
   private readonly plantFloor = new THREE.Vector3();
   private readonly plantScale = new THREE.Vector3();
@@ -303,6 +318,9 @@ export class FoxRig {
       hindRight: makeRenderedPawState('hindRight'),
     };
     this.buildTail(materials);
+    this.root.traverse((object) => {
+      if (object instanceof THREE.Mesh) this.foxVisualMeshes.push(object);
+    });
   }
 
   public get animal(): AnimalKind {
@@ -326,7 +344,7 @@ export class FoxRig {
     this.currentSkin = appearance.skin;
     this.applyAppearancePalette(appearance);
     this.applyFoxFeatureVisibility(appearance.animal);
-    if (appearance.animal !== 'fox' || appearance.premium) {
+    if (appearance.animal !== 'fox') {
       this.buildAppearanceAttachments(appearance);
     }
   }
@@ -454,6 +472,7 @@ export class FoxRig {
     );
 
     this.animateTail(elapsed, gaitPhase, movementBlend, runBlend, airPose, airBlend, turnLean, motionScale, poseDelta);
+    this.animateSpeciesVisual(elapsed, gaitPhase, movementBlend, runBlend, airPose, airBlend, airProgress, motionScale);
     this.plantGroundedPaws(
       gaitPhase,
       movementBlend,
@@ -535,58 +554,55 @@ export class FoxRig {
   }
 
   private applyFoxFeatureVisibility(animal: AnimalKind): void {
-    const earsVisible = animal === 'fox' || animal === 'cat';
-    const tailVisible = animal === 'fox' || animal === 'cat' || animal === 'axolotl';
-    const muzzleVisible = animal === 'fox' || animal === 'bear' || animal === 'rabbit' || animal === 'cat';
-    const leftEar = this.root.getObjectByName('FoxEarLeft');
-    const rightEar = this.root.getObjectByName('FoxEarRight');
+    const foxVisible = animal === 'fox';
+    for (const mesh of this.foxVisualMeshes) mesh.visible = foxVisible;
     const tailRoot = this.root.getObjectByName('FoxTailJoint1');
-    const muzzle = this.root.getObjectByName('FoxMuzzle');
-    const nose = this.root.getObjectByName('FoxNose');
-    if (leftEar) leftEar.visible = earsVisible;
-    if (rightEar) rightEar.visible = earsVisible;
-    if (tailRoot) tailRoot.visible = tailVisible;
-    if (muzzle) muzzle.visible = muzzleVisible;
-    if (nose) nose.visible = muzzleVisible;
+    if (tailRoot) tailRoot.visible = foxVisible;
   }
 
   private buildAppearanceAttachments(appearance: AnimalAppearanceProfile): void {
     const materials = this.createAppearanceMaterials();
-    const head = this.createAppearanceRoot('Head');
-    const body = this.createAppearanceRoot('Body');
-    const rump = this.createAppearanceRoot('Rump');
-    this.head.add(head);
-    this.chest.add(body);
-    this.pelvis.add(rump);
-    this.appearanceRoots.push(head, body, rump);
+    const root = this.createAppearanceRoot('Species');
+    root.name = `AnimalModel-${appearance.animal}`;
+    this.root.add(root);
+    this.appearanceRoots.push(root);
 
     switch (appearance.animal) {
-      case 'fox':
-        break;
+      case 'fox': break;
       case 'penguin':
-        this.addPenguinFeatures(head, body, materials);
+        this.addPenguinFeatures(root, materials);
         break;
       case 'frog':
-        this.addFrogFeatures(head, materials);
+        this.addFrogFeatures(root, materials);
         break;
       case 'duck':
-        this.addDuckFeatures(head, body, materials);
+        this.addDuckFeatures(root, materials);
         break;
       case 'bear':
-        this.addBearFeatures(head, rump, materials);
+        this.addBearFeatures(root, materials);
         break;
       case 'rabbit':
-        this.addRabbitFeatures(head, rump, materials);
+        this.addRabbitFeatures(root, materials);
         break;
       case 'cat':
-        this.addCatFeatures(head, materials);
+        this.addCatFeatures(root, materials);
         break;
       case 'axolotl':
-        this.addAxolotlFeatures(head, rump, materials);
+        this.addAxolotlFeatures(root, materials);
         break;
     }
-
-    if (appearance.premium) this.addPremiumCrest(head, materials);
+    if (appearance.animal === 'fox') return;
+    const parts = new Map<string, AnimatedSpeciesPart>();
+    root.traverse((object) => {
+      if (!object.name.startsWith('SpeciesMotion')) return;
+      parts.set(object.name, {
+        object,
+        position: object.position.clone(),
+        rotation: object.rotation.clone(),
+        scale: object.scale.clone(),
+      });
+    });
+    this.speciesVisual = { animal: appearance.animal, root, parts };
   }
 
   private createAppearanceRoot(part: string): THREE.Group {
@@ -608,121 +624,186 @@ export class FoxRig {
     };
   }
 
-  private addPenguinFeatures(
-    head: THREE.Group,
-    body: THREE.Group,
-    materials: AppearanceMaterials,
+  private addShape(
+    parent: THREE.Object3D,
+    name: string,
+    material: THREE.Material,
+    scale: readonly [number, number, number],
+    position: readonly [number, number, number],
+  ): THREE.Mesh {
+    const shape = makeEllipsoid(name, material, new THREE.Vector3(...scale), 9);
+    shape.position.set(...position);
+    parent.add(shape);
+    return shape;
+  }
+
+  private addMotionGroup(
+    parent: THREE.Object3D,
+    name: string,
+    position: readonly [number, number, number],
+  ): THREE.Group {
+    const group = new THREE.Group();
+    group.name = `SpeciesMotion${name}`;
+    group.position.set(...position);
+    parent.add(group);
+    return group;
+  }
+
+  private addEyes(
+    parent: THREE.Object3D,
+    material: THREE.Material,
+    x: number,
+    y: number,
+    z: number,
+    scale = 0.045,
   ): void {
-    const cap = makeEllipsoid('PenguinHeadCap', materials.dark, new THREE.Vector3(0.255, 0.19, 0.3), 9);
-    cap.position.set(0, 0.04, 0.025);
-    head.add(cap);
-    const beak = makeEllipsoid('PenguinBeak', materials.accent, new THREE.Vector3(0.13, 0.055, 0.2), 7);
-    beak.position.set(0, -0.035, -0.5);
-    head.add(beak);
     for (const side of [-1, 1] as const) {
-      const flipper = makeEllipsoid(
-        side < 0 ? 'PenguinFlipperLeft' : 'PenguinFlipperRight',
-        materials.dark,
-        new THREE.Vector3(0.08, 0.31, 0.2),
-        8,
+      this.addShape(
+        parent,
+        side < 0 ? 'AnimalEyeLeft' : 'AnimalEyeRight',
+        material,
+        [scale, scale * 1.12, scale * 0.55],
+        [side * x, y, z],
       );
-      flipper.position.set(side * 0.36, -0.01, -0.02);
-      flipper.rotation.z = side * -0.42;
-      body.add(flipper);
     }
   }
 
-  private addFrogFeatures(head: THREE.Group, materials: AppearanceMaterials): void {
+  private addLimb(
+    parent: THREE.Object3D,
+    key: 'FrontLeft' | 'FrontRight' | 'HindLeft' | 'HindRight',
+    material: THREE.Material,
+    pawMaterial: THREE.Material,
+    position: readonly [number, number, number],
+    length: number,
+    radius: number,
+    pawScale: readonly [number, number, number],
+  ): THREE.Group {
+    const limb = this.addMotionGroup(parent, key, position);
+    const leg = makeCapsule(`Animal${key}Leg`, material, radius, Math.max(0.04, length - radius * 2), -length * 0.48);
+    const paw = this.addShape(limb, `Animal${key}Paw`, pawMaterial, pawScale, [0, -length, -pawScale[2] * 0.38]);
+    limb.add(leg);
+    paw.castShadow = true;
+    return limb;
+  }
+
+  private addPenguinFeatures(
+    root: THREE.Group,
+    materials: AppearanceMaterials,
+  ): void {
+    const body = this.addMotionGroup(root, 'Body', [0, 0, 0]);
+    this.addShape(body, 'PenguinBody', materials.dark, [0.48, 0.72, 0.43], [0, 0.86, 0.03]);
+    this.addShape(body, 'PenguinBelly', materials.secondary, [0.31, 0.52, 0.12], [0, 0.82, -0.39]);
+    const head = this.addMotionGroup(root, 'Head', [0, 0, 0]);
+    this.addShape(head, 'PenguinHeadCap', materials.dark, [0.4, 0.39, 0.38], [0, 1.52, -0.08]);
+    this.addShape(head, 'PenguinFace', materials.secondary, [0.27, 0.25, 0.09], [0, 1.48, -0.42]);
+    this.addEyes(head, materials.dark, 0.14, 1.57, -0.5, 0.038);
+    this.addShape(head, 'PenguinBeak', materials.accent, [0.14, 0.065, 0.2], [0, 1.43, -0.54]);
     for (const side of [-1, 1] as const) {
-      const eyeBulb = makeEllipsoid(
-        side < 0 ? 'FrogEyeBulbLeft' : 'FrogEyeBulbRight',
-        materials.secondary,
-        new THREE.Vector3(0.115, 0.115, 0.105),
-        8,
-      );
-      eyeBulb.position.set(side * 0.17, 0.19, -0.15);
-      const pupil = makeEllipsoid(
-        side < 0 ? 'FrogPupilLeft' : 'FrogPupilRight',
-        materials.dark,
-        new THREE.Vector3(0.045, 0.055, 0.028),
-        7,
-      );
-      pupil.position.set(side * 0.17, 0.2, -0.245);
-      head.add(eyeBulb, pupil);
+      const flipper = this.addMotionGroup(root, side < 0 ? 'WingLeft' : 'WingRight', [side * 0.42, 1.08, 0]);
+      const mesh = this.addShape(flipper, side < 0 ? 'PenguinFlipperLeft' : 'PenguinFlipperRight', materials.dark, [0.1, 0.42, 0.2], [side * 0.08, -0.18, 0]);
+      mesh.rotation.z = side * -0.28;
     }
+    this.addLimb(root, 'HindLeft', materials.accent, materials.accent, [-0.2, 0.38, 0], 0.28, 0.055, [0.16, 0.055, 0.2]);
+    this.addLimb(root, 'HindRight', materials.accent, materials.accent, [0.2, 0.38, 0], 0.28, 0.055, [0.16, 0.055, 0.2]);
+  }
+
+  private addFrogFeatures(root: THREE.Group, materials: AppearanceMaterials): void {
+    const body = this.addMotionGroup(root, 'Body', [0, 0, 0]);
+    this.addShape(body, 'FrogBody', materials.primary, [0.55, 0.3, 0.6], [0, 0.48, 0.12]);
+    this.addShape(body, 'FrogBelly', materials.secondary, [0.36, 0.15, 0.32], [0, 0.4, -0.43]);
+    const head = this.addMotionGroup(root, 'Head', [0, 0, 0]);
+    this.addShape(head, 'FrogHead', materials.primary, [0.5, 0.31, 0.42], [0, 0.75, -0.37]);
+    for (const side of [-1, 1] as const) {
+      this.addShape(head, side < 0 ? 'FrogEyeBulbLeft' : 'FrogEyeBulbRight', materials.secondary, [0.14, 0.14, 0.13], [side * 0.25, 1.02, -0.5]);
+      this.addShape(head, side < 0 ? 'FrogPupilLeft' : 'FrogPupilRight', materials.dark, [0.055, 0.065, 0.03], [side * 0.25, 1.04, -0.62]);
+    }
+    this.addLimb(root, 'FrontLeft', materials.primary, materials.secondary, [-0.36, 0.5, -0.35], 0.32, 0.07, [0.18, 0.045, 0.2]);
+    this.addLimb(root, 'FrontRight', materials.primary, materials.secondary, [0.36, 0.5, -0.35], 0.32, 0.07, [0.18, 0.045, 0.2]);
+    this.addLimb(root, 'HindLeft', materials.primary, materials.secondary, [-0.43, 0.5, 0.3], 0.36, 0.12, [0.28, 0.055, 0.3]);
+    this.addLimb(root, 'HindRight', materials.primary, materials.secondary, [0.43, 0.5, 0.3], 0.36, 0.12, [0.28, 0.055, 0.3]);
   }
 
   private addDuckFeatures(
-    head: THREE.Group,
-    body: THREE.Group,
+    root: THREE.Group,
     materials: AppearanceMaterials,
   ): void {
-    const bill = makeEllipsoid('DuckBill', materials.accent, new THREE.Vector3(0.2, 0.055, 0.23), 7);
-    bill.position.set(0, -0.05, -0.5);
-    head.add(bill);
+    const body = this.addMotionGroup(root, 'Body', [0, 0, 0]);
+    this.addShape(body, 'DuckBody', materials.primary, [0.48, 0.44, 0.6], [0, 0.78, 0.08]);
+    this.addShape(body, 'DuckChest', materials.secondary, [0.3, 0.34, 0.12], [0, 0.75, -0.5]);
+    const head = this.addMotionGroup(root, 'Head', [0, 0, 0]);
+    this.addShape(head, 'DuckHead', materials.primary, [0.35, 0.36, 0.34], [0, 1.32, -0.34]);
+    this.addEyes(head, materials.dark, 0.14, 1.4, -0.65, 0.04);
+    this.addShape(head, 'DuckBill', materials.accent, [0.27, 0.075, 0.27], [0, 1.27, -0.71]);
     for (const side of [-1, 1] as const) {
-      const wing = makeEllipsoid(
-        side < 0 ? 'DuckWingLeft' : 'DuckWingRight',
-        materials.highlight,
-        new THREE.Vector3(0.075, 0.25, 0.31),
-        8,
-      );
-      wing.position.set(side * 0.36, -0.02, 0.02);
-      wing.rotation.z = side * -0.22;
-      body.add(wing);
+      const wing = this.addMotionGroup(root, side < 0 ? 'WingLeft' : 'WingRight', [side * 0.42, 0.9, 0.02]);
+      this.addShape(wing, side < 0 ? 'DuckWingLeft' : 'DuckWingRight', materials.highlight, [0.12, 0.3, 0.4], [side * 0.04, -0.08, 0.04]);
     }
+    this.addLimb(root, 'HindLeft', materials.accent, materials.accent, [-0.19, 0.39, 0], 0.28, 0.05, [0.19, 0.045, 0.25]);
+    this.addLimb(root, 'HindRight', materials.accent, materials.accent, [0.19, 0.39, 0], 0.28, 0.05, [0.19, 0.045, 0.25]);
   }
 
   private addBearFeatures(
-    head: THREE.Group,
-    body: THREE.Group,
+    root: THREE.Group,
     materials: AppearanceMaterials,
   ): void {
+    const body = this.addMotionGroup(root, 'Body', [0, 0, 0]);
+    this.addShape(body, 'BearBody', materials.primary, [0.58, 0.64, 0.66], [0, 0.82, 0.1]);
+    this.addShape(body, 'BearBelly', materials.secondary, [0.34, 0.4, 0.13], [0, 0.72, -0.56]);
+    const head = this.addMotionGroup(root, 'Head', [0, 0, 0]);
+    this.addShape(head, 'BearHead', materials.primary, [0.48, 0.45, 0.44], [0, 1.42, -0.42]);
+    this.addShape(head, 'BearMuzzle', materials.secondary, [0.26, 0.18, 0.2], [0, 1.31, -0.78]);
+    this.addShape(head, 'BearNose', materials.dark, [0.08, 0.06, 0.055], [0, 1.36, -0.96]);
+    this.addEyes(head, materials.dark, 0.19, 1.5, -0.8, 0.042);
     for (const side of [-1, 1] as const) {
-      const ear = makeEllipsoid(
-        side < 0 ? 'BearEarLeft' : 'BearEarRight',
-        materials.primary,
-        new THREE.Vector3(0.13, 0.13, 0.085),
-        8,
-      );
-      ear.position.set(side * 0.19, 0.18, -0.015);
-      head.add(ear);
+      this.addShape(head, side < 0 ? 'BearEarLeft' : 'BearEarRight', materials.primary, [0.15, 0.15, 0.1], [side * 0.31, 1.74, -0.38]);
     }
-    const tail = makeEllipsoid('BearTail', materials.secondary, new THREE.Vector3(0.14, 0.14, 0.14), 8);
-    tail.position.set(0, 0.04, 0.47);
-    body.add(tail);
+    this.addLimb(root, 'FrontLeft', materials.primary, materials.dark, [-0.39, 0.79, -0.4], 0.62, 0.11, [0.16, 0.085, 0.2]);
+    this.addLimb(root, 'FrontRight', materials.primary, materials.dark, [0.39, 0.79, -0.4], 0.62, 0.11, [0.16, 0.085, 0.2]);
+    this.addLimb(root, 'HindLeft', materials.primary, materials.dark, [-0.4, 0.76, 0.45], 0.58, 0.13, [0.18, 0.09, 0.23]);
+    this.addLimb(root, 'HindRight', materials.primary, materials.dark, [0.4, 0.76, 0.45], 0.58, 0.13, [0.18, 0.09, 0.23]);
+    const tail = this.addMotionGroup(root, 'Tail', [0, 0.9, 0.7]);
+    this.addShape(tail, 'BearTail', materials.secondary, [0.16, 0.16, 0.16], [0, 0, 0]);
   }
 
   private addRabbitFeatures(
-    head: THREE.Group,
-    body: THREE.Group,
+    root: THREE.Group,
     materials: AppearanceMaterials,
   ): void {
+    const body = this.addMotionGroup(root, 'Body', [0, 0, 0]);
+    this.addShape(body, 'RabbitBody', materials.primary, [0.42, 0.5, 0.55], [0, 0.72, 0.08]);
+    this.addShape(body, 'RabbitHaunches', materials.primary, [0.5, 0.44, 0.48], [0, 0.58, 0.46]);
+    const head = this.addMotionGroup(root, 'Head', [0, 0, 0]);
+    this.addShape(head, 'RabbitHead', materials.primary, [0.36, 0.36, 0.38], [0, 1.22, -0.38]);
+    this.addShape(head, 'RabbitMuzzle', materials.secondary, [0.22, 0.14, 0.17], [0, 1.12, -0.71]);
+    this.addEyes(head, materials.dark, 0.15, 1.31, -0.71, 0.045);
     for (const side of [-1, 1] as const) {
-      const ear = makeEllipsoid(
-        side < 0 ? 'RabbitEarLeft' : 'RabbitEarRight',
-        materials.primary,
-        new THREE.Vector3(0.105, 0.34, 0.08),
-        8,
-      );
-      ear.position.set(side * 0.13, 0.38, 0.02);
-      ear.rotation.z = side * -0.08;
-      const inner = makeEllipsoid(
-        side < 0 ? 'RabbitInnerEarLeft' : 'RabbitInnerEarRight',
-        materials.accent,
-        new THREE.Vector3(0.045, 0.24, 0.035),
-        7,
-      );
-      inner.position.set(side * 0.13, 0.38, -0.075);
-      inner.rotation.z = side * -0.08;
-      head.add(ear, inner);
+      const ear = this.addMotionGroup(root, side < 0 ? 'EarLeft' : 'EarRight', [side * 0.17, 1.48, -0.36]);
+      const outer = this.addShape(ear, side < 0 ? 'RabbitEarLeft' : 'RabbitEarRight', materials.primary, [0.12, 0.48, 0.09], [0, 0.38, 0]);
+      outer.rotation.z = side * -0.08;
+      this.addShape(ear, side < 0 ? 'RabbitInnerEarLeft' : 'RabbitInnerEarRight', materials.accent, [0.052, 0.34, 0.04], [0, 0.38, -0.08]).rotation.z = side * -0.08;
     }
-    const tail = makeEllipsoid('RabbitTail', materials.secondary, new THREE.Vector3(0.17, 0.17, 0.17), 8);
-    tail.position.set(0, 0.02, 0.5);
-    body.add(tail);
+    this.addLimb(root, 'FrontLeft', materials.primary, materials.secondary, [-0.28, 0.63, -0.32], 0.48, 0.07, [0.12, 0.06, 0.22]);
+    this.addLimb(root, 'FrontRight', materials.primary, materials.secondary, [0.28, 0.63, -0.32], 0.48, 0.07, [0.12, 0.06, 0.22]);
+    this.addLimb(root, 'HindLeft', materials.primary, materials.secondary, [-0.35, 0.56, 0.4], 0.38, 0.12, [0.19, 0.075, 0.34]);
+    this.addLimb(root, 'HindRight', materials.primary, materials.secondary, [0.35, 0.56, 0.4], 0.38, 0.12, [0.19, 0.075, 0.34]);
+    const tail = this.addMotionGroup(root, 'Tail', [0, 0.72, 0.66]);
+    this.addShape(tail, 'RabbitTail', materials.secondary, [0.2, 0.2, 0.2], [0, 0, 0]);
   }
 
-  private addCatFeatures(head: THREE.Group, materials: AppearanceMaterials): void {
+  private addCatFeatures(root: THREE.Group, materials: AppearanceMaterials): void {
+    const body = this.addMotionGroup(root, 'Body', [0, 0, 0]);
+    this.addShape(body, 'CatBody', materials.primary, [0.4, 0.36, 0.72], [0, 0.8, 0.08]);
+    this.addShape(body, 'CatChest', materials.secondary, [0.22, 0.26, 0.11], [0, 0.78, -0.62]);
+    const head = this.addMotionGroup(root, 'Head', [0, 0, 0]);
+    this.addShape(head, 'CatHead', materials.primary, [0.35, 0.34, 0.36], [0, 1.23, -0.61]);
+    this.addShape(head, 'CatMuzzle', materials.secondary, [0.22, 0.13, 0.15], [0, 1.13, -0.93]);
+    this.addEyes(head, materials.dark, 0.15, 1.31, -0.92, 0.045);
+    for (const side of [-1, 1] as const) {
+      const ear = shadows(new THREE.Mesh(new THREE.ConeGeometry(0.16, 0.34, 5), materials.primary));
+      ear.name = side < 0 ? 'CatEarLeft' : 'CatEarRight';
+      ear.position.set(side * 0.22, 1.56, -0.6);
+      head.add(ear);
+    }
     for (const side of [-1, 1] as const) {
       for (let index = -1; index <= 1; index += 1) {
         const whisker = shadows(new THREE.Mesh(
@@ -730,19 +811,33 @@ export class FoxRig {
           materials.dark,
         ));
         whisker.name = `${side < 0 ? 'CatWhiskerLeft' : 'CatWhiskerRight'}${index + 2}`;
-        whisker.position.set(side * 0.24, -0.05 + index * 0.045, -0.46);
+        whisker.position.set(side * 0.25, 1.14 + index * 0.045, -0.95);
         whisker.rotation.z = Math.PI * 0.5;
         whisker.rotation.x = index * 0.12;
         head.add(whisker);
       }
     }
+    this.addLimb(root, 'FrontLeft', materials.primary, materials.secondary, [-0.3, 0.68, -0.47], 0.53, 0.065, [0.11, 0.055, 0.18]);
+    this.addLimb(root, 'FrontRight', materials.primary, materials.secondary, [0.3, 0.68, -0.47], 0.53, 0.065, [0.11, 0.055, 0.18]);
+    this.addLimb(root, 'HindLeft', materials.primary, materials.secondary, [-0.3, 0.68, 0.5], 0.53, 0.075, [0.12, 0.06, 0.2]);
+    this.addLimb(root, 'HindRight', materials.primary, materials.secondary, [0.3, 0.68, 0.5], 0.53, 0.075, [0.12, 0.06, 0.2]);
+    const tail = this.addMotionGroup(root, 'Tail', [0, 0.88, 0.7]);
+    const tailMesh = makeCapsule('CatTail', materials.primary, 0.075, 0.78, 0.42);
+    tailMesh.rotation.x = Math.PI * 0.48;
+    tailMesh.rotation.z = -0.25;
+    tail.add(tailMesh);
   }
 
   private addAxolotlFeatures(
-    head: THREE.Group,
-    body: THREE.Group,
+    root: THREE.Group,
     materials: AppearanceMaterials,
   ): void {
+    const body = this.addMotionGroup(root, 'Body', [0, 0, 0]);
+    this.addShape(body, 'AxolotlBody', materials.primary, [0.38, 0.25, 0.78], [0, 0.45, 0.08]);
+    this.addShape(body, 'AxolotlBelly', materials.secondary, [0.26, 0.1, 0.48], [0, 0.35, -0.36]);
+    const head = this.addMotionGroup(root, 'Head', [0, 0, 0]);
+    this.addShape(head, 'AxolotlHead', materials.primary, [0.48, 0.3, 0.4], [0, 0.62, -0.62]);
+    this.addEyes(head, materials.dark, 0.21, 0.72, -0.98, 0.04);
     for (const side of [-1, 1] as const) {
       for (let index = -1; index <= 1; index += 1) {
         const gill = makeCapsule(
@@ -752,22 +847,159 @@ export class FoxRig {
           0.16,
           0,
         );
-        gill.position.set(side * (0.28 + Math.abs(index) * 0.025), 0.06 + index * 0.105, -0.02);
+        gill.position.set(side * (0.47 + Math.abs(index) * 0.025), 0.65 + index * 0.15, -0.6);
         gill.rotation.z = side * (-Math.PI * 0.5 + index * 0.18);
         head.add(gill);
       }
     }
-    const fin = makeEllipsoid('AxolotlTailFin', materials.highlight, new THREE.Vector3(0.055, 0.19, 0.3), 8);
-    fin.position.set(0, 0.05, 0.45);
-    body.add(fin);
+    this.addLimb(root, 'FrontLeft', materials.primary, materials.secondary, [-0.3, 0.38, -0.36], 0.25, 0.045, [0.12, 0.035, 0.15]);
+    this.addLimb(root, 'FrontRight', materials.primary, materials.secondary, [0.3, 0.38, -0.36], 0.25, 0.045, [0.12, 0.035, 0.15]);
+    this.addLimb(root, 'HindLeft', materials.primary, materials.secondary, [-0.3, 0.38, 0.38], 0.25, 0.045, [0.12, 0.035, 0.15]);
+    this.addLimb(root, 'HindRight', materials.primary, materials.secondary, [0.3, 0.38, 0.38], 0.25, 0.045, [0.12, 0.035, 0.15]);
+    const tail = this.addMotionGroup(root, 'Tail', [0, 0.47, 0.75]);
+    const fin = this.addShape(tail, 'AxolotlTailFin', materials.highlight, [0.09, 0.27, 0.58], [0, 0, 0.36]);
+    fin.rotation.x = 0.16;
   }
 
-  private addPremiumCrest(head: THREE.Group, materials: AppearanceMaterials): void {
-    const crest = shadows(new THREE.Mesh(new THREE.ConeGeometry(0.075, 0.18, 5), materials.highlight));
-    crest.name = 'PremiumAnimalCrest';
-    crest.position.set(0, 0.35, 0.02);
-    crest.rotation.z = Math.PI;
-    head.add(crest);
+  private animateSpeciesVisual(
+    elapsed: number,
+    gaitPhase: number,
+    movementBlend: number,
+    runBlend: number,
+    airPose: FoxAirPose,
+    airBlend: number,
+    airProgress: number,
+    motionScale: number,
+  ): void {
+    const visual = this.speciesVisual;
+    if (!visual) return;
+    for (const part of visual.parts.values()) {
+      part.object.position.copy(part.position);
+      part.object.rotation.copy(part.rotation);
+      part.object.scale.copy(part.scale);
+    }
+    const part = (name: string): THREE.Object3D | undefined => visual.parts.get(`SpeciesMotion${name}`)?.object;
+    const phase = gaitPhase;
+    const stride = Math.sin(phase) * movementBlend * motionScale;
+    const opposite = Math.sin(phase + Math.PI) * movementBlend * motionScale;
+    const pulse = Math.abs(Math.sin(phase)) * movementBlend * motionScale;
+    const doubleKick = airPose === 'double' ? Math.sin(airProgress * Math.PI) * motionScale : 0;
+    const riseShape = airPose === 'rise' || airPose === 'apex' ? airBlend * motionScale : 0;
+    const fallShape = airPose === 'fall' ? airBlend * motionScale : 0;
+    const body = part('Body');
+    const head = part('Head');
+    const frontLeft = part('FrontLeft');
+    const frontRight = part('FrontRight');
+    const hindLeft = part('HindLeft');
+    const hindRight = part('HindRight');
+    const wingLeft = part('WingLeft');
+    const wingRight = part('WingRight');
+    const earLeft = part('EarLeft');
+    const earRight = part('EarRight');
+    const tail = part('Tail');
+
+    switch (visual.animal) {
+      case 'penguin': {
+        if (body) body.rotation.z += stride * 0.13;
+        if (head) head.rotation.z -= stride * 0.055;
+        if (hindLeft) hindLeft.rotation.x += stride * 0.42;
+        if (hindRight) hindRight.rotation.x += opposite * 0.42;
+        if (hindLeft) hindLeft.rotation.x -= riseShape * 0.42;
+        if (hindRight) hindRight.rotation.x -= riseShape * 0.42;
+        const flap = (airBlend * (0.75 + doubleKick * 0.65) + pulse * 0.16);
+        if (wingLeft) wingLeft.rotation.z += flap;
+        if (wingRight) wingRight.rotation.z -= flap;
+        visual.root.position.y = pulse * 0.035;
+        break;
+      }
+      case 'frog': {
+        const spring = (0.5 + 0.5 * Math.cos(phase * 2)) * movementBlend;
+        visual.root.position.y = spring * 0.12 * motionScale;
+        if (body) body.scale.y *= 1 - spring * 0.09 * motionScale;
+        if (frontLeft) frontLeft.rotation.x += stride * 0.3 - doubleKick * 0.5 + fallShape * 0.45;
+        if (frontRight) frontRight.rotation.x += opposite * 0.3 - doubleKick * 0.5 + fallShape * 0.45;
+        if (hindLeft) hindLeft.rotation.x += -0.35 + spring * 0.9 + doubleKick * 1.15 - riseShape * 0.9;
+        if (hindRight) hindRight.rotation.x += -0.35 + spring * 0.9 + doubleKick * 1.15 - riseShape * 0.9;
+        if (body) body.rotation.x -= riseShape * 0.12;
+        break;
+      }
+      case 'duck': {
+        if (body) body.rotation.z += stride * 0.11;
+        if (head) head.rotation.z -= stride * 0.045;
+        if (hindLeft) hindLeft.rotation.x += stride * 0.5;
+        if (hindRight) hindRight.rotation.x += opposite * 0.5;
+        if (hindLeft) hindLeft.rotation.x -= riseShape * 0.55;
+        if (hindRight) hindRight.rotation.x -= riseShape * 0.55;
+        const flap = airBlend * (0.7 + Math.sin(elapsed * 18) * 0.35) + doubleKick * 0.55;
+        if (wingLeft) wingLeft.rotation.z += flap;
+        if (wingRight) wingRight.rotation.z -= flap;
+        visual.root.position.y = pulse * 0.04;
+        break;
+      }
+      case 'bear': {
+        const heavy = Math.sin(phase * 2) * movementBlend;
+        visual.root.position.y = Math.abs(heavy) * 0.025 * motionScale;
+        if (body) body.rotation.z += stride * 0.035;
+        if (frontLeft) frontLeft.rotation.x += stride * 0.38;
+        if (frontRight) frontRight.rotation.x += opposite * 0.38;
+        if (hindLeft) hindLeft.rotation.x += opposite * 0.3;
+        if (hindRight) hindRight.rotation.x += stride * 0.3;
+        if (frontLeft) frontLeft.rotation.x += riseShape * 0.38;
+        if (frontRight) frontRight.rotation.x += riseShape * 0.38;
+        if (hindLeft) hindLeft.rotation.x -= riseShape * 0.42;
+        if (hindRight) hindRight.rotation.x -= riseShape * 0.42;
+        if (body) body.rotation.x += riseShape * 0.08 - fallShape * 0.06;
+        if (tail) tail.rotation.y += Math.sin(elapsed * 1.8) * 0.08;
+        break;
+      }
+      case 'rabbit': {
+        const bound = (0.5 + 0.5 * Math.sin(phase * 2)) * movementBlend;
+        visual.root.position.y = bound * (0.08 + runBlend * 0.08) * motionScale;
+        if (frontLeft) frontLeft.rotation.x += -bound * 0.55 - doubleKick * 0.55 + riseShape * 0.55;
+        if (frontRight) frontRight.rotation.x += -bound * 0.55 - doubleKick * 0.55 + riseShape * 0.55;
+        if (hindLeft) hindLeft.rotation.x += bound * 0.95 + doubleKick * 1.1 - riseShape * 0.85;
+        if (hindRight) hindRight.rotation.x += bound * 0.95 + doubleKick * 1.1 - riseShape * 0.85;
+        const earBounce = Math.sin(phase * 2 + 0.7) * movementBlend * 0.12 - airBlend * 0.13;
+        if (earLeft) earLeft.rotation.x += earBounce;
+        if (earRight) earRight.rotation.x += earBounce * 0.9;
+        if (tail) tail.scale.setScalar(1 + bound * 0.08);
+        break;
+      }
+      case 'cat': {
+        visual.root.position.y = pulse * 0.025;
+        if (body) body.rotation.z += stride * 0.028;
+        if (head) head.rotation.z -= stride * 0.025;
+        if (frontLeft) frontLeft.rotation.x += stride * 0.5;
+        if (frontRight) frontRight.rotation.x += opposite * 0.5;
+        if (hindLeft) hindLeft.rotation.x += opposite * 0.48;
+        if (hindRight) hindRight.rotation.x += stride * 0.48;
+        if (frontLeft) frontLeft.rotation.x += riseShape * 0.48;
+        if (frontRight) frontRight.rotation.x += riseShape * 0.48;
+        if (hindLeft) hindLeft.rotation.x -= riseShape * 0.6;
+        if (hindRight) hindRight.rotation.x -= riseShape * 0.6;
+        if (body) body.rotation.x += riseShape * 0.1 - fallShape * 0.12;
+        if (tail) {
+          tail.rotation.y += Math.sin(elapsed * 1.9 + phase * 0.2) * 0.42 + doubleKick * 0.35;
+          tail.rotation.z += Math.sin(elapsed * 1.2) * 0.12;
+        }
+        break;
+      }
+      case 'axolotl': {
+        const swim = Math.sin(phase * 1.25) * movementBlend;
+        if (body) body.rotation.y += swim * 0.08;
+        if (head) head.rotation.y -= swim * 0.05;
+        visual.root.position.y = pulse * 0.03;
+        for (const limb of [frontLeft, frontRight, hindLeft, hindRight]) {
+          if (limb) {
+            limb.rotation.z += (limb === frontLeft || limb === hindRight ? stride : opposite) * 0.4;
+            limb.rotation.x += airBlend * 0.48;
+          }
+        }
+        if (body) body.rotation.x -= riseShape * 0.09;
+        if (tail) tail.rotation.y += Math.sin(elapsed * 3.2 + phase) * (0.28 + movementBlend * 0.22) + doubleKick * 0.7;
+        break;
+      }
+    }
   }
 
   private disposeAppearanceRoots(): void {
@@ -780,6 +1012,7 @@ export class FoxRig {
       });
     }
     this.appearanceRoots.length = 0;
+    this.speciesVisual = null;
     geometries.forEach((geometry) => geometry.dispose());
   }
 

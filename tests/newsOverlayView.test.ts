@@ -32,6 +32,24 @@ describe('draggable news overlay geometry', () => {
     expect(clampNewsOverlayPosition({ x: 900, y: 900 }, bounds)).toEqual({ x: 477, y: 189 });
   });
 
+  it('keeps dragged cards above the reserved footer and touch-control zone', () => {
+    expect(clampNewsOverlayPosition({ x: 900, y: 900 }, {
+      viewportWidth: 1_280,
+      viewportHeight: 720,
+      cardWidth: 360,
+      cardHeight: 250,
+      insets: { top: 12, right: 12, bottom: 88, left: 12 },
+    })).toEqual({ x: 900, y: 382 });
+
+    expect(clampNewsOverlayPosition({ x: 900, y: 900 }, {
+      viewportWidth: 390,
+      viewportHeight: 844,
+      cardWidth: 320,
+      cardHeight: 250,
+      insets: { top: 12, right: 12, bottom: 200, left: 12 },
+    })).toEqual({ x: 58, y: 394 });
+  });
+
   it('connects the candle to the nearest card edge with a finite SVG curve', () => {
     const path = createNewsConnectorPath(
       { x: 100, y: 220 },

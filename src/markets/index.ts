@@ -28,6 +28,7 @@ export {
   hashString,
   mulberry32,
   stepSimulation,
+  stepTestSimulation,
 } from './simulator';
 export { MarketCelebrationGate } from './marketCelebration';
 export type { MarketCelebrationEvent, MarketCelebrationTier } from './marketCelebration';

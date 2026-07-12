@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { jpegDimensions } from '../scripts/smoke-helpers.mjs';
+import { imageDimensions, jpegDimensions, pngDimensions } from '../scripts/smoke-helpers.mjs';
 
 describe('production smoke helpers', () => {
   it('reads JPEG SOF dimensions and rejects non-images', () => {
@@ -13,5 +13,16 @@ describe('production smoke helpers', () => {
     ]);
     expect(jpegDimensions(card)).toEqual({ width: 1200, height: 630 });
     expect(jpegDimensions(new TextEncoder().encode('<html>fallback</html>'))).toBeNull();
+  });
+
+  it('reads PNG IHDR dimensions through the generic image helper', () => {
+    const card = new Uint8Array(24);
+    card.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    card.set([0x49, 0x48, 0x44, 0x52], 12);
+    const view = new DataView(card.buffer);
+    view.setUint32(16, 1200, false);
+    view.setUint32(20, 630, false);
+    expect(pngDimensions(card)).toEqual({ width: 1200, height: 630 });
+    expect(imageDimensions(card)).toEqual({ width: 1200, height: 630 });
   });
 });

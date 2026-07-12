@@ -1,8 +1,79 @@
 import { describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three';
-import { stormWindowForCycle, WorldSystem } from '../src/world';
+import {
+  DEFAULT_DAY_DURATION_SECONDS,
+  stormWindowForCycle,
+  WorldSystem,
+} from '../src/world';
 
 describe('WorldSystem lamp ambience', () => {
+  it('uses a relaxed eighteen-minute session clock by default', () => {
+    expect(DEFAULT_DAY_DURATION_SECONDS).toBe(18 * 60);
+    const scene = new THREE.Scene();
+    const world = new WorldSystem(scene, { activeRadius: 0, loadBudgetPerUpdate: 1 });
+    world.update({ x: 0, z: 0 }, 0);
+    expect(world.minutesSinceMidnight).toBe(12 * 60);
+    world.update({ x: 0, z: 0 }, DEFAULT_DAY_DURATION_SECONDS / 2);
+    expect(world.minutesSinceMidnight).toBe(0);
+    expect(world.nightFactor).toBeGreaterThan(0.99);
+    world.update({ x: 0, z: 0 }, DEFAULT_DAY_DURATION_SECONDS);
+    expect(world.minutesSinceMidnight).toBe(12 * 60);
+    expect(world.nightFactor).toBe(0);
+    world.dispose();
+  });
+
+  it('pools dense grass and shrubs, bends only nearby instances, and reports traversal', () => {
+    const scene = new THREE.Scene();
+    const onVegetationInteraction = vi.fn();
+    const world = new WorldSystem(scene, {
+      seed: 'interactive-foliage-test',
+      loadBudgetPerUpdate: 25,
+      unloadBudgetPerUpdate: 25,
+      onVegetationInteraction,
+    });
+    world.update({ x: 0, z: 0 }, 0);
+    const stats = world.getDebugStats();
+    expect(stats.grassInstances).toBeGreaterThan(150);
+    expect(stats.shrubInstances).toBeGreaterThan(20);
+    expect(stats.sharedPropDrawCalls).toBeLessThanOrEqual(9);
+
+    const internal = world as unknown as {
+      vegetationGrid: Map<string, Array<{
+        kind: 'grass' | 'shrub';
+        poolName: 'flowers' | 'bushes';
+        index: number;
+        x: number;
+        z: number;
+      }>>;
+      pools: Record<'flowers' | 'bushes', { mesh: THREE.InstancedMesh }>;
+    };
+    const instance = [...internal.vegetationGrid.values()].flat()[0];
+    expect(instance).toBeDefined();
+    if (!instance) return;
+    const pool = internal.pools[instance.poolName].mesh;
+    const before = new THREE.Matrix4();
+    const after = new THREE.Matrix4();
+    pool.getMatrixAt(instance.index, before);
+
+    world.update({ x: instance.x + 2.8, z: instance.z }, 1);
+    onVegetationInteraction.mockClear();
+    world.update({ x: instance.x, z: instance.z }, 1.1);
+    pool.getMatrixAt(instance.index, after);
+    expect(after.equals(before)).toBe(false);
+    expect(world.getDebugStats().bendingVegetation).toBeGreaterThan(0);
+    expect(world.sampleVegetation(instance.x, instance.z)).toMatchObject({
+      kind: instance.kind,
+      intensity: 1,
+    });
+    expect(onVegetationInteraction).toHaveBeenCalledTimes(1);
+    expect(onVegetationInteraction.mock.calls[0]?.[0]).toMatchObject({
+      kind: instance.kind,
+      x: instance.x,
+      z: instance.z,
+    });
+    world.dispose();
+  });
+
   it('uses only bounded real lights and motes without additive ground planes', () => {
     const scene = new THREE.Scene();
     const world = new WorldSystem(scene, {

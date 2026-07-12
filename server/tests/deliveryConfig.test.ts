@@ -38,7 +38,7 @@ describe('delivery configuration', () => {
     expect((packageJson.scripts as Record<string, string>).build)
       .toContain('node scripts/verify-release-assets.mjs');
     const rewrites = vercel.rewrites as Array<Record<string, unknown>>;
-    for (const slug of ['btc', 'eth', 'sol', 'xrp', 'doge', 'bnb', 'link', 'avax']) {
+    for (const slug of ['btc', 'eth', 'sol', 'xrp', 'doge', 'bnb', 'link', 'avax', 'wti', 'test']) {
       expect(rewrites).toContainEqual({ source: `/${slug}`, destination: `/${slug}.html` });
     }
     expect(rewrites.at(-1)).toEqual({ source: '/(.*)', destination: '/index.html' });

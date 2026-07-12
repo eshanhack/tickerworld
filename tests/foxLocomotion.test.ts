@@ -208,7 +208,7 @@ describe('fox locomotion acceptance', () => {
     expect(firstGlidePose).toBe('glide');
   });
 
-  it('uses an articulated double-jump kick without rotating the root through a full flip', () => {
+  it('restores a full, smooth fox flip around the articulated double-jump kick', () => {
     const { fox } = createPlayer();
     const deltaSeconds = 1 / 120;
     const actions: string[] = [];
@@ -221,24 +221,21 @@ describe('fox locomotion acceptance', () => {
     for (let frame = 0; frame < 5; frame += 1) updatePlayer(fox, deltaSeconds);
     fox.requestJump();
 
-    const model = fox.group.getObjectByName('FoxModel');
-    expect(model).toBeInstanceOf(THREE.Group);
-    let previousPitch = model!.rotation.x;
-    let unwrappedPitch = previousPitch;
-    let minimumPitch = unwrappedPitch;
-    let maximumPitch = unwrappedPitch;
+    const aerialPivot = fox.group.getObjectByName('AnimalAerialPivot');
+    expect(aerialPivot).toBeInstanceOf(THREE.Group);
+    let minimumPitch = aerialPivot!.rotation.x;
+    let maximumPitch = aerialPivot!.rotation.x;
 
     for (let frame = 0; frame < 150; frame += 1) {
       updatePlayer(fox, deltaSeconds, (event) => actions.push(event.type));
-      const pitch = model!.rotation.x;
-      unwrappedPitch += Math.atan2(Math.sin(pitch - previousPitch), Math.cos(pitch - previousPitch));
-      previousPitch = pitch;
-      minimumPitch = Math.min(minimumPitch, unwrappedPitch);
-      maximumPitch = Math.max(maximumPitch, unwrappedPitch);
+      const pitch = aerialPivot!.rotation.x;
+      minimumPitch = Math.min(minimumPitch, pitch);
+      maximumPitch = Math.max(maximumPitch, pitch);
     }
 
     expect(actions.filter((action) => action.includes('jump'))).toEqual(['jump', 'double-jump']);
-    expect(maximumPitch - minimumPitch).toBeLessThan(Math.PI);
+    expect(maximumPitch - minimumPitch).toBeGreaterThan(Math.PI * 1.8);
+    expect(Math.abs(aerialPivot!.rotation.x)).toBeLessThan(0.001);
   });
 
   it('passes through landing recovery and settles into a clean grounded state', () => {

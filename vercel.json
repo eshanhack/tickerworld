@@ -45,6 +45,8 @@
     { "source": "/bnb", "destination": "/bnb.html" },
     { "source": "/link", "destination": "/link.html" },
     { "source": "/avax", "destination": "/avax.html" },
+    { "source": "/wti", "destination": "/wti.html" },
+    { "source": "/test", "destination": "/test.html" },
     { "source": "/admin", "destination": "/admin.html" },
     { "source": "/privacy", "destination": "/privacy/index.html" },
     { "source": "/terms", "destination": "/terms/index.html" },

@@ -10,6 +10,8 @@ export const MARKET_SLUGS = [
   'bnb',
   'link',
   'avax',
+  'wti',
+  'test',
 ] as const;
 
 export type MarketSlug = (typeof MARKET_SLUGS)[number];
@@ -54,6 +56,8 @@ const SYMBOL_BY_SLUG: Readonly<Record<MarketSlug, AssetSymbol>> = {
   bnb: 'BNB',
   link: 'LINK',
   avax: 'AVAX',
+  wti: 'WTI',
+  test: 'TEST',
 };
 
 const MARKET_CHOICES: readonly MarketChoice[] = MARKET_SLUGS.map((slug) => {
@@ -158,7 +162,7 @@ export function resolveMarketRoute(
     requestedPath,
     reason: 'unknown',
     title: readableName ? `${readableName.toUpperCase()} isn't open yet` : 'Choose a market',
-    message: 'Pick one of Tickerworld\'s eight live market worlds to keep exploring.',
+    message: 'Pick a live market world, or enter TEST to explore the volatility demo.',
     choices: MARKET_CHOICES,
   };
 }

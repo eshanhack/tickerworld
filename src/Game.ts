@@ -64,7 +64,7 @@ import {
   type QualityTier,
   type UiInteractionOwner,
 } from './ui';
-import { WorldGuard, WorldSystem } from './world';
+import { OilWorldEffects, WorldGuard, WorldSystem } from './world';
 
 const COMPASS_KEY = 'tickerworld:v1:compass';
 const QUALITY_KEY = 'tickerworld:v1:quality';
@@ -124,6 +124,7 @@ export class Game {
   private readonly monuments: MonumentSystem;
   private readonly audio = new AudioEngine();
   private readonly fireworks: FireworkPool;
+  private readonly oilEffects: OilWorldEffects;
   private readonly celebrationGate = new MarketCelebrationGate();
   private readonly worldGuard = new WorldGuard();
   private readonly uiInteractionLock = new UiInteractionLock();
@@ -242,12 +243,24 @@ export class Game {
       loadBudgetPerUpdate: this.qualityTier === 'low' ? 1 : 3,
       unloadBudgetPerUpdate: this.qualityTier === 'low' ? 2 : 4,
       onThunder: (intensity) => this.audio.playThunder(intensity),
+      onVegetationInteraction: (event) => this.audio.playVegetationRustle({
+        kind: event.kind,
+        intensity: Math.min(1, event.intensity * (0.55 + event.speed * 0.08)),
+      }),
     });
     this.fireworks = new FireworkPool({
       capacity: launchQuality.fireworkCapacity,
       reducedMotion: this.reducedMotion,
     });
     this.scene.add(this.fireworks.points);
+    this.oilEffects = new OilWorldEffects({
+      parent: this.scene,
+      heightAt: (x, z) => this.world.heightAt(x, z),
+      reducedMotion: this.reducedMotion,
+      onJetFlyby: (position, intensity) => this.audio.playJetFlyby(position, intensity),
+      onExplosion: (position, intensity) => this.audio.playDistantExplosion(position, intensity),
+    });
+    this.oilEffects.setActiveMarket(this.activeMarket);
 
     const spawnZ = 21;
     this.player = new FoxPlayer({
@@ -368,6 +381,7 @@ export class Game {
         this.cameraRig.setReducedMotion(enabled);
         this.fireworks.setReducedMotion(enabled);
         this.world.setReducedMotion(enabled);
+        this.oilEffects.setReducedMotion(enabled);
         this.emotes?.setReducedMotion(enabled);
         this.portalSystem?.setReducedMotion(enabled);
         safeWrite(REDUCED_MOTION_KEY, String(enabled));
@@ -411,6 +425,10 @@ export class Game {
       camera: this.camera,
       fontUrl: nunitoFontUrl,
       localPosition: () => this.player.position,
+      localNameplate: {
+        animal: () => this.player.animal,
+        username: this.guestAppearance.username,
+      },
       viewport: () => {
         const bounds = this.renderer.domElement.getBoundingClientRect();
         return {
@@ -578,6 +596,7 @@ export class Game {
           audio: this.audio,
           roomClient: this.roomClient,
           fireworks: this.fireworks,
+          oilEffects: this.oilEffects,
           triggerLargeUp: () => this.triggerDebugMarketEvent('up', 'large'),
           triggerExceptionalUp: () => this.triggerDebugMarketEvent('up', 'exceptional'),
           triggerLargeDown: () => this.triggerDebugMarketEvent('down', 'large'),
@@ -587,7 +606,7 @@ export class Game {
       });
     }
     if (LAUNCH_CAPTURE_MODE) {
-      this.cameraRig.setOrbit(0, -0.1, 12.5);
+      this.cameraRig.setOrbit(this.player.headingYaw, -0.1, 12.5);
       void this.enter();
     }
     this.frameHandle = requestAnimationFrame(this.frame);
@@ -698,6 +717,7 @@ export class Game {
             : 'offline',
       );
       this.portalSystem.setActiveMarket(destination);
+      this.oilEffects.setActiveMarket(destination);
 
       this.placeAtSpawn(destination, previousMarket);
       this.refreshAudioSources();
@@ -807,6 +827,7 @@ export class Game {
     this.player.setAnimal(this.guestAppearance.animal, this.guestAppearance.skin);
     this.hud?.setSelectedAppearance(this.guestAppearance.animal, this.guestAppearance.skin);
     this.hud?.setDisplayUsername(this.guestAppearance.username);
+    this.remoteAvatars?.setLocalUsername(this.guestAppearance.username);
     const appearanceKey = this.guestAppearanceSyncKey(this.roomClient.state.market);
     if (this.roomClient.setAppearance(
       this.guestAppearance.animal,
@@ -838,11 +859,13 @@ export class Game {
       this.player.setAnimal(identity.animal, skin);
       this.hud?.setSelectedAppearance(identity.animal, skin);
       this.hud?.setDisplayUsername(identity.username ?? null);
+      this.remoteAvatars?.setLocalUsername(identity.username ?? null);
     } else {
       this.guestAppearance = readGuestAppearance();
       this.player.setAnimal(this.guestAppearance.animal, this.guestAppearance.skin);
       this.hud?.setSelectedAppearance(this.guestAppearance.animal, this.guestAppearance.skin);
       this.hud?.setDisplayUsername(this.guestAppearance.username);
+      this.remoteAvatars?.setLocalUsername(this.guestAppearance.username);
     }
     if (!this.entered) this.placeAtSpawn(this.activeMarket);
   }
@@ -853,6 +876,19 @@ export class Game {
     if (authoritative) {
       this.pendingRoomSpawns.delete(destinationSlug);
       this.applyAuthoritativeSpawn(authoritative);
+      return;
+    }
+    // Direct and solo entries use the clear south approach so the character,
+    // chart, and monument share the first frame without a lamp or portal
+    // occluding the camera. An online room can still replace this immediately
+    // with its authoritative collision-free slot.
+    if (!previousMarket) {
+      const x = 0;
+      const z = -18;
+      const yaw = Math.PI;
+      this.player.setPosition(x, this.groundHeightAt(x, z), z);
+      this.player.setHeadingYaw(yaw);
+      this.cameraRig.setOrbit(yaw, this.cameraRig.pitch, this.cameraRig.zoomDistance);
       return;
     }
     const assignment = allocateSpawnAssignment(
@@ -924,16 +960,23 @@ export class Game {
       this.market.getState(this.activeMarket).mode,
       connectionMode === 'online' ? 'online' : connectionMode === 'connecting' ? 'connecting' : 'offline',
     );
-    for (const definition of GRAND_MONUMENTS) {
-      const marketState = this.market.getState(definition.symbol);
-      const slug = marketSlugForSymbol(definition.symbol);
-      this.portalSystem.setLiveData(definition.symbol, {
-        price: marketState.price,
-        feedMode: marketState.mode,
-        population: state.populations.get(slug)?.online ?? null,
-        connectionMode,
-      });
-    }
+    for (const definition of GRAND_MONUMENTS) this.refreshPortalLiveData(definition.symbol);
+  }
+
+  private refreshPortalLiveData(symbol: AssetSymbol): void {
+    const state = this.market.getState(symbol);
+    const room = this.roomClient.state;
+    const connectionMode = room.connection === 'online'
+      ? 'online'
+      : room.connection === 'connecting' || room.connection === 'reconnecting'
+        ? 'connecting'
+        : 'offline';
+    this.portalSystem.setLiveData(symbol, {
+      price: state.price,
+      feedMode: state.mode,
+      population: room.populations.get(marketSlugForSymbol(symbol))?.online ?? null,
+      connectionMode,
+    });
   }
 
   private prewarmWorld(): void {
@@ -962,6 +1005,8 @@ export class Game {
     if (this.entered && this.player.isGliding) this.hud.recordOnboardingAction('glide');
     this.roomClient.update(delta);
     this.world.update(this.player.position, this.worldElapsed);
+    this.oilEffects.update(delta, this.worldElapsed, this.player.position);
+    this.audio.setRainIntensity(this.world.rainLevel);
     this.portalSystem.setPlayerProbe({
       x: this.player.position.x,
       z: this.player.position.z,
@@ -1007,6 +1052,13 @@ export class Game {
       leg: event.leg,
       intensity: event.intensity,
     });
+    const vegetation = this.world.sampleVegetation(event.position.x, event.position.z);
+    if (vegetation) {
+      this.audio.playVegetationRustle({
+        kind: vegetation.kind,
+        intensity: Math.min(1, vegetation.intensity * (0.45 + event.intensity * 0.5)),
+      });
+    }
   }
 
   private onFoxAction(event: FoxActionEvent): void {
@@ -1023,6 +1075,7 @@ export class Game {
     const previous = this.latestStates.get(state.symbol);
     this.latestStates.set(state.symbol, state);
     this.monuments.updateAsset(state);
+    this.refreshPortalLiveData(state.symbol);
     if (state.symbol === this.activeMarket) {
       if (state.mode === 'live' && state.price !== null) {
         this.telemetry.emitOnce({
@@ -1259,6 +1312,7 @@ export class Game {
       const activeMarketState = this.market.getState(this.activeMarket);
       const audioState = this.audio.state;
       const playerState = this.player.snapshot;
+      const oil = this.oilEffects.getDebugStats();
       this.hud.setDebug([
         `fps ${this.fps.toFixed(1)} · ${this.qualityTier} · dpr ${this.pixelRatio.toFixed(2)}`,
         `draws ${this.renderer.info.render.calls} · tris ${this.estimateTriangles()}`,
@@ -1267,6 +1321,7 @@ export class Game {
         `market ${this.activeMarket} ${activeMarketState.mode} · tick ${activeMarketState.presentationTick} · candles ${activeMarketState.candles.length} · ${this.market.getDebugStatus()}`,
         `room ${this.roomClient.state.connection} · remotes ${this.roomClient.state.remotes.length}${this.roomClient.state.lastError ? ` · ${this.roomClient.state.lastError.slice(0, 72)}` : ''}`,
         `news ${this.newsMode} · posts ${this.activeNewsCount} · fireworks ${this.fireworks.getDebugStats().activeParticles}`,
+        `weather rain ${world.rainIntensity.toFixed(2)} · oil jets ${oil.jets} · blasts ${oil.blasts}`,
         `audio ${audioState.status} · music ${Math.round(audioState.musicVolume * 100)}${audioState.musicMuted ? 'x' : ''} · fx ${Math.round(audioState.sfxVolume * 100)}${audioState.sfxMuted ? 'x' : ''}`,
         `fox ${playerState.grounded ? 'grounded' : this.player.isGliding ? 'gliding' : 'airborne'} · jumps ${playerState.jumpsUsed}/2 · vy ${playerState.verticalSpeed.toFixed(2)}`,
         `pos ${this.player.position.x.toFixed(2)}, ${this.player.position.z.toFixed(2)} · yaw ${this.cameraRig.yaw.toFixed(2)}`,
@@ -1379,6 +1434,7 @@ export class Game {
     this.monuments.dispose();
     this.fireworks.points.removeFromParent();
     this.fireworks.dispose();
+    this.oilEffects.dispose();
     this.portalSystem.dispose();
     this.player.dispose();
     this.cameraRig.dispose();

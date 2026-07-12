@@ -21,10 +21,15 @@ export { rainStateAt, stormWindowForCycle } from './weather';
 export type { RainState, StormWindow, ThunderMoment } from './weather';
 export { TerrainSampler } from './terrain';
 export type { MonumentCoordinate, PondDescriptor, TerrainSamplerOptions } from './terrain';
-export { WorldSystem } from './WorldSystem';
+export { DEFAULT_DAY_DURATION_SECONDS, WorldSystem } from './WorldSystem';
+export { OilWorldEffects } from './OilWorldEffects';
+export type { OilWorldEffectsOptions } from './OilWorldEffects';
 export type {
   DropFlashTier,
   RiseFlashTier,
+  VegetationContact,
+  VegetationInteractionEvent,
+  VegetationKind,
   WorldDebugStats,
   WorldPosition,
   WorldSystemOptions,

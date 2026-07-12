@@ -41,4 +41,6 @@ export type {
   MarketMoveClass,
   TickSoundOptions,
   TradePulseSoundOptions,
+  VegetationSoundKind,
+  VegetationSoundOptions,
 } from './types';

@@ -40,6 +40,7 @@ export interface PortalLabelModel {
   readonly title: string;
   readonly priceText: string;
   readonly populationText: string;
+  readonly marketText: string;
   readonly connectionMode: PortalConnectionMode;
   readonly text: string;
 }
@@ -70,7 +71,7 @@ function asSlotMarket(symbol: AssetSymbol): Exclude<AssetSymbol, 'BTC'> {
 }
 
 /**
- * Maps the original seven BTC spokes onto a bounded single-market world.
+ * Maps the nine canonical BTC spokes onto a bounded single-ticker world.
  * A non-BTC world's own spoke becomes its return route to BTC.
  */
 export function createPortalRoutes(
@@ -104,13 +105,30 @@ export function createPortalLabelModel(
   const connectionMode = live.connectionMode ?? (live.population === null ? 'offline' : 'online');
   const priceText = formatPrice(live.price);
   const populationText = formatPortalPopulation(live.population, connectionMode);
+  const marketText = live.feedMode === 'simulated'
+    ? 'DEMO'
+    : live.feedMode === 'live'
+      ? 'LIVE'
+      : live.feedMode === 'reconnecting'
+        ? 'RECONNECTING'
+        : 'CONNECTING';
+  const occupancyText = connectionMode === 'online'
+    ? live.population === 1
+      ? '1 HERE'
+      : live.population !== null && Number.isFinite(live.population) && live.population >= 0
+        ? `${Math.floor(live.population).toLocaleString('en-US')} HERE`
+        : '— HERE'
+    : connectionMode === 'connecting'
+      ? '… HERE'
+      : '— HERE';
   return {
     destination: route.destination,
     title: route.destination,
     priceText,
     populationText,
+    marketText,
     connectionMode,
-    text: `${route.destination}\n${populationText}`,
+    text: `${route.destination}\n${marketText} · ${occupancyText}`,
   };
 }
 

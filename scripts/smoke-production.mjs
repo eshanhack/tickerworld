@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { jpegDimensions } from './smoke-helpers.mjs';
+import { imageDimensions } from './smoke-helpers.mjs';
+import { socialCardExtension } from './generate-route-shells.mjs';
 
 const MARKETS = [
   ['btc', 'BTC'],
@@ -10,6 +11,8 @@ const MARKETS = [
   ['bnb', 'BNB'],
   ['link', 'LINK'],
   ['avax', 'AVAX'],
+  ['wti', 'WTI'],
+  ['test', 'TEST'],
 ];
 const MARKET_SYMBOLS = new Set(MARKETS.map(([, symbol]) => symbol));
 const TRUST_ROUTES = [
@@ -95,6 +98,7 @@ async function smokeRootAndUnknownRoutes() {
 async function smokeMarketRoutes() {
   const cardHashes = new Map();
   await Promise.all(MARKETS.map(async ([slug, symbol]) => {
+    const extension = socialCardExtension(symbol);
     const path = `/${slug}`;
     const response = await request(clientOrigin, path, path);
     if (response) {
@@ -103,29 +107,37 @@ async function smokeMarketRoutes() {
       const html = await response.text();
       const title = `${symbol} World · Tickerworld`;
       const canonical = `https://tickerworld.io/${slug}`;
-      const image = `https://tickerworld.io/social/${slug}.jpg`;
+      const image = `https://tickerworld.io/social/${slug}.${extension}`;
+      const description = symbol === 'TEST'
+        ? 'A deliberately wild simulated market for testing sounds, fireworks, and live-chart events.'
+        : symbol === 'WTI'
+          ? 'Walk inside the live CL crude-oil perpetual chart with other tiny animals.'
+          : `Walk inside ${symbol}’s live one-minute chart with other tiny animals.`;
+      const status = symbol === 'TEST' ? 'SIMULATED' : 'LIVE';
+      const enterLabel = symbol === 'TEST' ? 'Enter TEST lab' : `Enter ${symbol} world`;
       checkHtmlBasics(html, path, title, canonical);
       for (const expected of [
-        `Walk inside ${symbol}’s live one-minute chart with other tiny animals.`,
+        description,
         `<meta property="og:url" content="${canonical}" />`,
         `<meta property="og:image" content="${image}" />`,
         '<meta property="og:image:width" content="1200" />',
         '<meta property="og:image:height" content="630" />',
         `<meta name="twitter:image" content="${image}" />`,
-        `${symbol} WORLD · LIVE`,
-        `Enter ${symbol} world`,
+        `${symbol} WORLD · ${status}`,
+        enterLabel,
         'No signup · no wallet · sound starts after tap',
       ]) check(html.includes(expected), `${path} is missing ${expected}`);
       check(!/\$[\d,.]+/.test(html), `${path} embeds a cache-prone price`);
     }
 
-    const cardPath = `/social/${slug}.jpg`;
+    const cardPath = `/social/${slug}.${extension}`;
     const card = await request(clientOrigin, cardPath, cardPath);
     if (!card) return;
     check(card.ok, `${cardPath} returned ${card.status}`);
-    check(card.headers.get('content-type')?.includes('image/jpeg') === true, `${cardPath} is not a JPEG`);
+    const expectedMime = extension === 'png' ? 'image/png' : 'image/jpeg';
+    check(card.headers.get('content-type')?.includes(expectedMime) === true, `${cardPath} has the wrong image type`);
     const bytes = await card.arrayBuffer();
-    const dimensions = jpegDimensions(bytes);
+    const dimensions = imageDimensions(bytes);
     check(dimensions?.width === 1200 && dimensions?.height === 630, `${cardPath} is not 1200×630`);
     check(bytes.byteLength >= 20_000, `${cardPath} is unexpectedly small`);
     cardHashes.set(slug, createHash('sha256').update(Buffer.from(bytes)).digest('hex'));

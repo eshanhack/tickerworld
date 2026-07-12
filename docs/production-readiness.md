@@ -39,7 +39,7 @@ read-only and must pass before a public announcement.
 - Configure `VITE_MULTIPLAYER_URL=wss://multiplayer.tickerworld.io` only after the
   server is healthy. Configure `X_BEARER_TOKEN` only as a server-side Vercel
   secret; never use a `VITE_` prefix.
-- Verify all eight direct market routes, `/admin` with its `X-Robots-Tag:
+- Verify all ten direct tickerworld routes, `/admin` with its `X-Robots-Tag:
   noindex`, `/api/news`, and the legacy-domain redirect in a preview deployment
   before promotion. Route-specific launch metadata and legal pages belong to the
   separate viral-launch pass and are not represented as complete here.

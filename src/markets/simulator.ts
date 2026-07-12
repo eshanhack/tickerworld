@@ -9,6 +9,8 @@ export const BASE_PRICES: Record<AssetSymbol, number> = {
   BNB: 725,
   LINK: 18.5,
   AVAX: 24.8,
+  WTI: 74,
+  TEST: 100,
 };
 
 const VOLATILITY: Record<AssetSymbol, number> = {
@@ -20,6 +22,10 @@ const VOLATILITY: Record<AssetSymbol, number> = {
   BNB: 0.0014,
   LINK: 0.002,
   AVAX: 0.0022,
+  WTI: 0.0014,
+  // TEST is intentionally extreme: at the 400 ms presentation cadence it
+  // repeatedly crosses the market-event thresholds for deterministic QA.
+  TEST: 0.018,
 };
 
 export function hashString(value: string): number {
@@ -159,6 +165,79 @@ export function stepSimulation(
     previousPrice: currentPrice,
     price: nextPrice,
     direction: nextPrice > currentPrice ? 'up' : nextPrice < currentPrice ? 'down' : 'flat',
+    mode: 'simulated',
+    updateKind: 'simulation',
+    updatedAt: now,
+    presentationTick: state.presentationTick + 1,
+  };
+}
+
+const TEST_EVENT_RATIOS = [
+  0,
+  0.00016,
+  0.00052,
+  0.00145,
+  0.00002,
+  -0.00018,
+  -0.00058,
+  -0.00155,
+  0,
+  0.00072,
+  0.0017,
+  0.00001,
+  -0.00075,
+  -0.0018,
+  0,
+  0.00012,
+] as const;
+
+/**
+ * TEST deliberately cycles through calm, large, and exceptional moves in both
+ * directions. Calm frames re-arm the shared celebration gate, so QA sessions
+ * repeatedly exercise pulses, fireworks, fanfares, sirens, and sky flashes.
+ */
+export function stepTestSimulation(
+  state: AssetState,
+  now = Date.now(),
+  candleLimit = 30,
+): AssetState {
+  const latest = state.candles.at(-1);
+  if (!latest) return state;
+  const openTime = Math.floor(now / 60_000) * 60_000;
+  let candles = [...state.candles];
+  let active = latest;
+  if (latest.openTime < openTime) {
+    candles[candles.length - 1] = { ...latest, closed: true };
+    active = {
+      openTime,
+      open: state.price ?? latest.close,
+      high: state.price ?? latest.close,
+      low: state.price ?? latest.close,
+      close: state.price ?? latest.close,
+      closed: false,
+    };
+    candles.push(active);
+    candles = candles.slice(-Math.max(1, Math.floor(candleLimit)));
+  }
+
+  const ratio = TEST_EVENT_RATIOS[state.presentationTick % TEST_EVENT_RATIOS.length] ?? 0;
+  const nextPrice = Math.max(0.0000001, active.open * (1 + ratio));
+  const previousPrice = state.price ?? active.close;
+  candles[candles.length - 1] = {
+    ...active,
+    high: Math.max(active.high, nextPrice),
+    low: Math.min(active.low, nextPrice),
+    close: nextPrice,
+    closed: false,
+  };
+  return {
+    ...state,
+    candles,
+    instrument: 'TEST',
+    provider: 'simulation',
+    previousPrice,
+    price: nextPrice,
+    direction: nextPrice > previousPrice ? 'up' : nextPrice < previousPrice ? 'down' : 'flat',
     mode: 'simulated',
     updateKind: 'simulation',
     updatedAt: now,

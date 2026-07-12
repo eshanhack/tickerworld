@@ -1,6 +1,10 @@
 import * as THREE from 'three';
 import type { AnimalKind, SkinId } from '../../shared/src/index.js';
 import type { PlayerSnapshot, SurfaceKind } from '../types';
+import {
+  animalMotionProfile,
+  type AnimalMotionProfile,
+} from './animalProfiles';
 import { FoxRig, type FoxRigDebugSnapshot } from './FoxRig';
 import {
   FOX_LEG_KEYS,
@@ -88,20 +92,14 @@ interface MagicParticle {
 
 const DEFAULT_SURFACE: SurfaceSampler = () => 'grass';
 const NO_HEIGHT: HeightSampler = () => 0;
-const GRAVITY = 25.5;
-const GLIDE_FALL_GRAVITY = 4.35;
-const GLIDE_TERMINAL_SPEED = -3.15;
 const FALL_TERMINAL_SPEED = -18;
 const GLIDE_ENTRY_SECONDS = 0.23;
 const GLIDE_APEX_SPEED = 0.5;
-const JUMP_IMPULSE = 8.65;
-const DOUBLE_JUMP_IMPULSE = 8.05;
 const JUMP_ANTICIPATION_SECONDS = 0.1;
-const DOUBLE_POSE_SECONDS = 0.24;
+const DOUBLE_POSE_SECONDS = 0.46;
 const LAND_RECOVERY_SECONDS = 0.22;
 const COYOTE_SECONDS = 0.11;
 const JUMP_BUFFER_SECONDS = 0.14;
-const MODEL_SCALE = 0.9;
 const WALK_ACCELERATION_RESPONSE = 5.4;
 const SPRINT_ACCELERATION_RESPONSE = 4.7;
 const COAST_RESPONSE = 5;
@@ -136,6 +134,7 @@ export class FoxPlayer {
   private readonly rig = new FoxRig();
   private readonly model = this.rig.root;
   private readonly headingPivot = new THREE.Group();
+  private readonly aerialPivot = new THREE.Group();
   private readonly magicGroup = new THREE.Group();
   private readonly velocity = new THREE.Vector3();
   private readonly movementDirection = new THREE.Vector3();
@@ -168,8 +167,11 @@ export class FoxPlayer {
   private readonly pawSupportVertex = new THREE.Vector3();
   private readonly frameStart = new THREE.Vector3();
   private readonly frameDisplacement = new THREE.Vector3();
-  private readonly walkSpeed: number;
-  private readonly sprintSpeed: number;
+  private readonly walkSpeedOverride: number | undefined;
+  private readonly sprintSpeedOverride: number | undefined;
+  private walkSpeed: number;
+  private sprintSpeed: number;
+  private motionProfile: AnimalMotionProfile;
   private elapsed = 0;
   private gaitPhase = 0;
   private movementBlend = 0;
@@ -203,15 +205,21 @@ export class FoxPlayer {
 
   public constructor(options: FoxPlayerOptions = {}) {
     this.input = options.input ?? new PlayerInputController();
-    this.walkSpeed = options.walkSpeed ?? 4.1;
-    this.sprintSpeed = options.sprintSpeed ?? 7.15;
+    const initialAnimal = options.animal ?? 'fox';
+    this.motionProfile = animalMotionProfile(initialAnimal);
+    this.walkSpeedOverride = options.walkSpeed;
+    this.sprintSpeedOverride = options.sprintSpeed;
+    this.walkSpeed = options.walkSpeed ?? this.motionProfile.walkSpeed;
+    this.sprintSpeed = options.sprintSpeed ?? this.motionProfile.sprintSpeed;
     this.reducedMotion = options.reducedMotion ?? false;
 
     this.group.name = 'FoxPlayer';
     this.headingPivot.name = 'FoxHeadingPivot';
+    this.aerialPivot.name = 'AnimalAerialPivot';
     this.magicGroup.name = 'FoxMagicEffects';
-    this.model.scale.setScalar(MODEL_SCALE);
-    this.headingPivot.add(this.model);
+    this.model.scale.setScalar(this.motionProfile.modelScale);
+    this.aerialPivot.add(this.model);
+    this.headingPivot.add(this.aerialPivot);
     this.group.add(this.headingPivot, this.magicGroup);
     if (options.spawn) this.group.position.copy(options.spawn);
     this.buildMagicPool();
@@ -222,7 +230,7 @@ export class FoxPlayer {
       movementBlend: 0,
       runBlend: 0,
     });
-    this.rig.setAnimal(options.animal ?? 'fox', options.skin ?? 'base');
+    this.rig.setAnimal(initialAnimal, options.skin ?? 'base');
     const renderedPaws = this.rig.getRenderedPawStates();
     for (const leg of FOX_LEG_KEYS) this.previousContacts[leg] = renderedPaws[leg].contact;
   }
@@ -305,6 +313,10 @@ export class FoxPlayer {
   public setAnimal(animal: AnimalKind, skin: SkinId = 'base'): void {
     if (this.disposed) return;
     this.rig.setAnimal(animal, skin);
+    this.motionProfile = animalMotionProfile(this.rig.animal);
+    this.walkSpeed = this.walkSpeedOverride ?? this.motionProfile.walkSpeed;
+    this.sprintSpeed = this.sprintSpeedOverride ?? this.motionProfile.sprintSpeed;
+    this.model.scale.setScalar(this.motionProfile.modelScale);
   }
 
   public setPosition(x: number, y: number, z: number): void {
@@ -325,6 +337,8 @@ export class FoxPlayer {
     this.glideActive = false;
     this.airPose = 'grounded';
     this.airProgress = 1;
+    this.aerialPivot.rotation.set(0, 0, 0);
+    this.aerialPivot.scale.set(1, 1, 1);
     for (const particle of this.magicParticles) particle.mesh.visible = false;
   }
 
@@ -394,10 +408,11 @@ export class FoxPlayer {
       const targetYaw = Math.atan2(-this.movementDirection.x, -this.movementDirection.z);
       turnError = shortestAngle(this.facingYaw, targetYaw);
       const speedRatio = THREE.MathUtils.clamp(this.horizontalSpeed / this.sprintSpeed, 0, 1);
-      const groundedTurn = THREE.MathUtils.lerp(WALK_TURN_RESPONSE, RUN_TURN_RESPONSE, speedRatio);
+      const groundedTurn = THREE.MathUtils.lerp(WALK_TURN_RESPONSE, RUN_TURN_RESPONSE, speedRatio)
+        * this.motionProfile.turnScale;
       const turnResponse = this.grounded
         ? groundedTurn
-        : (this.glideActive ? GLIDE_TURN_RESPONSE : AIR_TURN_RESPONSE);
+        : (this.glideActive ? GLIDE_TURN_RESPONSE : AIR_TURN_RESPONSE) * this.motionProfile.turnScale;
       this.facingYaw += turnError * (1 - Math.exp(-turnResponse * delta));
       this.facingYaw = Math.atan2(Math.sin(this.facingYaw), Math.cos(this.facingYaw));
     }
@@ -415,6 +430,7 @@ export class FoxPlayer {
           ? COAST_RESPONSE
           : accelerating
             ? (sprintRequested ? SPRINT_ACCELERATION_RESPONSE : WALK_ACCELERATION_RESPONSE)
+              * this.motionProfile.accelerationScale
             : 5.8)
       : (hasMoveIntent ? (this.glideActive ? 3.8 : 2.5) : 0.34);
     this.horizontalSpeed = damp(this.horizontalSpeed, desiredSpeed, speedResponse, delta);
@@ -462,6 +478,7 @@ export class FoxPlayer {
 
     this.advanceGait(delta, sprintRequested);
     this.updateAirPose(delta);
+    this.updateDoubleJumpFlourish();
     const groundPose = this.samplePawGround(heightAt, groundY);
     this.rig.updatePose({
       deltaSeconds: delta,
@@ -584,9 +601,9 @@ export class FoxPlayer {
     // Held jump never changes the upward takeoff arc. Glide lift begins only
     // around the apex and affects the descent, preserving a readable leap.
     const gravity = this.glideActive && this.verticalVelocity <= 0
-      ? GLIDE_FALL_GRAVITY
-      : GRAVITY;
-    const terminalSpeed = this.glideActive ? GLIDE_TERMINAL_SPEED : FALL_TERMINAL_SPEED;
+      ? this.motionProfile.glideGravity
+      : this.motionProfile.gravity;
+    const terminalSpeed = this.glideActive ? this.motionProfile.glideTerminalSpeed : FALL_TERMINAL_SPEED;
     this.verticalVelocity = Math.max(terminalSpeed, this.verticalVelocity - gravity * delta);
     this.group.position.y += this.verticalVelocity * delta;
 
@@ -627,7 +644,9 @@ export class FoxPlayer {
     this.airborneTime = 0;
     this.glideActive = false;
     this.jumpsUsed = doubleJump ? 2 : 1;
-    this.verticalVelocity = doubleJump ? DOUBLE_JUMP_IMPULSE : JUMP_IMPULSE;
+    this.verticalVelocity = doubleJump
+      ? this.motionProfile.doubleJumpImpulse
+      : this.motionProfile.jumpImpulse;
     this.doublePoseRemaining = doubleJump ? DOUBLE_POSE_SECONDS : 0;
     this.airPose = doubleJump ? 'double' : 'rise';
     this.airProgress = 0;
@@ -649,7 +668,8 @@ export class FoxPlayer {
       this.sprintSpeed * 0.9,
     );
     this.runBlend = damp(this.runBlend, runTarget, sprinting ? 3.8 : 5, delta);
-    const gaitRadiansPerMetre = THREE.MathUtils.lerp(1.82, 2.08, this.runBlend);
+    const gaitRadiansPerMetre = THREE.MathUtils.lerp(1.82, 2.08, this.runBlend)
+      * this.motionProfile.gaitScale;
     this.gaitPhase = (this.gaitPhase + this.horizontalSpeed * delta * gaitRadiansPerMetre) % (Math.PI * 2);
   }
 
@@ -719,7 +739,11 @@ export class FoxPlayer {
       this.airProgress = THREE.MathUtils.clamp((this.airborneTime - GLIDE_ENTRY_SECONDS) / 0.22, 0, 1);
     } else if (this.verticalVelocity > 1.15) {
       this.airPose = 'rise';
-      this.airProgress = THREE.MathUtils.clamp(1 - this.verticalVelocity / JUMP_IMPULSE, 0, 1);
+      this.airProgress = THREE.MathUtils.clamp(
+        1 - this.verticalVelocity / this.motionProfile.jumpImpulse,
+        0,
+        1,
+      );
     } else if (this.verticalVelocity > -1.2) {
       this.airPose = 'apex';
       this.airProgress = THREE.MathUtils.clamp((1.15 - this.verticalVelocity) / 2.35, 0, 1);
@@ -727,6 +751,22 @@ export class FoxPlayer {
       this.airPose = 'fall';
       this.airProgress = THREE.MathUtils.clamp(Math.abs(this.verticalVelocity) / 9, 0, 1);
     }
+  }
+
+  private updateDoubleJumpFlourish(): void {
+    if (this.airPose !== 'double') {
+      this.aerialPivot.rotation.set(0, 0, 0);
+      this.aerialPivot.scale.set(1, 1, 1);
+      return;
+    }
+    const progress = THREE.MathUtils.clamp(this.airProgress, 0, 1);
+    const eased = progress * progress * (3 - 2 * progress);
+    const [turnX, turnY, turnZ] = this.motionProfile.doubleJumpTurns;
+    const intensity = this.reducedMotion ? 0 : 1;
+    const angle = Math.PI * 2 * eased * intensity;
+    this.aerialPivot.rotation.set(turnX * angle, turnY * angle, turnZ * angle);
+    const squash = Math.sin(progress * Math.PI) * (this.reducedMotion ? 0.025 : 0.075);
+    this.aerialPivot.scale.set(1 + squash, 1 - squash * 0.7, 1 + squash);
   }
 
   private emitFootfalls(

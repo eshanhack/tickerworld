@@ -27,7 +27,7 @@ describe('public trust pages', () => {
     expect(robots).toContain('Disallow: /admin');
     expect(sitemap).not.toContain('/admin');
     for (const path of [
-      '/btc', '/eth', '/sol', '/xrp', '/doge', '/bnb', '/link', '/avax',
+      '/btc', '/eth', '/sol', '/xrp', '/doge', '/bnb', '/link', '/avax', '/wti', '/test',
       '/privacy', '/terms', '/community', '/support', '/status',
     ]) expect(sitemap).toContain(`<loc>https://tickerworld.io${path}</loc>`);
   });

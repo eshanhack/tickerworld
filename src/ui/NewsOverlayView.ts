@@ -45,7 +45,6 @@ export interface NewsOverlayInsets {
 const DEFAULT_CARD_WIDTH = 360;
 const DEFAULT_CARD_HEIGHT = 250;
 const VIEWPORT_PADDING = 12;
-const DEFAULT_BOTTOM_CLEARANCE = 88;
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
@@ -406,7 +405,10 @@ export class NewsOverlayView {
     if (!this.normalizedPosition) {
       this.position = clampNewsOverlayPosition({
         x: maxX,
-        y: maxY - DEFAULT_BOTTOM_CLEARANCE,
+        // The CSS-provided bottom inset already reserves the complete footer
+        // and touch-control zone. Dock directly against that safe boundary so
+        // the card does not waste a second clearance gap on short screens.
+        y: maxY,
       }, bounds);
       this.storeNormalizedPosition(cardWidth, cardHeight);
     } else if (this.dragPointer === null) {

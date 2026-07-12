@@ -22,7 +22,7 @@ export interface WayfindingSystemOptions {
   readonly fontUrl?: string;
   readonly heightAt?: (x: number, z: number) => number;
   readonly monuments?: readonly WayfindingCoordinate[];
-  /** When set, render only the seven portal-entry signs for this bounded world. */
+  /** When set, render only the nine legacy portal-entry signs for this bounded world. */
   readonly activeMarket?: AssetSymbol;
 }
 
@@ -44,7 +44,7 @@ function finiteOrZero(value: number): number {
   return Number.isFinite(value) ? value : 0;
 }
 
-/** Fourteen static road-entry signs. No billboard work is required per frame. */
+/** Eighteen legacy static road-entry signs. No billboard work is required per frame. */
 export class WayfindingSystem {
   public readonly root = new Group();
   public descriptors: readonly RoadSignDescriptor[];

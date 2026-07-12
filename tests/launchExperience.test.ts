@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ASSET_SYMBOLS } from '../src/types';
-import { PREMIUM_SKINS } from '../shared/src/index.js';
 import {
   baseWardrobeEntries,
   colorWardrobeEntries,
@@ -19,12 +18,22 @@ import {
 describe('route-specific entry shell', () => {
   it('gives every market a truthful route-specific entry', () => {
     const models = ASSET_SYMBOLS.map(entryShellForMarket);
-    expect(models).toHaveLength(8);
+    expect(models).toHaveLength(ASSET_SYMBOLS.length);
     for (const model of models) {
-      expect(model.kicker).toBe(`${model.symbol} WORLD · LIVE`);
       expect(model.title).toBe('Tickerworld');
-      expect(model.description).toBe(`Walk inside ${model.symbol}’s live one-minute chart with other tiny animals.`);
-      expect(model.enterLabel).toBe(`Enter ${model.symbol} world`);
+      if (model.symbol === 'TEST') {
+        expect(model.kicker).toBe('TEST WORLD · SIMULATED');
+        expect(model.description).toContain('wild demo market');
+        expect(model.enterLabel).toBe('Enter TEST lab');
+      } else if (model.symbol === 'WTI') {
+        expect(model.kicker).toBe('WTI WORLD · LIVE');
+        expect(model.description).toContain('CL crude-oil perpetual');
+        expect(model.enterLabel).toBe('Enter WTI world');
+      } else {
+        expect(model.kicker).toBe(`${model.symbol} WORLD · LIVE`);
+        expect(model.description).toBe(`Walk inside ${model.symbol}’s live one-minute chart with other tiny animals.`);
+        expect(model.enterLabel).toBe(`Enter ${model.symbol} world`);
+      }
     }
   });
 
@@ -113,16 +122,15 @@ describe('launch overlay discipline', () => {
 });
 
 describe('free launch wardrobe', () => {
-  it('contains eight base creatures and all eight color looks without commerce metadata', () => {
+  it('contains exactly eight distinct creatures and no color-charm variants', () => {
     const entries = baseWardrobeEntries();
     expect(entries.map(({ animal }) => animal)).toEqual([
       'fox', 'penguin', 'frog', 'duck', 'bear', 'rabbit', 'cat', 'axolotl',
     ]);
     expect(entries.every(({ skin }) => skin === 'base')).toBe(true);
     const colors = colorWardrobeEntries();
-    expect(colors.map(({ skin }) => skin).sort()).toEqual([...PREMIUM_SKINS].sort());
-    expect(new Set(colors.map(({ animal }) => animal)).size).toBe(8);
-    expect(freeWardrobeEntries()).toHaveLength(16);
+    expect(colors).toEqual([]);
+    expect(freeWardrobeEntries()).toHaveLength(8);
     expect(freeWardrobeEntries().every((entry) => (
       !('price' in entry) && !('entitlement' in entry) && !('owned' in entry)
     ))).toBe(true);

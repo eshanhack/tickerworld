@@ -92,4 +92,11 @@ export interface FootstepSoundOptions {
   readonly intensity?: number;
 }
 
+export type VegetationSoundKind = 'grass' | 'shrub';
+
+export interface VegetationSoundOptions {
+  readonly kind: VegetationSoundKind;
+  readonly intensity?: number;
+}
+
 export type JumpSoundKind = 'jump' | 'double-jump';
