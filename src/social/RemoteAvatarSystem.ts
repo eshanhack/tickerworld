@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { Text } from 'troika-three-text';
 import {
   ANIMAL_KINDS,
+  MAX_SPRINT_SPEED,
   REMOTE_INTERPOLATION_DELAY_MS,
   type AnimalKind,
   type ChatMessage,
@@ -602,7 +603,7 @@ export class RemoteAvatarSystem implements GameSystem {
     this.scale.setScalar(animalMotionProfile(slot.animal).modelScale);
     this.rootMatrix.compose(this.position, this.quaternion, this.scale);
     const bob = pose.grounded ? Math.sin(slot.gaitPhase * 2) * Math.min(0.06, pose.speed * 0.009) : 0.07;
-    const movement = Math.min(1, pose.speed / 7.15);
+    const movement = Math.min(1, pose.speed / MAX_SPRINT_SPEED);
     const swing = Math.sin(slot.gaitPhase) * movement;
     const opposite = Math.sin(slot.gaitPhase + Math.PI) * movement;
     const legLift = Math.abs(Math.sin(slot.gaitPhase)) * 0.13 * movement;

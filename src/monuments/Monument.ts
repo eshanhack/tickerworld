@@ -54,6 +54,7 @@ import {
 import { SparklePool } from './SparklePool';
 import { TickTrailPool } from './TickTrailPool';
 import { HorizonBadgePanel } from './HorizonBadgePanel';
+import { MONUMENT_MARKET_LABEL_LAYOUT } from './marketLabelLayout';
 import {
   NewsPanel,
   type NewsInteraction,
@@ -778,51 +779,60 @@ export class Monument {
     // heavy plinth stays fixed, while only the crest turns toward the player.
     medallion.position.set(-MEDALLION_CENTER.x, 0, -MEDALLION_CENTER.z);
     this.presentationGroup.add(medallion);
-    this.symbolText.name = `${this.symbol}-symbol-label`;
-    this.symbolText.text = this.symbol;
-    this.symbolText.fontSize = this.kind === 'echo' || this.symbol === 'BTC' ? 0.8 : 0.98;
-    this.symbolText.color = COLORS.cream;
-    this.symbolText.anchorX = 'center';
-    this.symbolText.anchorY = 'middle';
-    this.symbolText.outlineWidth = '3%';
-    this.symbolText.outlineColor = COLORS.ink;
-    this.symbolText.outlineOpacity = 0.42;
-    this.symbolText.depthOffset = -1;
-    if (fontUrl) {
-      this.symbolText.font = fontUrl;
-    }
-    this.symbolText.position.set(
-      -MEDALLION_CENTER.x,
-      this.symbol === 'BTC' ? 5.98 : 7.52,
-      -0.34 - MEDALLION_CENTER.z,
-    );
-    if (typeof self !== 'undefined') {
-      this.symbolText.sync();
-    }
-    this.presentationGroup.add(this.symbolText);
-
     const card = new Mesh(
       new RoundedBoxGeometry(1, 1, 1, 3, 0.14),
       this.priceCardMaterial,
     );
     card.name = `${this.symbol}-price-card`;
-    card.scale.set(this.kind === 'echo' ? 3.5 : 4.25, 1.02, 0.12);
+    card.scale.set(
+      this.kind === 'echo'
+        ? MONUMENT_MARKET_LABEL_LAYOUT.echoCardWidth
+        : MONUMENT_MARKET_LABEL_LAYOUT.grandCardWidth,
+      this.kind === 'echo'
+        ? MONUMENT_MARKET_LABEL_LAYOUT.echoCardHeight
+        : MONUMENT_MARKET_LABEL_LAYOUT.grandCardHeight,
+      0.12,
+    );
     card.position.z = -0.1;
     card.castShadow = true;
     this.billboardGroup.name = `${this.symbol}-market-ui`;
     this.billboardGroup.position.set(
       -MEDALLION_CENTER.x,
-      6.72,
+      MONUMENT_MARKET_LABEL_LAYOUT.centerY,
       MONUMENT_PRESENTATION_FORWARD_OFFSET,
     );
     this.billboardGroup.add(card);
 
+    this.symbolText.name = `${this.symbol}-symbol-label`;
+    this.symbolText.text = this.symbol;
+    this.symbolText.fontSize = this.kind === 'echo'
+      ? MONUMENT_MARKET_LABEL_LAYOUT.echoSymbolFontSize
+      : MONUMENT_MARKET_LABEL_LAYOUT.symbolFontSize;
+    this.symbolText.color = COLORS.cream;
+    this.symbolText.anchorX = 'center';
+    this.symbolText.anchorY = 'middle';
+    this.symbolText.textAlign = 'center';
+    this.symbolText.whiteSpace = 'nowrap';
+    this.symbolText.outlineWidth = '2%';
+    this.symbolText.outlineColor = COLORS.ink;
+    this.symbolText.outlineOpacity = 0.48;
+    this.symbolText.depthOffset = -2;
+    this.symbolText.renderOrder = 4;
+    if (fontUrl) this.symbolText.font = fontUrl;
+    this.symbolText.position.set(0, MONUMENT_MARKET_LABEL_LAYOUT.symbolY, 0.02);
+    if (typeof self !== 'undefined') this.symbolText.sync();
+    this.billboardGroup.add(this.symbolText);
+
     this.priceText.name = `${this.symbol}-price-text`;
     this.priceText.text = '$—';
-    this.priceText.fontSize = 0.58;
+    this.priceText.fontSize = this.kind === 'echo'
+      ? MONUMENT_MARKET_LABEL_LAYOUT.echoPriceFontSize
+      : MONUMENT_MARKET_LABEL_LAYOUT.priceFontSize;
     this.priceText.color = COLORS.cream;
     this.priceText.anchorX = 'center';
     this.priceText.anchorY = 'middle';
+    this.priceText.textAlign = 'center';
+    this.priceText.whiteSpace = 'nowrap';
     this.priceText.outlineWidth = '2%';
     this.priceText.outlineColor = COLORS.ink;
     this.priceText.outlineOpacity = 0.55;
@@ -831,7 +841,7 @@ export class Monument {
     if (fontUrl) {
       this.priceText.font = fontUrl;
     }
-    this.priceText.position.z = 0.02;
+    this.priceText.position.set(0, MONUMENT_MARKET_LABEL_LAYOUT.priceY, 0.02);
     if (typeof self !== 'undefined') {
       this.priceText.sync();
     }

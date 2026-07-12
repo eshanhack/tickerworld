@@ -28,13 +28,19 @@ import {
   HORIZON_BADGE_LAYOUT,
   HorizonBadgePanel,
 } from '../src/monuments/HorizonBadgePanel';
-import { createEmptyHorizonChanges } from '../src/markets';
+import { createEmptyHorizonChanges, stepTestSimulation } from '../src/markets';
 import {
   MONUMENT_CHART_HEIGHT,
   MONUMENT_CHART_WIDTH,
   MONUMENT_OVERLAY_RENDER_ORDER,
   MONUMENT_PRESENTATION_FORWARD_OFFSET,
 } from '../src/monuments/Monument';
+import {
+  MONUMENT_MARKET_LABEL_LAYOUT,
+  labelBoundsOverlap,
+  monumentMarketLabelBounds,
+  type LabelBounds,
+} from '../src/monuments/marketLabelLayout';
 
 function candle(openTime: number, open: number, high: number, low: number, close: number, closed = true): Candle {
   return { openTime, open, high, low, close, closed };
@@ -160,6 +166,49 @@ describe('monument chart math', () => {
     monument.setAssetState(state(next, 2));
     monument.update(0.08, 0.08);
     expect(Array.from(monument.greenBodyInstances.instanceMatrix.array)).not.toEqual(before);
+    monument.dispose();
+  });
+
+  it('moves the TEST active candle body and wick across consecutive presentation ticks', () => {
+    const now = 1_800_000;
+    const openTime = Math.floor(now / 60_000) * 60_000;
+    const candles = Array.from({ length: MONUMENT_CANDLE_COUNT }, (_, index) => candle(
+      openTime - (MONUMENT_CANDLE_COUNT - 1 - index) * 60_000,
+      100,
+      100,
+      100,
+      100,
+      index !== MONUMENT_CANDLE_COUNT - 1,
+    ));
+    let testState: AssetState = {
+      symbol: 'TEST',
+      instrument: 'TEST',
+      provider: 'simulation',
+      candles,
+      price: 100,
+      previousPrice: 100,
+      direction: 'flat',
+      mode: 'simulated',
+      updateKind: 'simulation',
+      updatedAt: now,
+      presentationTick: 0,
+      horizonChanges: createEmptyHorizonChanges(),
+    };
+    const monument = new Monument({ symbol: 'TEST', initialState: testState });
+    monument.update(0.08, 0);
+    const bodies = [JSON.stringify(Array.from(monument.greenBodyInstances.instanceMatrix.array))];
+    const wicks = [JSON.stringify(Array.from(monument.greenWickInstances.instanceMatrix.array))];
+
+    for (let tick = 1; tick <= 4; tick += 1) {
+      testState = stepTestSimulation(testState, now + tick * 400);
+      monument.setAssetState(testState);
+      monument.update(0.08, tick * 0.08);
+      bodies.push(JSON.stringify(Array.from(monument.greenBodyInstances.instanceMatrix.array)));
+      wicks.push(JSON.stringify(Array.from(monument.greenWickInstances.instanceMatrix.array)));
+    }
+
+    expect(new Set(bodies).size).toBe(bodies.length);
+    expect(new Set(wicks).size).toBe(wicks.length);
     monument.dispose();
   });
 
@@ -315,7 +364,7 @@ describe('monument chart math', () => {
     expect(chart?.parent).toBe(presentation);
     expect(medallion?.parent).toBe(presentation);
     expect(plinth.parent).toBe(monument.root);
-    expect(symbolLabel?.parent).toBe(presentation);
+    expect(symbolLabel?.parent).toBe(marketUi);
     expect(marketUi?.parent).toBe(presentation);
     expect(monument.root.getObjectByName('market-horizon-panel')?.parent).toBe(marketUi);
 
@@ -425,6 +474,71 @@ describe('monument chart math', () => {
     monument.dispose();
     monument.dispose();
     expect(disposeGeometry).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps ticker, price, countdown, and chart bounds disjoint for every world at near and far views', () => {
+    const projectBounds = (bounds: LabelBounds, distance: number): LabelBounds => {
+      const camera = new PerspectiveCamera(55, 16 / 9, 0.1, 100);
+      camera.position.set(0, 0, distance);
+      camera.lookAt(0, 0, 0);
+      camera.updateMatrixWorld(true);
+      const corners = [
+        new Vector3(bounds.left, bounds.bottom, 0),
+        new Vector3(bounds.right, bounds.bottom, 0),
+        new Vector3(bounds.right, bounds.top, 0),
+        new Vector3(bounds.left, bounds.top, 0),
+      ].map((point) => point.project(camera));
+      return {
+        left: Math.min(...corners.map(({ x }) => x)),
+        right: Math.max(...corners.map(({ x }) => x)),
+        bottom: Math.min(...corners.map(({ y }) => y)),
+        top: Math.max(...corners.map(({ y }) => y)),
+      };
+    };
+
+    for (const symbol of ASSET_SYMBOLS) {
+      const monument = new Monument({ symbol, kind: 'grand' });
+      const marketUi = monument.root.getObjectByName(`${symbol}-market-ui`) as Group;
+      const card = monument.root.getObjectByName(`${symbol}-price-card`) as Mesh;
+      const ticker = monument.root.getObjectByName(`${symbol}-symbol-label`) as Text;
+      const price = monument.root.getObjectByName(`${symbol}-price-text`) as Text;
+      const bounds = monumentMarketLabelBounds('grand');
+
+      expect(marketUi.position.y).toBe(MONUMENT_MARKET_LABEL_LAYOUT.centerY);
+      expect(card.scale.x).toBe(MONUMENT_MARKET_LABEL_LAYOUT.grandCardWidth);
+      expect(card.scale.y).toBe(MONUMENT_MARKET_LABEL_LAYOUT.grandCardHeight);
+      expect(ticker.parent).toBe(marketUi);
+      expect(price.parent).toBe(marketUi);
+      expect(ticker.position.y).toBe(MONUMENT_MARKET_LABEL_LAYOUT.symbolY);
+      expect(price.position.y).toBe(MONUMENT_MARKET_LABEL_LAYOUT.priceY);
+      expect(bounds.symbol.bottom - bounds.price.top).toBeGreaterThanOrEqual(
+        MONUMENT_MARKET_LABEL_LAYOUT.minimumLineGap,
+      );
+      expect(labelBoundsOverlap(
+        bounds.card,
+        bounds.countdownCard,
+        MONUMENT_MARKET_LABEL_LAYOUT.minimumSiblingGap,
+      )).toBe(false);
+      expect(
+        MONUMENT_MARKET_LABEL_LAYOUT.centerY + bounds.card.bottom
+          - MONUMENT_MARKET_LABEL_LAYOUT.chartTopY,
+      ).toBeGreaterThanOrEqual(MONUMENT_MARKET_LABEL_LAYOUT.minimumChartGap);
+
+      for (const distance of [12, 24, 48]) {
+        expect(labelBoundsOverlap(
+          projectBounds(bounds.symbol, distance),
+          projectBounds(bounds.price, distance),
+        )).toBe(false);
+        expect(labelBoundsOverlap(
+          projectBounds(bounds.card, distance),
+          projectBounds(bounds.countdownCard, distance),
+        )).toBe(false);
+      }
+      monument.dispose();
+    }
+
+    const echoBounds = monumentMarketLabelBounds('echo');
+    expect(labelBoundsOverlap(echoBounds.symbol, echoBounds.price)).toBe(false);
   });
 
   it('uses a taller, forward chart plane and keeps horizon badges grand-only', () => {

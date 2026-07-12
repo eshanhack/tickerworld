@@ -26,5 +26,14 @@ export type {
   PortalRoute,
 } from './portalLayout';
 export { PortalOverlayView } from './PortalOverlayView';
+export {
+  PORTAL_LABEL_LAYOUT,
+  assignPortalLabelRows,
+  portalLabelCardsOverlap,
+  portalLabelCenterY,
+  portalLabelLineBounds,
+  type PortalLabelAnchor,
+  type PortalLabelLineBounds,
+} from './portalLabelLayout';
 export { PortalSystem } from './PortalSystem';
 export type { PortalSystemDebugStats, PortalSystemOptions } from './PortalSystem';

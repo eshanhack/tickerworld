@@ -33,7 +33,8 @@ describe('WorldSystem lamp ambience', () => {
     });
     world.update({ x: 0, z: 0 }, 0);
     const stats = world.getDebugStats();
-    expect(stats.grassInstances).toBeGreaterThan(150);
+    expect(stats.grassInstances).toBeGreaterThan(750);
+    expect(stats.grassInstances).toBeLessThanOrEqual(25 * 160);
     expect(stats.shrubInstances).toBeGreaterThan(20);
     expect(stats.sharedPropDrawCalls).toBeLessThanOrEqual(9);
 
@@ -72,6 +73,55 @@ describe('WorldSystem lamp ambience', () => {
       z: instance.z,
     });
     world.dispose();
+  });
+
+  it('keeps a deterministic one-draw cloud field bounded, animated, and disposable', () => {
+    const scene = new THREE.Scene();
+    const world = new WorldSystem(scene, {
+      seed: 'cloud-atmosphere-test',
+      loadBudgetPerUpdate: 25,
+      unloadBudgetPerUpdate: 25,
+    });
+    world.update({ x: 0, z: 0 }, 0);
+    const clouds = world.root.getObjectByName('AtmosphereClouds') as THREE.InstancedMesh;
+    expect(clouds).toBeDefined();
+    expect(world.getDebugStats()).toMatchObject({
+      cloudPuffs: 42,
+      cloudDrawCalls: 1,
+    });
+    expect(clouds.count).toBe(42);
+    const cloudMaterial = clouds.material as THREE.MeshLambertMaterial;
+    expect(cloudMaterial.transparent).toBe(false);
+    expect(cloudMaterial.alphaHash).toBe(false);
+    expect(cloudMaterial.depthWrite).toBe(true);
+
+    const before = new THREE.Matrix4();
+    const after = new THREE.Matrix4();
+    const position = new THREE.Vector3();
+    clouds.getMatrixAt(0, before);
+    for (let index = 0; index < clouds.count; index += 1) {
+      clouds.getMatrixAt(index, after);
+      position.setFromMatrixPosition(after);
+      expect(Math.abs(position.x)).toBeLessThanOrEqual(108);
+      expect(Math.abs(position.z)).toBeLessThanOrEqual(112);
+      expect(position.y).toBeGreaterThanOrEqual(27);
+      expect(position.y).toBeLessThanOrEqual(39.5);
+    }
+    const dayColor = cloudMaterial.color.clone();
+    world.update({ x: 0, z: 0 }, 90);
+    clouds.getMatrixAt(0, after);
+    expect(after.equals(before)).toBe(false);
+
+    world.update({ x: 0, z: 0 }, DEFAULT_DAY_DURATION_SECONDS / 2);
+    const nightColor = cloudMaterial.color.clone();
+    expect(nightColor.equals(dayColor)).toBe(false);
+
+    const geometryDispose = vi.spyOn(clouds.geometry, 'dispose');
+    const materialDispose = vi.spyOn(clouds.material as THREE.Material, 'dispose');
+    world.dispose();
+    expect(geometryDispose).toHaveBeenCalledOnce();
+    expect(materialDispose).toHaveBeenCalledOnce();
+    expect(scene.children).not.toContain(world.root);
   });
 
   it('uses only bounded real lights and motes without additive ground planes', () => {

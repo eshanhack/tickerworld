@@ -231,6 +231,35 @@ describe('AudioEngine preferences and fallback', () => {
     restored.dispose();
   });
 
+  it('persists independent chart, weather, and movement submixes under FX', () => {
+    const storage = new MemoryStorage();
+    const engine = new AudioEngine({ storage });
+
+    engine.setMarketVolume(0.31);
+    engine.setWeatherVolume(0.47);
+    engine.setMovementVolume(0.83);
+    engine.toggleMarketMuted(true);
+    engine.toggleWeatherMuted(false);
+    engine.toggleMovementMuted(true);
+
+    const restored = new AudioEngine({ storage });
+    expect(restored.state).toMatchObject({
+      sfxVolume: 1,
+      sfxMuted: false,
+      marketVolume: 0.31,
+      marketMuted: true,
+      weatherVolume: 0.47,
+      weatherMuted: false,
+      movementVolume: 0.83,
+      movementMuted: true,
+    });
+    expect(storage.getItem('tickerworld:audio:market-volume')).toBe('0.31');
+    expect(storage.getItem('tickerworld:audio:weather-volume')).toBe('0.47');
+    expect(storage.getItem('tickerworld:audio:movement-volume')).toBe('0.83');
+    engine.dispose();
+    restored.dispose();
+  });
+
   it('migrates legacy master preferences into visible channels without a hidden mute', async () => {
     const storage = new MemoryStorage();
     storage.setItem('tickerworld:audio:volume', '0.36');
@@ -410,6 +439,69 @@ describe('ambient composition', () => {
 });
 
 describe('AudioEngine lifecycle', () => {
+  it('routes category sounds independently while retaining the FX parent and cleanup', async () => {
+    vi.useFakeTimers();
+    const fake = makeFakeContext();
+    const engine = new AudioEngine({
+      contextFactory: () => fake.context,
+      storage: null,
+      random: () => 0.5,
+    });
+    engine.setMonumentSources([{
+      id: 'grand:BTC',
+      symbol: 'BTC',
+      position: { x: 0, y: 2, z: 0 },
+    }]);
+    await engine.unlock();
+
+    const buses = engine as unknown as {
+      marketBus: FakeNode;
+      weatherBus: FakeNode;
+      movementBus: FakeNode;
+      sfxBus: FakeNode;
+    };
+    expect(buses.marketBus.connect).toHaveBeenCalledWith(buses.sfxBus);
+    expect(buses.weatherBus.connect).toHaveBeenCalledWith(buses.sfxBus);
+    expect(buses.movementBus.connect).toHaveBeenCalledWith(buses.sfxBus);
+
+    engine.setMarketVolume(0.4);
+    engine.setWeatherVolume(0.5);
+    engine.setMovementVolume(0.6);
+    expect(buses.marketBus.gain?.setTargetAtTime).toHaveBeenLastCalledWith(
+      Math.pow(0.4, 1.3), 0, 0.025,
+    );
+    expect(buses.weatherBus.gain?.setTargetAtTime).toHaveBeenLastCalledWith(
+      Math.pow(0.5, 1.3), 0, 0.04,
+    );
+    expect(buses.movementBus.gain?.setTargetAtTime).toHaveBeenLastCalledWith(
+      Math.pow(0.6, 1.3), 0, 0.025,
+    );
+
+    engine.toggleMarketMuted(true);
+    const marketOscillators = fake.oscillators.length;
+    engine.playTradePulse('grand:BTC', { direction: 'up', moveRatio: 0.001 });
+    expect(fake.oscillators).toHaveLength(marketOscillators);
+
+    engine.playJump('jump');
+    expect(fake.oscillators.length).toBeGreaterThan(marketOscillators);
+    engine.toggleMovementMuted(true);
+    const movementOscillators = fake.oscillators.length;
+    engine.playJump('double-jump');
+    expect(fake.oscillators).toHaveLength(movementOscillators);
+
+    engine.playThunder(0.8);
+    expect(fake.oscillators.length).toBeGreaterThan(movementOscillators);
+    engine.toggleWeatherMuted(true);
+    const weatherSources = fake.bufferSources.length;
+    (fake.context as { currentTime: number }).currentTime = 4;
+    engine.playThunder(0.8);
+    expect(fake.bufferSources).toHaveLength(weatherSources);
+
+    engine.dispose();
+    expect(fake.nodes.slice(1).every((node) => node.disconnect.mock.calls.length > 0)).toBe(true);
+    vi.useRealTimers();
+  });
+
   it('plays a bounded tonal news chime only when FX are active and visible', async () => {
     vi.useFakeTimers();
     const fake = makeFakeContext();

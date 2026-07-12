@@ -30,6 +30,7 @@ import type {
   AudioListenerPose,
   AudioPosition,
   AudioStateListener,
+  AudioSubmixKind,
   FootstepSoundOptions,
   JumpSoundKind,
   MarketAccentSoundOptions,
@@ -45,6 +46,12 @@ const MUSIC_VOLUME_KEY = 'tickerworld:audio:music-volume';
 const MUSIC_MUTED_KEY = 'tickerworld:audio:music-muted';
 const SFX_VOLUME_KEY = 'tickerworld:audio:sfx-volume';
 const SFX_MUTED_KEY = 'tickerworld:audio:sfx-muted';
+const MARKET_VOLUME_KEY = 'tickerworld:audio:market-volume';
+const MARKET_MUTED_KEY = 'tickerworld:audio:market-muted';
+const WEATHER_VOLUME_KEY = 'tickerworld:audio:weather-volume';
+const WEATHER_MUTED_KEY = 'tickerworld:audio:weather-muted';
+const MOVEMENT_VOLUME_KEY = 'tickerworld:audio:movement-volume';
+const MOVEMENT_MUTED_KEY = 'tickerworld:audio:movement-muted';
 const SFX_FULL_DEFAULT_MIGRATION_KEY = 'tickerworld:audio:sfx-full-default-v1';
 const MAX_MONUMENT_SOURCES = 24;
 const MAX_SCHEDULED_SOURCES = 48;
@@ -210,6 +217,9 @@ export class AudioEngine {
   private masterBus: GainNode | null = null;
   private ambientBus: GainNode | null = null;
   private sfxBus: GainNode | null = null;
+  private marketBus: GainNode | null = null;
+  private weatherBus: GainNode | null = null;
+  private movementBus: GainNode | null = null;
   private outputCompressor: DynamicsCompressorNode | null = null;
   private transientNoiseBuffer: AudioBuffer | null = null;
   private atmosphereNoiseBuffer: AudioBuffer | null = null;
@@ -235,6 +245,12 @@ export class AudioEngine {
   private musicMutedValue: boolean;
   private sfxVolumeValue: number;
   private sfxMutedValue: boolean;
+  private marketVolumeValue: number;
+  private marketMutedValue: boolean;
+  private weatherVolumeValue: number;
+  private weatherMutedValue: boolean;
+  private movementVolumeValue: number;
+  private movementMutedValue: boolean;
   private lastNewsAlertAt = Number.NEGATIVE_INFINITY;
   private lastThunderAt = Number.NEGATIVE_INFINITY;
   private lastVegetationAt = Number.NEGATIVE_INFINITY;
@@ -264,12 +280,24 @@ export class AudioEngine {
       this.sfxVolumeValue = DEFAULT_SFX_VOLUME;
     }
     this.sfxMutedValue = readStoredChannelMute(this.storage, SFX_MUTED_KEY, this.mutedValue);
+    this.marketVolumeValue = readStoredChannelVolume(this.storage, MARKET_VOLUME_KEY, 1);
+    this.marketMutedValue = readStoredChannelMute(this.storage, MARKET_MUTED_KEY, false);
+    this.weatherVolumeValue = readStoredChannelVolume(this.storage, WEATHER_VOLUME_KEY, 1);
+    this.weatherMutedValue = readStoredChannelMute(this.storage, WEATHER_MUTED_KEY, false);
+    this.movementVolumeValue = readStoredChannelVolume(this.storage, MOVEMENT_VOLUME_KEY, 1);
+    this.movementMutedValue = readStoredChannelMute(this.storage, MOVEMENT_MUTED_KEY, false);
     // Materialise split preferences on first run so subsequent channel edits
     // never fall back to an unrelated legacy master value.
     this.persist(MUSIC_VOLUME_KEY, String(this.musicVolumeValue));
     this.persist(MUSIC_MUTED_KEY, String(this.musicMutedValue));
     this.persist(SFX_VOLUME_KEY, String(this.sfxVolumeValue));
     this.persist(SFX_MUTED_KEY, String(this.sfxMutedValue));
+    this.persist(MARKET_VOLUME_KEY, String(this.marketVolumeValue));
+    this.persist(MARKET_MUTED_KEY, String(this.marketMutedValue));
+    this.persist(WEATHER_VOLUME_KEY, String(this.weatherVolumeValue));
+    this.persist(WEATHER_MUTED_KEY, String(this.weatherMutedValue));
+    this.persist(MOVEMENT_VOLUME_KEY, String(this.movementVolumeValue));
+    this.persist(MOVEMENT_MUTED_KEY, String(this.movementMutedValue));
     this.persist(SFX_FULL_DEFAULT_MIGRATION_KEY, 'true');
     this.mutedValue = this.musicMutedValue && this.sfxMutedValue;
     this.statusValue = this.contextFactory ? 'locked' : 'unavailable';
@@ -287,6 +315,12 @@ export class AudioEngine {
       musicMuted: this.musicMutedValue,
       sfxVolume: this.sfxVolumeValue,
       sfxMuted: this.sfxMutedValue,
+      marketVolume: this.marketVolumeValue,
+      marketMuted: this.marketMutedValue,
+      weatherVolume: this.weatherVolumeValue,
+      weatherMuted: this.weatherMutedValue,
+      movementVolume: this.movementVolumeValue,
+      movementMuted: this.movementMutedValue,
       ...(this.reasonValue ? { reason: this.reasonValue } : {}),
     };
   }
@@ -313,6 +347,30 @@ export class AudioEngine {
 
   public get sfxMuted(): boolean {
     return this.sfxMutedValue;
+  }
+
+  public get marketVolume(): number {
+    return this.marketVolumeValue;
+  }
+
+  public get marketMuted(): boolean {
+    return this.marketMutedValue;
+  }
+
+  public get weatherVolume(): number {
+    return this.weatherVolumeValue;
+  }
+
+  public get weatherMuted(): boolean {
+    return this.weatherMutedValue;
+  }
+
+  public get movementVolume(): number {
+    return this.movementVolumeValue;
+  }
+
+  public get movementMuted(): boolean {
+    return this.movementMutedValue;
   }
 
   public subscribe(listener: AudioStateListener): () => void {
@@ -456,7 +514,7 @@ export class AudioEngine {
     const moveRatio = typeof optionsOrDirection === 'string'
       ? legacyMoveRatio
       : (optionsOrDirection.moveRatio ?? 0);
-    if (!this.canPlaySfx()) return;
+    if (!this.canPlaySfx(false, 'market')) return;
     const graph = this.monumentGraphs.get(sourceId);
     if (!graph || !this.context || !this.isMonumentGraphAudible(graph)) return;
 
@@ -499,7 +557,7 @@ export class AudioEngine {
 
   /** Priority fanfare/siren selected by Game's single authoritative event gate. */
   public playMarketAccent(sourceId: string, options: MarketAccentSoundOptions): void {
-    if (!this.canPlaySfx(true) || !this.context) return;
+    if (!this.canPlaySfx(true, 'market') || !this.context) return;
     const graph = this.monumentGraphs.get(sourceId);
     if (!graph || !this.isMonumentGraphAudible(graph)) return;
     const exceptional = options.tier === 'exceptional';
@@ -541,7 +599,7 @@ export class AudioEngine {
   }
 
   public playCandleClose(sourceId: string, intensity = 0.5): void {
-    if (!this.canPlaySfx() || !this.context) return;
+    if (!this.canPlaySfx(false, 'market') || !this.context) return;
     const graph = this.monumentGraphs.get(sourceId);
     if (!graph || !this.isMonumentGraphAudible(graph)) return;
     const now = this.context.currentTime;
@@ -557,7 +615,7 @@ export class AudioEngine {
     optionsOrSurface: FootstepSoundOptions | SurfaceKind,
     legacySprinting = false,
   ): void {
-    if (!this.canPlaySfx() || !this.context || !this.sfxBus) return;
+    if (!this.canPlaySfx(false, 'movement') || !this.context || !this.movementBus) return;
     const surface = typeof optionsOrSurface === 'string' ? optionsOrSurface : optionsOrSurface.surface;
     const sprinting = typeof optionsOrSurface === 'string'
       ? legacySprinting
@@ -573,7 +631,7 @@ export class AudioEngine {
     const intensityGain = 0.58 + intensity * 0.62;
     const legPitch = leg?.startsWith('front') ? 1.025 : leg?.startsWith('hind') ? 0.975 : 1;
     this.playNoiseBurst(
-      this.sfxBus,
+      this.movementBus,
       now,
       settings.duration,
       settings.filter,
@@ -581,14 +639,14 @@ export class AudioEngine {
       settings.gain * (sprinting ? 1.18 : 1) * intensityGain,
     );
     this.playFootThump(
-      this.sfxBus,
+      this.movementBus,
       now,
       settings.thumpFrequency * legPitch,
       (sprinting ? 0.03 : 0.022) * intensityGain,
     );
     if (sprinting) {
       this.playNoiseBurst(
-        this.sfxBus,
+        this.movementBus,
         now,
         0.13,
         'bandpass',
@@ -600,34 +658,34 @@ export class AudioEngine {
 
   /** A bright lift for the first jump and a higher magical flourish for the air jump. */
   public playJump(kind: JumpSoundKind): void {
-    if (!this.canPlaySfx() || !this.context || !this.sfxBus) return;
+    if (!this.canPlaySfx(false, 'movement') || !this.context || !this.movementBus) return;
     const now = this.context.currentTime;
     if (kind === 'double-jump') {
-      this.playMagicalSweep(this.sfxBus, now, 523.25, 880, 0.52, 0.036);
-      this.playGentleNote(this.sfxBus, now + 0.12, 987.77, 0.66, 0.018, 1.5);
-      this.playNoiseBurst(this.sfxBus, now, 0.11, 'bandpass', 920, 0.0065);
+      this.playMagicalSweep(this.movementBus, now, 523.25, 880, 0.52, 0.036);
+      this.playGentleNote(this.movementBus, now + 0.12, 987.77, 0.66, 0.018, 1.5);
+      this.playNoiseBurst(this.movementBus, now, 0.11, 'bandpass', 920, 0.0065);
       return;
     }
-    this.playMagicalSweep(this.sfxBus, now, 369.99, 587.33, 0.42, 0.029);
-    this.playNoiseBurst(this.sfxBus, now, 0.09, 'bandpass', 720, 0.0055);
+    this.playMagicalSweep(this.movementBus, now, 369.99, 587.33, 0.42, 0.029);
+    this.playNoiseBurst(this.movementBus, now, 0.09, 'bandpass', 720, 0.0055);
   }
 
   /** A surface-aware soft puff with a small, friendly settling chime. */
   public playLanding(surface: SurfaceKind, intensity = 0.5): void {
-    if (!this.canPlaySfx() || !this.context || !this.sfxBus) return;
+    if (!this.canPlaySfx(false, 'movement') || !this.context || !this.movementBus) return;
     const amount = clampUnit(intensity);
     const now = this.context.currentTime;
     const settings = this.footstepSettings(surface);
     this.playNoiseBurst(
-      this.sfxBus,
+      this.movementBus,
       now,
       settings.duration * (0.8 + amount * 0.55),
       settings.filter,
       settings.frequency * 0.9,
       settings.gain * (0.36 + amount * 0.5),
     );
-    this.playFootThump(this.sfxBus, now, settings.thumpFrequency * 1.12, 0.009 + amount * 0.018);
-    this.playGentleNote(this.sfxBus, now + 0.035, 587.33, 0.3, 0.005 + amount * 0.006, -1.5);
+    this.playFootThump(this.movementBus, now, settings.thumpFrequency * 1.12, 0.009 + amount * 0.018);
+    this.playGentleNote(this.movementBus, now + 0.035, 587.33, 0.3, 0.005 + amount * 0.006, -1.5);
   }
 
   /**
@@ -651,16 +709,16 @@ export class AudioEngine {
 
   /** A rare, rounded night-storm rumble routed through the visible FX mix. */
   public playThunder(intensity = 0.6): void {
-    if (!this.canPlaySfx() || !this.context || !this.sfxBus) return;
+    if (!this.canPlaySfx(false, 'weather') || !this.context || !this.weatherBus) return;
     if (this.scheduledSources.size > MAX_SCHEDULED_SOURCES - MARKET_ALERT_RESERVED_VOICES - 3) return;
     const now = this.context.currentTime;
     if (now - this.lastThunderAt < 3) return;
     this.lastThunderAt = now;
     const amount = clampUnit(intensity);
     const peak = 0.02 + amount * 0.026;
-    this.playNoiseBurst(this.sfxBus, now, 1.08, 'lowpass', 190, peak * 0.72);
-    this.playDampedResonator(this.sfxBus, now + 0.025, 54, 1.02, peak);
-    this.playNoiseBurst(this.sfxBus, now + 0.19, 0.72, 'lowpass', 360, peak * 0.38);
+    this.playNoiseBurst(this.weatherBus, now, 1.08, 'lowpass', 190, peak * 0.72);
+    this.playDampedResonator(this.weatherBus, now + 0.025, 54, 1.02, peak);
+    this.playNoiseBurst(this.weatherBus, now + 0.19, 0.72, 'lowpass', 360, peak * 0.38);
   }
 
   /** Keeps one soft filtered rain bed alive only while a storm is visible. */
@@ -676,7 +734,7 @@ export class AudioEngine {
     optionsOrKind: VegetationSoundOptions | VegetationSoundKind,
     legacyIntensity = 0.5,
   ): void {
-    if (!this.canPlaySfx() || !this.context || !this.sfxBus) return;
+    if (!this.canPlaySfx(false, 'movement') || !this.context || !this.movementBus) return;
     const kind = typeof optionsOrKind === 'string' ? optionsOrKind : optionsOrKind.kind;
     const intensity = clampUnit(
       typeof optionsOrKind === 'string'
@@ -687,20 +745,20 @@ export class AudioEngine {
     if (now - this.lastVegetationAt < 0.105) return;
     this.lastVegetationAt = now;
     if (kind === 'shrub') {
-      this.playNoiseBurst(this.sfxBus, now, 0.19, 'bandpass', 690, 0.009 + intensity * 0.017);
-      this.playNoiseBurst(this.sfxBus, now + 0.018, 0.13, 'lowpass', 1_150, 0.004 + intensity * 0.007);
+      this.playNoiseBurst(this.movementBus, now, 0.19, 'bandpass', 690, 0.009 + intensity * 0.017);
+      this.playNoiseBurst(this.movementBus, now + 0.018, 0.13, 'lowpass', 1_150, 0.004 + intensity * 0.007);
       return;
     }
-    this.playNoiseBurst(this.sfxBus, now, 0.115, 'bandpass', 940, 0.005 + intensity * 0.011);
+    this.playNoiseBurst(this.movementBus, now, 0.115, 'bandpass', 940, 0.005 + intensity * 0.011);
   }
 
   /** A bounded HRTF flyby used by the WTI world's pooled aircraft events. */
   public playJetFlyby(position: AudioPosition, intensity = 0.7): void {
-    if (!this.canPlaySfx() || !this.context || this.scheduledSources.size > MAX_SCHEDULED_SOURCES - 2) {
+    if (!this.canPlaySfx(false, 'weather') || !this.context || this.scheduledSources.size > MAX_SCHEDULED_SOURCES - 2) {
       return;
     }
     const amount = clampUnit(intensity);
-    const spatial = this.createPositionalEffectBus(position, 82, 0.5 + amount * 0.5);
+    const spatial = this.createPositionalEffectBus(position, 82, 0.5 + amount * 0.5, this.weatherBus);
     if (!spatial) return;
     const now = this.context.currentTime;
     const duration = 2.15;
@@ -753,11 +811,11 @@ export class AudioEngine {
 
   /** A rounded, distance-bounded HRTF blast for WTI world set dressing. */
   public playDistantExplosion(position: AudioPosition, intensity = 0.7): void {
-    if (!this.canPlaySfx() || !this.context || this.scheduledSources.size > MAX_SCHEDULED_SOURCES - 3) {
+    if (!this.canPlaySfx(false, 'weather') || !this.context || this.scheduledSources.size > MAX_SCHEDULED_SOURCES - 3) {
       return;
     }
     const amount = clampUnit(intensity);
-    const spatial = this.createPositionalEffectBus(position, 96, 0.52 + amount * 0.48);
+    const spatial = this.createPositionalEffectBus(position, 96, 0.52 + amount * 0.48, this.weatherBus);
     if (!spatial) return;
     const now = this.context.currentTime;
 
@@ -897,6 +955,18 @@ export class AudioEngine {
     this.emit();
   }
 
+  public setMarketVolume(volume: number): void {
+    this.setSubmixVolume('market', volume);
+  }
+
+  public setWeatherVolume(volume: number): void {
+    this.setSubmixVolume('weather', volume);
+  }
+
+  public setMovementVolume(volume: number): void {
+    this.setSubmixVolume('movement', volume);
+  }
+
   public toggleMusicMuted(force?: boolean): boolean {
     if (this.disposed) return this.musicMutedValue;
     this.musicMutedValue = force ?? !this.musicMutedValue;
@@ -917,6 +987,18 @@ export class AudioEngine {
     this.applyChannelGains();
     this.emit();
     return this.sfxMutedValue;
+  }
+
+  public toggleMarketMuted(force?: boolean): boolean {
+    return this.toggleSubmixMuted('market', force);
+  }
+
+  public toggleWeatherMuted(force?: boolean): boolean {
+    return this.toggleSubmixMuted('weather', force);
+  }
+
+  public toggleMovementMuted(force?: boolean): boolean {
+    return this.toggleSubmixMuted('movement', force);
   }
 
   public setVisible(visible: boolean): void {
@@ -970,13 +1052,24 @@ export class AudioEngine {
     for (const graph of this.monumentGraphs.values()) this.disposeMonumentGraph(graph);
     this.monumentGraphs.clear();
     this.desiredSources.clear();
-    for (const node of [this.ambientBus, this.sfxBus, this.masterBus, this.outputCompressor]) {
+    for (const node of [
+      this.ambientBus,
+      this.marketBus,
+      this.weatherBus,
+      this.movementBus,
+      this.sfxBus,
+      this.masterBus,
+      this.outputCompressor,
+    ]) {
       if (node) safeDisconnect(node);
     }
     const context = this.context;
     this.context = null;
     this.masterBus = null;
     this.ambientBus = null;
+    this.marketBus = null;
+    this.weatherBus = null;
+    this.movementBus = null;
     this.sfxBus = null;
     this.outputCompressor = null;
     this.transientNoiseBuffer = null;
@@ -997,6 +1090,9 @@ export class AudioEngine {
     const master = context.createGain();
     const ambient = context.createGain();
     const sfx = context.createGain();
+    const market = context.createGain();
+    const weather = context.createGain();
+    const movement = context.createGain();
     const compressor = context.createDynamicsCompressor();
     ambient.gain.value = 0.4;
     sfx.gain.value = 1;
@@ -1006,12 +1102,18 @@ export class AudioEngine {
     compressor.attack.value = 0.008;
     compressor.release.value = 0.22;
     ambient.connect(master);
+    market.connect(sfx);
+    weather.connect(sfx);
+    movement.connect(sfx);
     sfx.connect(master);
     master.connect(compressor);
     compressor.connect(context.destination);
     this.masterBus = master;
     this.ambientBus = ambient;
     this.sfxBus = sfx;
+    this.marketBus = market;
+    this.weatherBus = weather;
+    this.movementBus = movement;
     this.outputCompressor = compressor;
     this.applyMasterGain();
     this.applyEnvironmentMix();
@@ -1043,14 +1145,30 @@ export class AudioEngine {
     const sfxLevel = this.sfxMutedValue ? 0 : Math.pow(this.sfxVolumeValue, 1.35);
     this.ambientBus?.gain.setTargetAtTime((0.4 + this.nightFactor * 0.012) * musicLevel, now, 0.04);
     this.sfxBus?.gain.setTargetAtTime(sfxLevel, now, 0.025);
+    this.marketBus?.gain.setTargetAtTime(
+      this.marketMutedValue ? 0 : Math.pow(this.marketVolumeValue, 1.3),
+      now,
+      0.025,
+    );
+    this.weatherBus?.gain.setTargetAtTime(
+      this.weatherMutedValue ? 0 : Math.pow(this.weatherVolumeValue, 1.3),
+      now,
+      0.04,
+    );
+    this.movementBus?.gain.setTargetAtTime(
+      this.movementMutedValue ? 0 : Math.pow(this.movementVolumeValue, 1.3),
+      now,
+      0.025,
+    );
   }
 
   private createPositionalEffectBus(
     position: AudioPosition,
     maxDistance: number,
     trim: number,
+    destination: GainNode | null = this.sfxBus,
   ): { input: GainNode; panner: PannerNode; nodes: readonly AudioNode[] } | null {
-    if (!this.context || !this.sfxBus) return null;
+    if (!this.context || !destination) return null;
     const distance = Math.hypot(
       position.x - this.proximityPosition.x,
       position.y - this.proximityPosition.y,
@@ -1072,12 +1190,12 @@ export class AudioEngine {
     panner.positionY.value = position.y;
     panner.positionZ.value = position.z;
     input.connect(panner);
-    panner.connect(this.sfxBus);
+    panner.connect(destination);
     return { input, panner, nodes: [input, panner] };
   }
 
   private syncMonumentGraphs(): void {
-    if (!this.context || !this.sfxBus) return;
+    if (!this.context || !this.marketBus) return;
     for (const [id, graph] of this.monumentGraphs) {
       if (!this.desiredSources.has(id)) {
         this.disposeMonumentGraph(graph);
@@ -1103,7 +1221,7 @@ export class AudioEngine {
       panner.maxDistance = MARKET_AUDIO_MAX_RADIUS + 4;
       panner.rolloffFactor = 0;
       input.connect(panner);
-      panner.connect(this.sfxBus);
+      panner.connect(this.marketBus);
       const graph = { descriptor, input, panner, proximityGain: 0 };
       this.monumentGraphs.set(descriptor.id, graph);
       this.positionMonumentGraph(graph);
@@ -1182,7 +1300,13 @@ export class AudioEngine {
   }
 
   private startAmbient(): void {
-    if (this.ambientStarted || !this.context || !this.ambientBus || this.disposed) return;
+    if (
+      this.ambientStarted
+      || !this.context
+      || !this.ambientBus
+      || !this.weatherBus
+      || this.disposed
+    ) return;
     const context = this.context;
     const now = context.currentTime;
     this.ambientStarted = true;
@@ -1247,7 +1371,7 @@ export class AudioEngine {
     atmosphere.connect(atmosphereHighpass);
     atmosphereHighpass.connect(atmosphereLowpass);
     atmosphereLowpass.connect(atmosphereGain);
-    atmosphereGain.connect(this.ambientBus);
+    atmosphereGain.connect(this.weatherBus);
     atmosphereLfo.connect(atmosphereLfoDepth);
     atmosphereLfoDepth.connect(atmosphereGain.gain);
     atmosphereFilterLfo.connect(atmosphereFilterDepth);
@@ -1293,7 +1417,14 @@ export class AudioEngine {
   }
 
   private syncRainAmbience(): void {
-    if (!this.context || !this.sfxBus || !this.visible || this.rainIntensity <= 0.01) {
+    if (
+      !this.context
+      || !this.weatherBus
+      || !this.visible
+      || this.weatherMutedValue
+      || this.weatherVolumeValue <= 0.001
+      || this.rainIntensity <= 0.01
+    ) {
       if (this.activeRainGraph) this.stopRainAmbience(1.15);
       return;
     }
@@ -1323,7 +1454,7 @@ export class AudioEngine {
       source.connect(highpass);
       highpass.connect(lowpass);
       lowpass.connect(gain);
-      gain.connect(this.sfxBus);
+      gain.connect(this.weatherBus);
       const graph: RainAmbienceGraph = {
         source,
         highpass,
@@ -1796,9 +1927,72 @@ export class AudioEngine {
       && this.scheduledSources.size < voiceLimit;
   }
 
-  private canPlaySfx(priority = false): boolean {
+  private submixPreference(kind: AudioSubmixKind): {
+    volume: number;
+    muted: boolean;
+  } {
+    switch (kind) {
+      case 'market': return { volume: this.marketVolumeValue, muted: this.marketMutedValue };
+      case 'weather': return { volume: this.weatherVolumeValue, muted: this.weatherMutedValue };
+      case 'movement': return { volume: this.movementVolumeValue, muted: this.movementMutedValue };
+    }
+  }
+
+  private setSubmixVolume(kind: AudioSubmixKind, volume: number): void {
+    if (this.disposed) return;
+    const next = clampUnit(volume);
+    const current = this.submixPreference(kind).volume;
+    if (next === current) return;
+    switch (kind) {
+      case 'market':
+        this.marketVolumeValue = next;
+        this.persist(MARKET_VOLUME_KEY, String(next));
+        break;
+      case 'weather':
+        this.weatherVolumeValue = next;
+        this.persist(WEATHER_VOLUME_KEY, String(next));
+        break;
+      case 'movement':
+        this.movementVolumeValue = next;
+        this.persist(MOVEMENT_VOLUME_KEY, String(next));
+        break;
+    }
+    this.applyChannelGains();
+    if (kind === 'weather') this.syncRainAmbience();
+    this.emit();
+  }
+
+  private toggleSubmixMuted(kind: AudioSubmixKind, force?: boolean): boolean {
+    if (this.disposed) return this.submixPreference(kind).muted;
+    const next = force ?? !this.submixPreference(kind).muted;
+    switch (kind) {
+      case 'market':
+        this.marketMutedValue = next;
+        this.persist(MARKET_MUTED_KEY, String(next));
+        break;
+      case 'weather':
+        this.weatherMutedValue = next;
+        this.persist(WEATHER_MUTED_KEY, String(next));
+        break;
+      case 'movement':
+        this.movementMutedValue = next;
+        this.persist(MOVEMENT_MUTED_KEY, String(next));
+        break;
+    }
+    this.applyChannelGains();
+    if (kind === 'weather') this.syncRainAmbience();
+    this.emit();
+    return next;
+  }
+
+  private canPlaySfx(priority = false, submix?: AudioSubmixKind): boolean {
+    const submixEnabled = !submix || (() => {
+      const preference = this.submixPreference(submix);
+      return !preference.muted && preference.volume > 0.001;
+    })();
     return !this.sfxMutedValue
       && this.sfxVolumeValue > 0.001
+      && submixEnabled
       && this.canPlayEffect(priority);
   }
 

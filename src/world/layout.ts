@@ -220,7 +220,7 @@ export function generateChunkLayout(options: ChunkLayoutOptions): ChunkLayout {
   // Ground foliage shares one instanced draw with the flower clusters. A
   // generous count makes the bounded worlds feel planted without adding
   // individual meshes, materials, or frame-time-dependent randomness.
-  addNaturalProps('grass', 20 + Math.floor(random() * 14), 0.48);
+  addNaturalProps('grass', 72 + Math.floor(random() * 48), 0.27);
 
   const addPathProp = (kind: 'lamp' | 'bench', wanted: number): void => {
     let placed = 0;

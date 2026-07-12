@@ -145,8 +145,11 @@ describe('market candle helpers', () => {
       ratios.push((state.price! / active.open) - 1);
     }
     expect(ratios.some((ratio) => Math.abs(ratio) < 0.00007)).toBe(true);
-    expect(ratios.some((ratio) => ratio >= 0.001)).toBe(true);
-    expect(ratios.some((ratio) => ratio <= -0.001)).toBe(true);
+    expect(ratios.some((ratio) => ratio >= 0.02)).toBe(true);
+    expect(ratios.some((ratio) => ratio <= -0.02)).toBe(true);
+    for (let index = 1; index < ratios.length; index += 1) {
+      expect(ratios[index]).not.toBe(ratios[index - 1]);
+    }
   });
 
   it('keeps a combined socket healthy when any stream is active', () => {

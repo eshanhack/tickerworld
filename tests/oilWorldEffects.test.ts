@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { OilWorldEffects } from '../src/world';
 
 describe('WTI world effects', () => {
-  it('stays dormant outside WTI and bounds jets, blasts, callbacks, and cleanup', () => {
+  it('plays one prompt first-visit flyby, then keeps return and repeat flybys sparse', () => {
     const parent = new THREE.Group();
     const jet = vi.fn();
     const explosion = vi.fn();
@@ -19,8 +19,15 @@ describe('WTI world effects', () => {
     expect(effects.getDebugStats()).toEqual({ active: false, jets: 0, blasts: 0 });
 
     effects.setActiveMarket('WTI');
-    for (let frame = 0; frame < 110; frame += 1) {
-      effects.update(0.1, 3 + frame * 0.1, new THREE.Vector3());
+    for (let frame = 0; frame < 8; frame += 1) {
+      effects.update(0.1, frame * 0.1, new THREE.Vector3());
+    }
+    expect(effects.getDebugStats().jets).toBe(0);
+    effects.update(0.1, 0.8, new THREE.Vector3());
+    expect(effects.getDebugStats().jets).toBe(1);
+
+    for (let frame = 0; frame < 120; frame += 1) {
+      effects.update(0.1, 0.9 + frame * 0.1, new THREE.Vector3());
     }
     expect(effects.getDebugStats().active).toBe(true);
     expect(jet).toHaveBeenCalledTimes(1);
@@ -30,6 +37,13 @@ describe('WTI world effects', () => {
 
     effects.setActiveMarket('BTC');
     expect(effects.getDebugStats()).toEqual({ active: false, jets: 0, blasts: 0 });
+    effects.setActiveMarket('WTI');
+    for (let frame = 0; frame < 170; frame += 1) {
+      effects.update(0.1, 20 + frame * 0.1, new THREE.Vector3());
+    }
+    expect(effects.getDebugStats().jets).toBe(0);
+    expect(jet).toHaveBeenCalledTimes(1);
+
     effects.dispose();
     effects.dispose();
     expect(parent.children).not.toContain(effects.root);

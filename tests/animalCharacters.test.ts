@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { describe, expect, it } from 'vitest';
-import { ANIMAL_KINDS, type AnimalKind } from '../shared/src/index.js';
+import { ANIMAL_KINDS, MAX_SPRINT_SPEED, type AnimalKind } from '../shared/src/index.js';
 import {
   ANIMAL_MOTION_PROFILES,
   FoxPlayer,
@@ -49,12 +49,17 @@ describe('distinct playable animal characters', () => {
     }
   });
 
-  it('preserves playful real-world size contrast without exceeding the network speed cap', () => {
+  it('preserves playful size contrast and a wide network-safe speed range', () => {
     expect(ANIMAL_MOTION_PROFILES.frog.modelScale).toBeLessThan(ANIMAL_MOTION_PROFILES.rabbit.modelScale);
     expect(ANIMAL_MOTION_PROFILES.rabbit.modelScale).toBeLessThan(ANIMAL_MOTION_PROFILES.fox.modelScale);
     expect(ANIMAL_MOTION_PROFILES.fox.modelScale).toBeLessThan(ANIMAL_MOTION_PROFILES.bear.modelScale);
     expect(Math.max(...ANIMAL_KINDS.map((animal) => ANIMAL_MOTION_PROFILES[animal].sprintSpeed)))
-      .toBeLessThanOrEqual(7.15);
+      .toBeLessThanOrEqual(MAX_SPRINT_SPEED);
+    expect(ANIMAL_MOTION_PROFILES.rabbit.sprintSpeed).toBeGreaterThanOrEqual(8.3);
+    expect(ANIMAL_MOTION_PROFILES.frog.sprintSpeed).toBeGreaterThanOrEqual(8);
+    expect(ANIMAL_MOTION_PROFILES.cat.sprintSpeed).toBeGreaterThanOrEqual(7.8);
+    expect(ANIMAL_MOTION_PROFILES.rabbit.sprintSpeed - ANIMAL_MOTION_PROFILES.bear.sprintSpeed)
+      .toBeGreaterThan(3.8);
     expect(new Set(ANIMAL_KINDS.map((animal) => (
       ANIMAL_MOTION_PROFILES[animal].doubleJumpTurns.join(':')
     ))).size).toBe(8);
@@ -91,6 +96,19 @@ describe('distinct playable animal characters', () => {
     expect(frogApex).toBeGreaterThan(bearApex + 0.75);
     frog.dispose();
     bear.dispose();
+  });
+
+  it('makes the lightweight rabbit, frog, and cat outrun the baseline fox', () => {
+    const fox = create('fox');
+    const lightweightKinds: readonly AnimalKind[] = ['rabbit', 'frog', 'cat'];
+    const lightweight = lightweightKinds.map(create);
+    advance(fox, 150, true);
+    lightweight.forEach((player) => advance(player, 150, true));
+    for (const player of lightweight) {
+      expect(Math.abs(player.position.z)).toBeGreaterThan(Math.abs(fox.position.z) + 0.75);
+      player.dispose();
+    }
+    fox.dispose();
   });
 
   it('gives species visibly different double-jump flips', () => {

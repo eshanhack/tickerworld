@@ -23,9 +23,9 @@ const VOLATILITY: Record<AssetSymbol, number> = {
   LINK: 0.002,
   AVAX: 0.0022,
   WTI: 0.0014,
-  // TEST is intentionally extreme: at the 400 ms presentation cadence it
-  // repeatedly crosses the market-event thresholds for deterministic QA.
-  TEST: 0.018,
+  // TEST history stays compact enough that its much larger live moves remain
+  // visually legible instead of disappearing inside an oversized seed range.
+  TEST: 0.0045,
 };
 
 export function hashString(value: string): number {
@@ -173,22 +173,22 @@ export function stepSimulation(
 }
 
 const TEST_EVENT_RATIOS = [
-  0,
-  0.00016,
-  0.00052,
-  0.00145,
-  0.00002,
-  -0.00018,
-  -0.00058,
-  -0.00155,
-  0,
-  0.00072,
-  0.0017,
-  0.00001,
-  -0.00075,
-  -0.0018,
-  0,
-  0.00012,
+  0.00004,
+  0.0028,
+  0.0075,
+  0.018,
+  0.00006,
+  -0.0032,
+  -0.009,
+  -0.021,
+  -0.00005,
+  0.004,
+  0.011,
+  0.024,
+  0.00008,
+  -0.005,
+  -0.013,
+  -0.026,
 ] as const;
 
 /**

@@ -43,6 +43,12 @@ interface OilBlast {
   readonly duration: number;
 }
 
+const WELCOME_FLYBY_DELAY_SECONDS = 0.85;
+const RETURN_FLYBY_MIN_DELAY_SECONDS = 18;
+const RETURN_FLYBY_DELAY_RANGE_SECONDS = 10;
+const REPEAT_FLYBY_MIN_DELAY_SECONDS = 36;
+const REPEAT_FLYBY_DELAY_RANGE_SECONDS = 18;
+
 /**
  * A small, allocation-bounded WTI vignette. Aircraft and blasts are stylised
  * toys with no flags, factions, targets, or real-world conflict references.
@@ -77,7 +83,8 @@ export class OilWorldEffects {
   private readonly jets: JetFlight[] = [];
   private readonly blasts: OilBlast[] = [];
   private randomState = 0x51f15e;
-  private nextFlightAt = 2.8;
+  private secondsUntilNextFlight = Number.POSITIVE_INFINITY;
+  private welcomeFlybyPlayed = false;
   private active = false;
   private reducedMotion: boolean;
   private disposed = false;
@@ -98,19 +105,26 @@ export class OilWorldEffects {
     this.active = active;
     this.root.visible = active;
     this.clearActiveEffects();
-    this.nextFlightAt = active ? 2.6 : Number.POSITIVE_INFINITY;
+    this.secondsUntilNextFlight = active
+      ? this.welcomeFlybyPlayed
+        ? RETURN_FLYBY_MIN_DELAY_SECONDS + this.random() * RETURN_FLYBY_DELAY_RANGE_SECONDS
+        : WELCOME_FLYBY_DELAY_SECONDS
+      : Number.POSITIVE_INFINITY;
   }
 
   public setReducedMotion(reducedMotion: boolean): void {
     this.reducedMotion = reducedMotion;
   }
 
-  public update(deltaSeconds: number, elapsedSeconds: number, playerPosition: Vector3): void {
+  public update(deltaSeconds: number, _elapsedSeconds: number, playerPosition: Vector3): void {
     if (!this.active || this.disposed) return;
     const delta = Math.max(0, Math.min(0.1, deltaSeconds));
-    if (elapsedSeconds >= this.nextFlightAt && this.jets.length < 2) {
+    this.secondsUntilNextFlight = Math.max(0, this.secondsUntilNextFlight - delta);
+    if (this.secondsUntilNextFlight <= 0 && this.jets.length < 2) {
       this.spawnJet();
-      this.nextFlightAt = elapsedSeconds + 10 + this.random() * 8;
+      this.welcomeFlybyPlayed = true;
+      this.secondsUntilNextFlight = REPEAT_FLYBY_MIN_DELAY_SECONDS
+        + this.random() * REPEAT_FLYBY_DELAY_RANGE_SECONDS;
     }
 
     for (let index = this.jets.length - 1; index >= 0; index -= 1) {

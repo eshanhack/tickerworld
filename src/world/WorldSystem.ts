@@ -77,6 +77,8 @@ export interface WorldDebugStats {
   grassInstances: number;
   shrubInstances: number;
   bendingVegetation: number;
+  cloudPuffs: number;
+  cloudDrawCalls: number;
 }
 
 export type DropFlashTier = 'large' | 'exceptional';
@@ -126,6 +128,17 @@ interface VegetationInstance {
   bendZ: number;
 }
 
+interface CloudPuff {
+  readonly baseX: number;
+  readonly baseZ: number;
+  readonly y: number;
+  readonly scaleX: number;
+  readonly scaleY: number;
+  readonly scaleZ: number;
+  readonly speed: number;
+  readonly phase: number;
+}
+
 /** A complete session-relative day, dusk, night, and dawn cycle. */
 export const DEFAULT_DAY_DURATION_SECONDS = 18 * 60;
 const LOAD_BUDGET = 3;
@@ -139,6 +152,10 @@ const RAIN_RADIUS = 19;
 const RAIN_COLUMN_HEIGHT = 17;
 const VEGETATION_GRID_SIZE = 5;
 const VEGETATION_SOUND_COOLDOWN_SECONDS = 0.3;
+const CLOUD_GROUP_COUNT = 14;
+const CLOUD_PUFFS_PER_GROUP = 3;
+const CLOUD_PUFF_CAPACITY = CLOUD_GROUP_COUNT * CLOUD_PUFFS_PER_GROUP;
+const CLOUD_FIELD_RADIUS = 108;
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
 
 function clamp01(value: number): number {
@@ -213,6 +230,12 @@ export class WorldSystem {
   private readonly rainLines: THREE.LineSegments<THREE.BufferGeometry, THREE.LineBasicMaterial>;
   private readonly rainMaterial: THREE.LineBasicMaterial;
   private readonly rainPositions: Float32Array;
+  private readonly cloudMesh: THREE.InstancedMesh<THREE.BufferGeometry, THREE.MeshLambertMaterial>;
+  private readonly cloudMaterial: THREE.MeshLambertMaterial;
+  private readonly cloudPuffs: readonly CloudPuff[];
+  private readonly cloudDay = new THREE.Color(0xfff2dc);
+  private readonly cloudNight = new THREE.Color(0x91a2b6);
+  private readonly cloudStorm = new THREE.Color(0x74869a);
   private readonly weatherSeed: number;
   private readonly previousBackground: THREE.Scene['background'];
   private readonly previousFog: THREE.Scene['fog'];
@@ -313,6 +336,31 @@ export class WorldSystem {
     }));
 
     this.pools = this.createPools();
+
+    const cloudGeometry = this.trackGeometry(new THREE.IcosahedronGeometry(1, 1));
+    this.cloudMaterial = this.trackMaterial(new THREE.MeshLambertMaterial({
+      color: this.cloudDay,
+      // Opaque low-poly puffs stay in the early depth-writing pass, so the
+      // later market overlays always remain perfectly legible.
+      transparent: false,
+      alphaHash: false,
+      opacity: 1,
+      depthWrite: true,
+      fog: true,
+    }));
+    this.cloudMesh = new THREE.InstancedMesh(
+      cloudGeometry,
+      this.cloudMaterial,
+      CLOUD_PUFF_CAPACITY,
+    );
+    this.cloudMesh.name = 'AtmosphereClouds';
+    this.cloudMesh.count = CLOUD_PUFF_CAPACITY;
+    this.cloudMesh.frustumCulled = false;
+    this.cloudMesh.castShadow = false;
+    this.cloudMesh.receiveShadow = false;
+    this.cloudMesh.renderOrder = -1;
+    this.cloudPuffs = this.createCloudPuffs();
+    this.propRoot.add(this.cloudMesh);
 
     const lampMoteGeometry = this.trackGeometry(new THREE.BufferGeometry());
     this.lampMotePositions = new Float32Array(LAMP_MOTE_CAPACITY * 3);
@@ -461,6 +509,8 @@ export class WorldSystem {
       grassInstances: this.grassInstanceCount,
       shrubInstances: this.shrubInstanceCount,
       bendingVegetation: this.activeVegetation.size,
+      cloudPuffs: this.cloudMesh.count,
+      cloudDrawCalls: Number(this.cloudMesh.visible && this.cloudMesh.count > 0),
     };
   }
 
@@ -515,7 +565,79 @@ export class WorldSystem {
     this.updateDayNight(playerPosition, elapsedSeconds);
     this.updateLampLights(playerPosition, elapsedSeconds);
     this.updateWeather(playerPosition, elapsedSeconds);
+    this.updateClouds(elapsedSeconds);
     this.updateVegetation(playerPosition, elapsedSeconds);
+  }
+
+  private createCloudPuffs(): readonly CloudPuff[] {
+    const puffs: CloudPuff[] = [];
+    const offsets = [
+      { x: -0.72, z: 0.08, scale: 0.82 },
+      { x: 0, z: -0.12, scale: 1 },
+      { x: 0.68, z: 0.14, scale: 0.76 },
+    ] as const;
+    for (let group = 0; group < CLOUD_GROUP_COUNT; group += 1) {
+      const angle = hashCoordinates(this.weatherSeed, group, 1, 41_011) * Math.PI * 2;
+      const radius = 18 + Math.sqrt(
+        hashCoordinates(this.weatherSeed, group, 2, 41_027),
+      ) * (CLOUD_FIELD_RADIUS - 24);
+      const centreX = Math.cos(angle) * radius;
+      const centreZ = Math.sin(angle) * radius;
+      const baseScale = 3.2 + hashCoordinates(this.weatherSeed, group, 3, 41_039) * 2.7;
+      const y = 27 + hashCoordinates(this.weatherSeed, group, 4, 41_053) * 12;
+      const speed = 0.23 + hashCoordinates(this.weatherSeed, group, 5, 41_071) * 0.23;
+      const phase = hashCoordinates(this.weatherSeed, group, 6, 41_087) * Math.PI * 2;
+      offsets.forEach((offset, puffIndex) => {
+        const scale = baseScale * offset.scale;
+        puffs.push({
+          baseX: centreX + offset.x * baseScale * 1.42,
+          baseZ: centreZ + offset.z * baseScale,
+          y: y + (puffIndex === 1 ? 0.48 : 0),
+          scaleX: scale * 1.18,
+          scaleY: scale * 0.42,
+          scaleZ: scale * 0.72,
+          speed,
+          phase: phase + puffIndex * 0.37,
+        });
+      });
+    }
+    return puffs;
+  }
+
+  private updateClouds(elapsedSeconds: number): void {
+    const motionScale = this.reducedMotion ? 0.16 : 1;
+    for (let index = 0; index < this.cloudPuffs.length; index += 1) {
+      const puff = this.cloudPuffs[index];
+      if (!puff) continue;
+      const x = positiveModulo(
+        puff.baseX + elapsedSeconds * puff.speed * motionScale + CLOUD_FIELD_RADIUS,
+        CLOUD_FIELD_RADIUS * 2,
+      ) - CLOUD_FIELD_RADIUS;
+      const z = puff.baseZ + Math.sin(
+        puff.phase + elapsedSeconds * 0.012 * motionScale,
+      ) * (this.reducedMotion ? 0.2 : 1.8);
+      this.tempPosition.set(x, puff.y, z);
+      this.tempQuaternion.setFromAxisAngle(
+        WORLD_UP,
+        puff.phase * 0.12 + elapsedSeconds * 0.0025 * motionScale,
+      );
+      this.tempScale.set(puff.scaleX, puff.scaleY, puff.scaleZ);
+      this.tempMatrix.compose(this.tempPosition, this.tempQuaternion, this.tempScale);
+      this.cloudMesh.setMatrixAt(index, this.tempMatrix);
+    }
+    this.cloudMesh.instanceMatrix.needsUpdate = true;
+    this.cloudMaterial.color.copy(this.cloudNight).lerp(this.cloudDay, this.daylight);
+    if (this.rainIntensity > 0) {
+      this.cloudMaterial.color.lerp(this.cloudStorm, this.rainIntensity * 0.72);
+    }
+    if (this.marketFlashIntensity > 0) {
+      this.cloudMaterial.color.lerp(
+        this.marketFlashDirection === 'up' ? this.riseSky : this.dropSky,
+        this.marketFlashIntensity * 0.34,
+      );
+    }
+    this.cloudMaterial.opacity = 1;
+    this.cloudMesh.visible = true;
   }
 
   private createPools(): Record<PoolName, InstancePool> {
@@ -587,7 +709,7 @@ export class WorldSystem {
       // Wildflowers and green grass share this one pool/material. Instance
       // colour preserves their distinct look while keeping the draw budget at
       // the existing nine prop calls.
-      flowers: this.createPool('Flowers', flowerGeometry, flower, chunkCapacity * 52),
+      flowers: this.createPool('Flowers', flowerGeometry, flower, chunkCapacity * 160),
       lampPosts: this.createPool('LampPosts', lampPostGeometry, lampPost, chunkCapacity * 2),
       lampGlobes: this.createPool('LampGlobes', lampGlobeGeometry, this.lampGlobeMaterial, chunkCapacity * 2),
       benches: this.createPool('Benches', benchGeometry, bench, chunkCapacity),

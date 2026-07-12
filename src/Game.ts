@@ -344,6 +344,12 @@ export class Game {
       onMusicVolumeChange: (value) => this.audio.setMusicVolume(value),
       onSfxMuteToggle: () => this.audio.toggleSfxMuted(),
       onSfxVolumeChange: (value) => this.audio.setSfxVolume(value),
+      onMarketMuteToggle: () => this.audio.toggleMarketMuted(),
+      onMarketVolumeChange: (value) => this.audio.setMarketVolume(value),
+      onWeatherMuteToggle: () => this.audio.toggleWeatherMuted(),
+      onWeatherVolumeChange: (value) => this.audio.setWeatherVolume(value),
+      onMovementMuteToggle: () => this.audio.toggleMovementMuted(),
+      onMovementVolumeChange: (value) => this.audio.setMovementVolume(value),
       onNewsDismiss: (itemId) => this.monuments.dismissNewsOverlay(itemId),
       onNewsInteractionChange: (active) => this.setUiInteraction('news', active),
       onAppearanceSelect: (animal, skin) => this.updateGuestAppearance({
@@ -551,6 +557,12 @@ export class Game {
       this.hud.setMusicVolume(state.musicVolume);
       this.hud.setSfxMuted(state.sfxMuted);
       this.hud.setSfxVolume(state.sfxVolume);
+      this.hud.setMarketMuted(state.marketMuted);
+      this.hud.setMarketVolume(state.marketVolume);
+      this.hud.setWeatherMuted(state.weatherMuted);
+      this.hud.setWeatherVolume(state.weatherVolume);
+      this.hud.setMovementMuted(state.movementMuted);
+      this.hud.setMovementVolume(state.movementVolume);
       if (state.status === 'resume-failed') this.hud.showToast('Tap the music button to wake the sound.');
     });
 

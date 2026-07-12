@@ -1,6 +1,7 @@
 import {
   ACCEPTED_PROTOCOL_VERSIONS,
   MARKET_SLUGS,
+  MAX_SPRINT_SPEED,
   PODIUM_EXCLUSION_RADIUS,
   SPAWN_SLOT_COUNT,
   SPAWN_SLOT_SPACING,
@@ -11,6 +12,7 @@ import {
   isActorId,
   isAllowedWorldXZ,
   normalizeUsername,
+  maximumHorizontalTravel,
   resolveWorldXZ,
   sampleBoundedTerrainHeight,
 } from '@tickerworld/shared';
@@ -43,6 +45,11 @@ describe('shared multiplayer contracts', () => {
     expect(Math.hypot(inner.x, inner.z)).toBeCloseTo(PODIUM_EXCLUSION_RADIUS);
     expect(inner.excluded).toBe(true);
     expect(isAllowedWorldXZ(inner.x, inner.z)).toBe(true);
+  });
+
+  it('uses the lightweight-species ceiling for authoritative travel tolerance', () => {
+    expect(MAX_SPRINT_SPEED).toBe(8.4);
+    expect(maximumHorizontalTravel(100)).toBeCloseTo(MAX_SPRINT_SPEED * 0.28);
   });
 
   it('maps each market to every other unique portal destination', () => {

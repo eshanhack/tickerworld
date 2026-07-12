@@ -15,6 +15,11 @@ import {
   createPortalLabelModel,
   createPortalRoutes,
   formatPortalPopulation,
+  PORTAL_LABEL_LAYOUT,
+  assignPortalLabelRows,
+  portalLabelCardsOverlap,
+  portalLabelCenterY,
+  portalLabelLineBounds,
   portalArrivalSpawn,
 } from '../src/portals';
 
@@ -81,7 +86,7 @@ describe('fixed portal routes', () => {
       priceText: '$1,234.5',
       populationText: '1,204 PEOPLE',
       marketText: 'LIVE',
-      text: `${route.destination}\nLIVE · 1,204 HERE`,
+      text: `${route.destination}\nLIVE\n1,204 PEOPLE`,
     });
     expect(createPortalLabelModel(route, {
       price: null,
@@ -91,13 +96,45 @@ describe('fixed portal routes', () => {
     })).toMatchObject({
       priceText: '$—',
       populationText: 'OFFLINE',
-      text: `${route.destination}\nLIVE · — HERE`,
+      text: `${route.destination}\nLIVE\nOFFLINE`,
     });
     expect(formatPortalPopulation(0, 'online')).toBe('0 PEOPLE');
     expect(formatPortalPopulation(1, 'online')).toBe('1 PERSON');
     expect(formatPortalPopulation(Number.NaN, 'online')).toBe('— PEOPLE');
     expect(formatPortalPopulation(-4, 'online')).toBe('— PEOPLE');
     expect(formatPortalPopulation(null, 'connecting')).toBe('CONNECTING');
+  });
+
+  it('assigns non-overlapping label cards and line bands in all ten worlds', () => {
+    const lines = portalLabelLineBounds();
+    expect(lines.title.bottom - lines.status.top).toBeGreaterThanOrEqual(
+      PORTAL_LABEL_LAYOUT.minimumLineGap,
+    );
+    expect(lines.status.bottom - lines.population.top).toBeGreaterThanOrEqual(
+      PORTAL_LABEL_LAYOUT.minimumLineGap,
+    );
+
+    for (const activeMarket of ASSET_SYMBOLS) {
+      const routes = createPortalRoutes(activeMarket);
+      const rows = assignPortalLabelRows(routes);
+      expect(rows.size).toBe(ASSET_SYMBOLS.length - 1);
+      expect([...rows.values()].every((row) => row >= 0 && Number.isInteger(row))).toBe(true);
+      for (let firstIndex = 0; firstIndex < routes.length; firstIndex += 1) {
+        const first = routes[firstIndex]!;
+        const firstRow = rows.get(first.id) ?? 0;
+        expect(portalLabelCenterY(firstRow) - PORTAL_LABEL_LAYOUT.cardHeight * 0.5)
+          .toBeGreaterThan(2.22 + 2.05);
+        for (let secondIndex = firstIndex + 1; secondIndex < routes.length; secondIndex += 1) {
+          const second = routes[secondIndex]!;
+          expect(portalLabelCardsOverlap(
+            first,
+            firstRow,
+            second,
+            rows.get(second.id) ?? 0,
+          )).toBe(false);
+        }
+      }
+    }
   });
 });
 
@@ -154,12 +191,22 @@ describe('PortalSystem presentation', () => {
     });
     const texts: Text[] = [];
     const ringGeometries = new Set<THREE.BufferGeometry>();
+    const labelCards: THREE.Mesh[] = [];
     system.root.traverse((object) => {
       if (object instanceof Text) texts.push(object);
       if (object.name.endsWith('-ring') && object instanceof THREE.Mesh) ringGeometries.add(object.geometry);
+      if (object.name.endsWith('-label-card') && object instanceof THREE.Mesh) labelCards.push(object);
     });
     expect(ringGeometries.size).toBe(1);
-    expect(texts.filter(({ text }) => text === `${route.destination}\nLIVE · 18 HERE`)).toHaveLength(2);
+    expect(labelCards).toHaveLength((ASSET_SYMBOLS.length - 1) * 2);
+    expect(labelCards.every(({ material }) => (
+      !Array.isArray(material)
+      && material.transparent === false
+      && material.depthWrite === true
+      && material.opacity === 1
+    ))).toBe(true);
+    expect(texts.filter(({ text }) => text === route.destination)).toHaveLength(2);
+    expect(texts.filter(({ text }) => text === '18 PEOPLE')).toHaveLength(2);
     expect(texts.every(({ text }) => !text.includes('$42.25'))).toBe(true);
 
     system.setPlayerProbe({ x: route.x, z: route.z, grounded: true });

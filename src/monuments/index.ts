@@ -9,6 +9,13 @@ export {
 } from './Monument';
 export { HorizonBadgePanel } from './HorizonBadgePanel';
 export {
+  MONUMENT_MARKET_LABEL_LAYOUT,
+  labelBoundsOverlap,
+  monumentMarketLabelBounds,
+  type LabelBounds,
+  type MonumentMarketLabelBounds,
+} from './marketLabelLayout';
+export {
   MonumentSystem,
   isSafeNewsPermalink,
   type MonumentGroundSample,

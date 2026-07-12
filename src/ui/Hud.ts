@@ -39,6 +39,12 @@ export interface HudCallbacks {
   onMusicVolumeChange: (value: number) => void;
   onSfxMuteToggle: () => void;
   onSfxVolumeChange: (value: number) => void;
+  onMarketMuteToggle: () => void;
+  onMarketVolumeChange: (value: number) => void;
+  onWeatherMuteToggle: () => void;
+  onWeatherVolumeChange: (value: number) => void;
+  onMovementMuteToggle: () => void;
+  onMovementVolumeChange: (value: number) => void;
   onCompassToggle: (enabled: boolean) => void;
   onReducedMotionToggle: (enabled: boolean) => void;
   onVirtualInput: (x: number, forward: number, sprint: boolean) => void;
@@ -137,6 +143,12 @@ export class Hud {
   private readonly musicVolumeInput: HTMLInputElement;
   private readonly sfxMuteButton: HTMLButtonElement;
   private readonly sfxVolumeInput: HTMLInputElement;
+  private readonly marketMuteButton: HTMLButtonElement;
+  private readonly marketVolumeInput: HTMLInputElement;
+  private readonly weatherMuteButton: HTMLButtonElement;
+  private readonly weatherVolumeInput: HTMLInputElement;
+  private readonly movementMuteButton: HTMLButtonElement;
+  private readonly movementVolumeInput: HTMLInputElement;
   private readonly compassButton: HTMLButtonElement;
   private readonly motionButton: HTMLButtonElement;
   private readonly toast: HTMLElement;
@@ -234,6 +246,9 @@ export class Hud {
         <div class="audio-mixer settings-audio-mixer" aria-label="Sound controls">
           <div class="audio-channel"><button class="channel-mute" type="button" aria-label="Mute music" data-music-mute><span>&#9834;</span><strong>Music</strong></button><label aria-label="Music volume"><input type="range" min="0" max="1" step="0.01" value="1" data-music-volume /></label></div>
           <div class="audio-channel"><button class="channel-mute" type="button" aria-label="Mute sound effects" data-sfx-mute><span>&#10022;</span><strong>FX</strong></button><label aria-label="Sound effects volume"><input type="range" min="0" max="1" step="0.01" value="1" data-sfx-volume /></label></div>
+          <div class="audio-channel audio-submix"><button class="channel-mute" type="button" aria-label="Mute chart sounds" data-market-mute><span>&#8599;</span><strong>Charts</strong></button><label aria-label="Chart and market volume"><input type="range" min="0" max="1" step="0.01" value="1" data-market-volume /></label></div>
+          <div class="audio-channel audio-submix"><button class="channel-mute" type="button" aria-label="Mute weather and world ambience" data-weather-mute><span>&#9729;</span><strong>Weather</strong></button><label aria-label="Weather and world ambience volume"><input type="range" min="0" max="1" step="0.01" value="1" data-weather-volume /></label></div>
+          <div class="audio-channel audio-submix"><button class="channel-mute" type="button" aria-label="Mute movement sounds" data-movement-mute><span>&#8767;</span><strong>Movement</strong></button><label aria-label="Movement, footsteps, and foliage volume"><input type="range" min="0" max="1" step="0.01" value="1" data-movement-volume /></label></div>
         </div>
         <button type="button" class="compass-setting wardrobe-setting" data-settings-wardrobe><span>Creature wardrobe</span><strong>8 CREATURES</strong></button>
         <button type="button" class="compass-setting" data-compass-setting><span>Monument whisper</span><strong>ON</strong></button>
@@ -278,6 +293,12 @@ export class Hud {
     this.musicVolumeInput = this.required<HTMLInputElement>('[data-music-volume]');
     this.sfxMuteButton = this.required<HTMLButtonElement>('[data-sfx-mute]');
     this.sfxVolumeInput = this.required<HTMLInputElement>('[data-sfx-volume]');
+    this.marketMuteButton = this.required<HTMLButtonElement>('[data-market-mute]');
+    this.marketVolumeInput = this.required<HTMLInputElement>('[data-market-volume]');
+    this.weatherMuteButton = this.required<HTMLButtonElement>('[data-weather-mute]');
+    this.weatherVolumeInput = this.required<HTMLInputElement>('[data-weather-volume]');
+    this.movementMuteButton = this.required<HTMLButtonElement>('[data-movement-mute]');
+    this.movementVolumeInput = this.required<HTMLInputElement>('[data-movement-volume]');
     this.compassButton = this.required<HTMLButtonElement>('[data-compass-setting]');
     this.motionButton = this.required<HTMLButtonElement>('[data-motion-setting]');
     this.toast = this.required('[data-toast]');
@@ -319,6 +340,12 @@ export class Hud {
     this.musicVolumeInput.addEventListener('input', this.musicVolume);
     this.sfxMuteButton.addEventListener('click', this.sfxMute);
     this.sfxVolumeInput.addEventListener('input', this.sfxVolume);
+    this.marketMuteButton.addEventListener('click', this.marketMute);
+    this.marketVolumeInput.addEventListener('input', this.marketVolume);
+    this.weatherMuteButton.addEventListener('click', this.weatherMute);
+    this.weatherVolumeInput.addEventListener('input', this.weatherVolume);
+    this.movementMuteButton.addEventListener('click', this.movementMute);
+    this.movementVolumeInput.addEventListener('input', this.movementVolume);
     this.helpButton.addEventListener('click', this.toggleHelp);
     this.closeHelpButton.addEventListener('click', this.closeHelp);
     this.wardrobeButton.addEventListener('click', this.toggleWardrobe);
@@ -517,6 +544,30 @@ export class Hud {
     this.sfxVolumeInput.value = String(value);
   }
 
+  public setMarketMuted(muted: boolean): void {
+    this.setSubmixMuted(this.marketMuteButton, muted, '\u2197', 'chart sounds');
+  }
+
+  public setMarketVolume(value: number): void {
+    this.marketVolumeInput.value = String(value);
+  }
+
+  public setWeatherMuted(muted: boolean): void {
+    this.setSubmixMuted(this.weatherMuteButton, muted, '\u2601', 'weather and world ambience');
+  }
+
+  public setWeatherVolume(value: number): void {
+    this.weatherVolumeInput.value = String(value);
+  }
+
+  public setMovementMuted(muted: boolean): void {
+    this.setSubmixMuted(this.movementMuteButton, muted, '\u223f', 'movement sounds');
+  }
+
+  public setMovementVolume(value: number): void {
+    this.movementVolumeInput.value = String(value);
+  }
+
   public showToast(message: string): void {
     if (this.toastTimer !== undefined) window.clearTimeout(this.toastTimer);
     this.toast.textContent = message;
@@ -560,6 +611,12 @@ export class Hud {
     this.musicVolumeInput.removeEventListener('input', this.musicVolume);
     this.sfxMuteButton.removeEventListener('click', this.sfxMute);
     this.sfxVolumeInput.removeEventListener('input', this.sfxVolume);
+    this.marketMuteButton.removeEventListener('click', this.marketMute);
+    this.marketVolumeInput.removeEventListener('input', this.marketVolume);
+    this.weatherMuteButton.removeEventListener('click', this.weatherMute);
+    this.weatherVolumeInput.removeEventListener('input', this.weatherVolume);
+    this.movementMuteButton.removeEventListener('click', this.movementMute);
+    this.movementVolumeInput.removeEventListener('input', this.movementVolume);
     this.helpButton.removeEventListener('click', this.toggleHelp);
     this.closeHelpButton.removeEventListener('click', this.closeHelp);
     this.wardrobeButton.removeEventListener('click', this.toggleWardrobe);
@@ -595,6 +652,17 @@ export class Hud {
     const element = this.root.querySelector<T>(selector);
     if (!element) throw new Error(`Tickerworld HUD is missing ${selector}`);
     return element;
+  }
+
+  private setSubmixMuted(
+    button: HTMLButtonElement,
+    muted: boolean,
+    icon: string,
+    label: string,
+  ): void {
+    button.classList.toggle('is-active', muted);
+    button.querySelector('span')!.textContent = muted ? '\u00d7' : icon;
+    button.setAttribute('aria-label', `${muted ? 'Unmute' : 'Mute'} ${label}`);
   }
 
   private renderOnboarding(snapshot: OnboardingSnapshot): void {
@@ -679,6 +747,12 @@ export class Hud {
   private readonly musicVolume = (): void => this.callbacks.onMusicVolumeChange(Number(this.musicVolumeInput.value));
   private readonly sfxMute = (): void => this.callbacks.onSfxMuteToggle();
   private readonly sfxVolume = (): void => this.callbacks.onSfxVolumeChange(Number(this.sfxVolumeInput.value));
+  private readonly marketMute = (): void => this.callbacks.onMarketMuteToggle();
+  private readonly marketVolume = (): void => this.callbacks.onMarketVolumeChange(Number(this.marketVolumeInput.value));
+  private readonly weatherMute = (): void => this.callbacks.onWeatherMuteToggle();
+  private readonly weatherVolume = (): void => this.callbacks.onWeatherVolumeChange(Number(this.weatherVolumeInput.value));
+  private readonly movementMute = (): void => this.callbacks.onMovementMuteToggle();
+  private readonly movementVolume = (): void => this.callbacks.onMovementVolumeChange(Number(this.movementVolumeInput.value));
   private readonly retryContext = (): void => this.callbacks.onContextRetry?.();
 
   private readonly jump = (event: PointerEvent): void => {

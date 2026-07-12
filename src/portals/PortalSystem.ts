@@ -9,6 +9,7 @@ import {
   Object3D,
   TorusGeometry,
 } from 'three';
+import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 import { Text } from 'troika-three-text';
 import { PALETTE } from '../config';
 import type { GameSystem, AssetSymbol } from '../types';
@@ -24,11 +25,15 @@ import {
   type PortalRoute,
 } from './portalLayout';
 import { PortalOverlayView } from './PortalOverlayView';
+import {
+  PORTAL_LABEL_LAYOUT,
+  assignPortalLabelRows,
+  portalLabelCenterY,
+} from './portalLabelLayout';
 
 const RING_RADIUS = 2.05;
 const RING_TUBE = 0.18;
 const PORTAL_CENTER_Y = 2.22;
-const LABEL_Y = 5.05;
 
 const DESTINATION_COLORS: Readonly<Record<AssetSymbol, number>> = {
   BTC: 0xe7a869,
@@ -47,8 +52,15 @@ interface PortalVisual {
   readonly route: PortalRoute;
   readonly group: Group;
   readonly ring: Mesh<TorusGeometry, MeshStandardMaterial>;
-  readonly frontLabel: Text;
-  readonly backLabel: Text;
+  readonly frontLabel: PortalLabelFace;
+  readonly backLabel: PortalLabelFace;
+}
+
+interface PortalLabelFace {
+  readonly root: Group;
+  readonly title: Text;
+  readonly status: Text;
+  readonly population: Text;
 }
 
 export interface PortalSystemOptions {
@@ -87,6 +99,7 @@ export class PortalSystem implements GameSystem {
   private readonly ringGeometry = new TorusGeometry(RING_RADIUS, RING_TUBE, 8, 32);
   private readonly apertureGeometry = new CircleGeometry(RING_RADIUS - RING_TUBE * 1.5, 32);
   private readonly pedestalGeometry = new CylinderGeometry(0.38, 0.52, 0.42, 8);
+  private readonly labelCardGeometry = new RoundedBoxGeometry(1, 1, 1, 3, 0.12);
   private readonly pedestalMaterial = new MeshStandardMaterial({
     color: PALETTE.stoneDark,
     roughness: 0.86,
@@ -98,6 +111,13 @@ export class PortalSystem implements GameSystem {
     opacity: 0.09,
     depthWrite: false,
     side: DoubleSide,
+  });
+  // Depth-writing opaque backing prevents the rear Troika face from bleeding
+  // through when a renderer/material variant treats glyphs as double-sided.
+  private readonly labelCardMaterial = new MeshBasicMaterial({
+    color: PALETTE.ink,
+    side: DoubleSide,
+    toneMapped: false,
   });
   private readonly ringMaterials = new Map<AssetSymbol, MeshStandardMaterial>();
   private readonly visuals: PortalVisual[] = [];
@@ -222,14 +242,17 @@ export class PortalSystem implements GameSystem {
     this.ringGeometry.dispose();
     this.apertureGeometry.dispose();
     this.pedestalGeometry.dispose();
+    this.labelCardGeometry.dispose();
     this.pedestalMaterial.dispose();
     this.apertureMaterial.dispose();
+    this.labelCardMaterial.dispose();
     for (const material of this.ringMaterials.values()) material.dispose();
     this.ringMaterials.clear();
     this.root.clear();
   }
 
   private buildVisuals(): void {
+    const labelRows = assignPortalLabelRows(this.routes);
     for (const route of this.routes) {
       const group = new Group();
       group.name = route.id;
@@ -255,9 +278,10 @@ export class PortalSystem implements GameSystem {
       rightPedestal.name = `${route.id}-right-pedestal`;
       rightPedestal.position.x = 1.58;
 
-      const frontLabel = this.createLabel(route, 'front');
-      const backLabel = this.createLabel(route, 'back');
-      group.add(ring, aperture, leftPedestal, rightPedestal, frontLabel, backLabel);
+      const labelCenterY = portalLabelCenterY(labelRows.get(route.id) ?? 0);
+      const frontLabel = this.createLabel(route, 'front', labelCenterY);
+      const backLabel = this.createLabel(route, 'back', labelCenterY);
+      group.add(ring, aperture, leftPedestal, rightPedestal, frontLabel.root, backLabel.root);
       this.root.add(group);
       const visual = { route, group, ring, frontLabel, backLabel };
       this.visuals.push(visual);
@@ -265,23 +289,55 @@ export class PortalSystem implements GameSystem {
     }
   }
 
-  private createLabel(route: PortalRoute, side: 'front' | 'back'): Text {
-    const label = new Text();
-    label.name = `${route.id}-${side}-label`;
-    label.fontSize = 0.46;
-    label.color = PALETTE.cream;
-    label.anchorX = 'center';
-    label.anchorY = 'middle';
-    label.textAlign = 'center';
-    label.maxWidth = 4.6;
-    label.lineHeight = 1.12;
-    label.outlineWidth = '3%';
-    label.outlineColor = PALETTE.ink;
-    label.outlineOpacity = 0.62;
-    label.position.set(0, LABEL_Y, side === 'front' ? 0.08 : -0.08);
-    if (side === 'back') label.rotation.y = Math.PI;
-    if (this.fontUrl) label.font = this.fontUrl;
-    return label;
+  private createLabel(
+    route: PortalRoute,
+    side: 'front' | 'back',
+    centerY: number,
+  ): PortalLabelFace {
+    const root = new Group();
+    root.name = `${route.id}-${side}-label`;
+    root.position.set(0, centerY, side === 'front' ? 0.1 : -0.1);
+    if (side === 'back') root.rotation.y = Math.PI;
+
+    const card = new Mesh(this.labelCardGeometry, this.labelCardMaterial);
+    card.name = `${route.id}-${side}-label-card`;
+    card.scale.set(PORTAL_LABEL_LAYOUT.cardWidth, PORTAL_LABEL_LAYOUT.cardHeight, 0.08);
+    card.renderOrder = 1;
+    root.add(card);
+
+    const createLine = (
+      name: string,
+      fontSize: number,
+      y: number,
+    ): Text => {
+      const text = new Text();
+      text.name = `${route.id}-${side}-${name}`;
+      text.fontSize = fontSize;
+      text.color = PALETTE.cream;
+      text.anchorX = 'center';
+      text.anchorY = 'middle';
+      text.textAlign = 'center';
+      text.whiteSpace = 'nowrap';
+      text.maxWidth = PORTAL_LABEL_LAYOUT.textMaxWidth;
+      text.outlineWidth = '2%';
+      text.outlineColor = PALETTE.ink;
+      text.outlineOpacity = 0.5;
+      text.depthOffset = -2;
+      text.renderOrder = 2;
+      text.position.set(0, y, 0.055);
+      if (this.fontUrl) text.font = this.fontUrl;
+      root.add(text);
+      return text;
+    };
+
+    const title = createLine('title', PORTAL_LABEL_LAYOUT.titleFontSize, PORTAL_LABEL_LAYOUT.titleY);
+    const status = createLine('status', PORTAL_LABEL_LAYOUT.statusFontSize, PORTAL_LABEL_LAYOUT.statusY);
+    const population = createLine(
+      'population',
+      PORTAL_LABEL_LAYOUT.populationFontSize,
+      PORTAL_LABEL_LAYOUT.populationY,
+    );
+    return { root, title, status, population };
   }
 
   private updateLabel(visual: PortalVisual): void {
@@ -291,11 +347,17 @@ export class PortalSystem implements GameSystem {
       connectionMode: 'offline' as const,
     };
     const model = createPortalLabelModel(visual.route, data);
-    visual.frontLabel.text = model.text;
-    visual.backLabel.text = model.text;
+    for (const face of [visual.frontLabel, visual.backLabel]) {
+      face.title.text = model.title;
+      face.status.text = model.marketText;
+      face.population.text = model.populationText;
+    }
     if (typeof self !== 'undefined') {
-      visual.frontLabel.sync();
-      visual.backLabel.sync();
+      for (const face of [visual.frontLabel, visual.backLabel]) {
+        face.title.sync();
+        face.status.sync();
+        face.population.sync();
+      }
     }
   }
 
@@ -328,8 +390,11 @@ export class PortalSystem implements GameSystem {
 
   private clearVisuals(): void {
     for (const visual of this.visuals) {
-      visual.frontLabel.dispose();
-      visual.backLabel.dispose();
+      for (const face of [visual.frontLabel, visual.backLabel]) {
+        face.title.dispose();
+        face.status.dispose();
+        face.population.dispose();
+      }
       visual.group.removeFromParent();
       visual.group.clear();
     }

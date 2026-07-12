@@ -112,15 +112,6 @@ export function createPortalLabelModel(
       : live.feedMode === 'reconnecting'
         ? 'RECONNECTING'
         : 'CONNECTING';
-  const occupancyText = connectionMode === 'online'
-    ? live.population === 1
-      ? '1 HERE'
-      : live.population !== null && Number.isFinite(live.population) && live.population >= 0
-        ? `${Math.floor(live.population).toLocaleString('en-US')} HERE`
-        : '— HERE'
-    : connectionMode === 'connecting'
-      ? '… HERE'
-      : '— HERE';
   return {
     destination: route.destination,
     title: route.destination,
@@ -128,7 +119,7 @@ export function createPortalLabelModel(
     populationText,
     marketText,
     connectionMode,
-    text: `${route.destination}\n${marketText} · ${occupancyText}`,
+    text: `${route.destination}\n${marketText}\n${populationText}`,
   };
 }
 

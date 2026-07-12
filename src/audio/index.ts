@@ -33,6 +33,7 @@ export type {
   AudioListenerPose,
   AudioPosition,
   AudioStateListener,
+  AudioSubmixKind,
   FootstepSoundOptions,
   MarketAccentSoundOptions,
   MarketAccentTier,

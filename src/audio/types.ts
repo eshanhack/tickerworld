@@ -43,8 +43,17 @@ export interface AudioEngineState {
   readonly musicMuted: boolean;
   readonly sfxVolume: number;
   readonly sfxMuted: boolean;
+  readonly marketVolume: number;
+  readonly marketMuted: boolean;
+  readonly weatherVolume: number;
+  readonly weatherMuted: boolean;
+  readonly movementVolume: number;
+  readonly movementMuted: boolean;
   readonly reason?: string;
 }
+
+/** Independent submixes that remain under the existing FX master. */
+export type AudioSubmixKind = 'market' | 'weather' | 'movement';
 
 export type MarketMoveClass = 'small' | 'medium' | 'large' | 'exceptional';
 

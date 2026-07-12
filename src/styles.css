@@ -507,6 +507,9 @@ canvas {
   right: max(1.15rem, env(safe-area-inset-right));
   bottom: calc(max(1.15rem, env(safe-area-inset-bottom)) + 3.5rem);
   width: min(21rem, calc(100vw - 2.3rem));
+  max-height: calc(100dvh - 5.8rem);
+  overflow: auto;
+  overscroll-behavior: contain;
   padding: 1.4rem;
   border: 1px solid rgba(255, 255, 255, 0.56);
   border-radius: 1.8rem;
@@ -999,12 +1002,18 @@ html.is-launch-capture body::after {
 .settings-links { margin-top: .85rem; padding-top: .72rem; border-top: 1px solid rgba(49,55,61,.08); }
 
 .settings-audio-mixer {
+  grid-template-columns: 1fr;
   width: 100%;
   margin: .1rem 0 .55rem;
   padding: .55rem .65rem;
   border-color: rgba(95,155,145,.14);
   background: rgba(95,155,145,.08);
   box-shadow: none;
+}
+.settings-audio-mixer .audio-submix {
+  margin-left: .45rem;
+  padding-left: .42rem;
+  border-left: 2px solid rgba(95,155,145,.16);
 }
 .wardrobe-setting { margin-bottom: .45rem; background: rgba(149,122,191,.11); color: #64577a; }
 

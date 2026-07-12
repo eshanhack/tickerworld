@@ -1,4 +1,9 @@
-import { PROTOCOL_VERSION, sampleBoundedTerrainHeight, type MoveSnapshot } from '@tickerworld/shared';
+import {
+  MAX_SPRINT_SPEED,
+  PROTOCOL_VERSION,
+  sampleBoundedTerrainHeight,
+  type MoveSnapshot,
+} from '@tickerworld/shared';
 import { describe, expect, it } from 'vitest';
 import { validateMove, type MoveTracker } from '../src/rooms/MoveValidator.js';
 
@@ -28,6 +33,25 @@ function tracker(overrides: Partial<MoveTracker> = {}): MoveTracker {
 describe('authoritative movement validation', () => {
   it('accepts a plausible 10 Hz movement update', () => {
     expect(validateMove(snapshot({ x: 0.4 }), { x: 0, y: 0, z: 14 }, tracker(), 1_000)).toEqual({ accepted: true });
+  });
+
+  it('accepts the fastest lightweight species and rejects speed above the shared ceiling tolerance', () => {
+    expect(validateMove(
+      snapshot({ x: 0.8, speed: MAX_SPRINT_SPEED }),
+      { x: 0, y: 0, z: 14 },
+      tracker(),
+      1_000,
+    )).toEqual({ accepted: true });
+    const impossible = validateMove(
+      snapshot({ speed: MAX_SPRINT_SPEED * 1.1 }),
+      { x: 0, y: 0, z: 14 },
+      tracker(),
+      1_000,
+    );
+    expect(impossible.accepted).toBe(false);
+    if (!impossible.accepted && !impossible.drop) {
+      expect(impossible.correction.reason).toBe('speed');
+    }
   });
 
   it('drops high-frequency spam without moving authoritative state', () => {

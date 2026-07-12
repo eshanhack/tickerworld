@@ -72,7 +72,8 @@ export const ACTOR_ID_MAX_LENGTH = 64;
 
 export const WORLD_RADIUS = 84;
 export const PODIUM_EXCLUSION_RADIUS = 10.6;
-export const MAX_SPRINT_SPEED = 7.15;
+/** Network-authoritative ceiling used by the fastest lightweight species. */
+export const MAX_SPRINT_SPEED = 8.4;
 export const SPAWN_SLOT_COUNT = 50;
 export const SPAWN_SLOT_SPACING = 1.8;
 
