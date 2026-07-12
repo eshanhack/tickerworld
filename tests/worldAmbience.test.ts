@@ -104,8 +104,8 @@ describe('WorldSystem lamp ambience', () => {
       position.setFromMatrixPosition(after);
       expect(Math.abs(position.x)).toBeLessThanOrEqual(108);
       expect(Math.abs(position.z)).toBeLessThanOrEqual(112);
-      expect(position.y).toBeGreaterThanOrEqual(27);
-      expect(position.y).toBeLessThanOrEqual(39.5);
+      expect(position.y).toBeGreaterThanOrEqual(26.5);
+      expect(position.y).toBeLessThanOrEqual(40);
     }
     const dayColor = cloudMaterial.color.clone();
     world.update({ x: 0, z: 0 }, 90);
@@ -122,6 +122,104 @@ describe('WorldSystem lamp ambience', () => {
     expect(geometryDispose).toHaveBeenCalledOnce();
     expect(materialDispose).toHaveBeenCalledOnce();
     expect(scene.children).not.toContain(world.root);
+  });
+
+  it('gives cloud groups readable parallax drift and gentler continuous reduced motion', () => {
+    const options = {
+      seed: 'cloud-motion-test',
+      activeRadius: 0,
+      loadBudgetPerUpdate: 1,
+      unloadBudgetPerUpdate: 1,
+    } as const;
+    const normal = new WorldSystem(new THREE.Scene(), options);
+    const reduced = new WorldSystem(new THREE.Scene(), { ...options, reducedMotion: true });
+    const mirror = new WorldSystem(new THREE.Scene(), options);
+    const player = { x: 0, z: 0 };
+    normal.update(player, 0);
+    reduced.update(player, 0);
+    mirror.update(player, 0);
+
+    const normalClouds = normal.root.getObjectByName('AtmosphereClouds') as THREE.InstancedMesh;
+    const reducedClouds = reduced.root.getObjectByName('AtmosphereClouds') as THREE.InstancedMesh;
+    const mirrorClouds = mirror.root.getObjectByName('AtmosphereClouds') as THREE.InstancedMesh;
+    const internals = normal as unknown as {
+      cloudPuffs: ReadonlyArray<{
+        driftX: number;
+        driftZ: number;
+        parallax: number;
+        puffIndex: number;
+      }>;
+    };
+    expect(new Set(internals.cloudPuffs.map((puff) => puff.parallax.toFixed(4))).size).toBeGreaterThan(8);
+    expect(internals.cloudPuffs.every((puff) => puff.parallax >= 0.8 && puff.parallax <= 1.18)).toBe(true);
+    for (let index = 0; index < internals.cloudPuffs.length; index += 3) {
+      const group = internals.cloudPuffs.slice(index, index + 3);
+      expect(group.map((puff) => puff.puffIndex)).toEqual([0, 1, 2]);
+      expect(new Set(group.map((puff) => `${puff.driftX}:${puff.driftZ}`))).toHaveLength(1);
+    }
+
+    const beforeNormal = Array.from({ length: normalClouds.count }, () => new THREE.Matrix4());
+    const beforeReduced = Array.from({ length: reducedClouds.count }, () => new THREE.Matrix4());
+    beforeNormal.forEach((matrix, index) => normalClouds.getMatrixAt(index, matrix));
+    beforeReduced.forEach((matrix, index) => reducedClouds.getMatrixAt(index, matrix));
+    normal.update(player, 2);
+    reduced.update(player, 2);
+    mirror.update(player, 2);
+
+    const afterNormal = Array.from({ length: normalClouds.count }, () => new THREE.Matrix4());
+    const afterReduced = Array.from({ length: reducedClouds.count }, () => new THREE.Matrix4());
+    afterNormal.forEach((matrix, index) => normalClouds.getMatrixAt(index, matrix));
+    afterReduced.forEach((matrix, index) => reducedClouds.getMatrixAt(index, matrix));
+    for (let index = 0; index < mirrorClouds.count; index += 1) {
+      const deterministic = new THREE.Matrix4();
+      mirrorClouds.getMatrixAt(index, deterministic);
+      expect(deterministic.equals(afterNormal[index]!)).toBe(true);
+    }
+
+    const positionBefore = new THREE.Vector3();
+    const positionAfter = new THREE.Vector3();
+    const meanTravel = (before: readonly THREE.Matrix4[], after: readonly THREE.Matrix4[]): number => (
+      before.reduce((total, matrix, index) => {
+        positionBefore.setFromMatrixPosition(matrix);
+        positionAfter.setFromMatrixPosition(after[index]!);
+        return total + Math.hypot(
+          positionAfter.x - positionBefore.x,
+          positionAfter.z - positionBefore.z,
+        );
+      }, 0) / before.length
+    );
+    const normalTravel = meanTravel(beforeNormal, afterNormal);
+    const reducedTravel = meanTravel(beforeReduced, afterReduced);
+    expect(normalTravel).toBeGreaterThan(1.1);
+    expect(reducedTravel).toBeGreaterThan(0.1);
+    expect(reducedTravel).toBeLessThan(normalTravel * 0.2);
+
+    // The first group's three puffs translate together while their individual
+    // matrices still breathe into distinct silhouettes.
+    const groupTravel = [0, 1, 2].map((index) => {
+      const before = new THREE.Vector3().setFromMatrixPosition(beforeNormal[index]!);
+      const after = new THREE.Vector3().setFromMatrixPosition(afterNormal[index]!);
+      return after.sub(before);
+    });
+    expect(groupTravel[0]!.distanceTo(groupTravel[1]!)).toBeLessThan(0.0001);
+    expect(groupTravel[0]!.distanceTo(groupTravel[2]!)).toBeLessThan(0.0001);
+    expect(afterNormal[0]!.equals(beforeNormal[0]!)).toBe(false);
+    expect(afterNormal[1]!.equals(afterNormal[0]!)).toBe(false);
+
+    normal.update(player, 100_000);
+    for (let index = 0; index < normalClouds.count; index += 1) {
+      const matrix = new THREE.Matrix4();
+      const position = new THREE.Vector3();
+      normalClouds.getMatrixAt(index, matrix);
+      position.setFromMatrixPosition(matrix);
+      expect(Math.abs(position.x)).toBeLessThanOrEqual(108);
+      expect(Math.abs(position.z)).toBeLessThanOrEqual(108);
+      expect(position.y).toBeGreaterThanOrEqual(26.5);
+      expect(position.y).toBeLessThanOrEqual(40);
+    }
+    normal.dispose();
+    reduced.dispose();
+    mirror.dispose();
   });
 
   it('uses only bounded real lights and motes without additive ground planes', () => {

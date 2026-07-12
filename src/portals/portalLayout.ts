@@ -57,12 +57,13 @@ export function formatPortalPopulation(
   population: number | null,
   connectionMode: PortalConnectionMode,
 ): string {
-  if (connectionMode === 'offline') return 'OFFLINE';
+  // A room outage never makes the destination world unavailable: portals keep
+  // routing locally with live direct market data, so describe that truthfully.
+  if (connectionMode === 'offline') return 'SOLO WORLD';
   if (connectionMode === 'connecting') return 'CONNECTING';
-  if (population === null || !Number.isFinite(population) || population < 0) return '— PEOPLE';
+  if (population === null || !Number.isFinite(population) || population < 0) return '— ONLINE';
   const people = Math.floor(population);
-  if (people === 1) return '1 PERSON';
-  return `${people.toLocaleString('en-US')} PEOPLE`;
+  return `${people.toLocaleString('en-US')} ONLINE`;
 }
 
 function asSlotMarket(symbol: AssetSymbol): Exclude<AssetSymbol, 'BTC'> {

@@ -1,6 +1,15 @@
-import { CLIENT_MESSAGES, SERVER_MESSAGES, type AccountProfile } from '../shared/src/index.js';
+import {
+  CLIENT_MESSAGES,
+  MARKET_SLUGS,
+  SERVER_MESSAGES,
+  type AccountProfile,
+} from '../shared/src/index.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { RoomClientSystem, type RoomClientSystemOptions } from '../src/net';
+import {
+  RoomClientSystem,
+  parseRoomPopulations,
+  type RoomClientSystemOptions,
+} from '../src/net';
 import {
   EMOTE_CLIENT_MESSAGE,
   EMOTE_SERVER_MESSAGE,
@@ -144,6 +153,91 @@ describe('RoomClientSystem identity transitions', () => {
         },
       },
     ]);
+    system.dispose();
+  });
+
+  it('joins every supported ticker through the same market-filtered room contract', async () => {
+    const rooms = MARKET_SLUGS.map(() => new FakeRoom('anon-a'));
+    const { system, joinOrCreate } = createSystem([...rooms]);
+    await expect(system.connect(MARKET_SLUGS[0])).resolves.toBe(true);
+    for (const market of MARKET_SLUGS.slice(1)) {
+      await expect(system.switchMarket(market)).resolves.toBe(true);
+      expect(system.state).toMatchObject({ connection: 'online', market });
+    }
+    expect(joinOrCreate).toHaveBeenCalledTimes(MARKET_SLUGS.length);
+    expect((joinOrCreate.mock.calls as unknown[][]).map((call) => (
+      (call[1] as { market: string }).market
+    ))).toEqual(MARKET_SLUGS);
+    system.dispose();
+  });
+
+  it('accepts truthful bounded population snapshots for all worlds and ignores malformed counts', async () => {
+    const room = new FakeRoom('anon-a');
+    const { system } = createSystem([room]);
+    await system.connect('btc');
+    const updates = MARKET_SLUGS.map((market, index) => ({
+      market,
+      online: index,
+      shards: index === 0 ? 0 : 1,
+      updatedAt: 1_000,
+    }));
+    room.emit(SERVER_MESSAGES.population, [
+      ...updates,
+      { market: 'bogus', online: 99, shards: 1, updatedAt: 1_000 },
+      { market: 'eth', online: -2, shards: 1, updatedAt: 1_000 },
+    ]);
+    expect([...system.state.populations.keys()]).toEqual(MARKET_SLUGS);
+    for (const [index, market] of MARKET_SLUGS.entries()) {
+      expect(system.state.populations.get(market)?.online).toBe(index);
+    }
+    expect(parseRoomPopulations({ market: 'btc', online: Number.NaN, shards: 1, updatedAt: 1_000 }))
+      .toEqual([]);
+    expect(parseRoomPopulations({ market: 'btc', online: 51, shards: 1, updatedAt: 1_000 }))
+      .toEqual([]);
+    system.dispose();
+  });
+
+  it('keeps every destination playable offline when no room endpoint is configured', async () => {
+    const clientFactory = vi.fn();
+    const system = new RoomClientSystem({
+      endpoint: '',
+      anonymousIdentity: anonymous,
+      snapshot: () => ({
+        x: 0, y: 0, z: 0, yaw: 0, speed: 0, verticalSpeed: 0, grounded: true, gait: 'idle',
+      }),
+      clientFactory,
+    });
+    for (const market of MARKET_SLUGS) {
+      await expect(system.connect(market)).resolves.toBe(false);
+      expect(system.state).toMatchObject({ connection: 'offline', market });
+    }
+    expect(clientFactory).not.toHaveBeenCalled();
+    system.dispose();
+  });
+
+  it('falls back offline when the canonical identity preflight is blackholed', async () => {
+    vi.useFakeTimers();
+    const fetch = vi.fn(() => new Promise<Response>(() => undefined));
+    const clientFactory = vi.fn();
+    const system = new RoomClientSystem({
+      endpoint: 'wss://multiplayer.tickerworld.io',
+      fetch: fetch as typeof globalThis.fetch,
+      joinTimeoutMs: 8,
+      snapshot: () => ({
+        x: 0, y: 0, z: 0, yaw: 0, speed: 0, verticalSpeed: 0, grounded: true, gait: 'idle',
+      }),
+      clientFactory,
+    });
+    const connecting = system.connect('wti');
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(8);
+    await expect(connecting).resolves.toBe(false);
+    expect(system.state).toMatchObject({
+      connection: 'offline',
+      market: 'wti',
+      lastError: 'Multiplayer request timed out after 8ms.',
+    });
+    expect(clientFactory).not.toHaveBeenCalled();
     system.dispose();
   });
 

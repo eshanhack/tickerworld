@@ -131,12 +131,22 @@ interface VegetationInstance {
 interface CloudPuff {
   readonly baseX: number;
   readonly baseZ: number;
+  readonly offsetX: number;
+  readonly offsetZ: number;
   readonly y: number;
   readonly scaleX: number;
   readonly scaleY: number;
   readonly scaleZ: number;
-  readonly speed: number;
+  readonly driftX: number;
+  readonly driftZ: number;
+  readonly bobAmplitude: number;
+  readonly bobRate: number;
+  readonly shapeAmplitude: number;
+  readonly shapeRate: number;
+  readonly rotationRate: number;
+  readonly parallax: number;
   readonly phase: number;
+  readonly puffIndex: number;
 }
 
 /** A complete session-relative day, dusk, night, and dawn cycle. */
@@ -156,6 +166,7 @@ const CLOUD_GROUP_COUNT = 14;
 const CLOUD_PUFFS_PER_GROUP = 3;
 const CLOUD_PUFF_CAPACITY = CLOUD_GROUP_COUNT * CLOUD_PUFFS_PER_GROUP;
 const CLOUD_FIELD_RADIUS = 108;
+const CLOUD_CENTRE_WRAP_RADIUS = CLOUD_FIELD_RADIUS - 8;
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
 
 function clamp01(value: number): number {
@@ -580,24 +591,46 @@ export class WorldSystem {
       const angle = hashCoordinates(this.weatherSeed, group, 1, 41_011) * Math.PI * 2;
       const radius = 18 + Math.sqrt(
         hashCoordinates(this.weatherSeed, group, 2, 41_027),
-      ) * (CLOUD_FIELD_RADIUS - 24);
+      ) * (CLOUD_CENTRE_WRAP_RADIUS - 24);
       const centreX = Math.cos(angle) * radius;
       const centreZ = Math.sin(angle) * radius;
       const baseScale = 3.2 + hashCoordinates(this.weatherSeed, group, 3, 41_039) * 2.7;
       const y = 27 + hashCoordinates(this.weatherSeed, group, 4, 41_053) * 12;
-      const speed = 0.23 + hashCoordinates(this.weatherSeed, group, 5, 41_071) * 0.23;
       const phase = hashCoordinates(this.weatherSeed, group, 6, 41_087) * Math.PI * 2;
+      // The lower groups cross the viewer's sightline a little faster, giving
+      // the sky readable depth without adding layers or draw calls.
+      const parallax = 1.18 - ((y - 27) / 12) * 0.38;
+      const speed = (0.72 + hashCoordinates(this.weatherSeed, group, 5, 41_071) * 0.5)
+        * parallax;
+      const windAngle = -0.15 + hashCoordinates(this.weatherSeed, group, 7, 41_093) * 0.3;
+      const driftX = Math.cos(windAngle) * speed;
+      const driftZ = Math.sin(windAngle) * speed;
+      const bobAmplitude = 0.2 + hashCoordinates(this.weatherSeed, group, 8, 41_099) * 0.24;
+      const bobRate = 0.17 + hashCoordinates(this.weatherSeed, group, 9, 41_117) * 0.11;
+      const shapeAmplitude = 0.025 + hashCoordinates(this.weatherSeed, group, 10, 41_123) * 0.025;
+      const shapeRate = 0.22 + hashCoordinates(this.weatherSeed, group, 11, 41_141) * 0.13;
+      const rotationRate = 0.006 + hashCoordinates(this.weatherSeed, group, 12, 41_153) * 0.007;
       offsets.forEach((offset, puffIndex) => {
         const scale = baseScale * offset.scale;
         puffs.push({
-          baseX: centreX + offset.x * baseScale * 1.42,
-          baseZ: centreZ + offset.z * baseScale,
+          baseX: centreX,
+          baseZ: centreZ,
+          offsetX: offset.x * baseScale * 1.42,
+          offsetZ: offset.z * baseScale,
           y: y + (puffIndex === 1 ? 0.48 : 0),
           scaleX: scale * 1.18,
           scaleY: scale * 0.42,
           scaleZ: scale * 0.72,
-          speed,
-          phase: phase + puffIndex * 0.37,
+          driftX,
+          driftZ,
+          bobAmplitude,
+          bobRate,
+          shapeAmplitude,
+          shapeRate,
+          rotationRate,
+          parallax,
+          phase,
+          puffIndex,
         });
       });
     }
@@ -605,23 +638,40 @@ export class WorldSystem {
   }
 
   private updateClouds(elapsedSeconds: number): void {
-    const motionScale = this.reducedMotion ? 0.16 : 1;
+    const motionScale = this.reducedMotion ? 0.12 : 1;
+    const shapeMotionScale = this.reducedMotion ? 0.24 : 1;
+    const motionTime = elapsedSeconds * motionScale;
     for (let index = 0; index < this.cloudPuffs.length; index += 1) {
       const puff = this.cloudPuffs[index];
       if (!puff) continue;
-      const x = positiveModulo(
-        puff.baseX + elapsedSeconds * puff.speed * motionScale + CLOUD_FIELD_RADIUS,
-        CLOUD_FIELD_RADIUS * 2,
-      ) - CLOUD_FIELD_RADIUS;
-      const z = puff.baseZ + Math.sin(
-        puff.phase + elapsedSeconds * 0.012 * motionScale,
-      ) * (this.reducedMotion ? 0.2 : 1.8);
-      this.tempPosition.set(x, puff.y, z);
+      const centreX = positiveModulo(
+        puff.baseX + motionTime * puff.driftX + CLOUD_CENTRE_WRAP_RADIUS,
+        CLOUD_CENTRE_WRAP_RADIUS * 2,
+      ) - CLOUD_CENTRE_WRAP_RADIUS;
+      const centreZ = positiveModulo(
+        puff.baseZ + motionTime * puff.driftZ + CLOUD_CENTRE_WRAP_RADIUS,
+        CLOUD_CENTRE_WRAP_RADIUS * 2,
+      ) - CLOUD_CENTRE_WRAP_RADIUS;
+      const bob = Math.sin(puff.phase + motionTime * puff.bobRate)
+        * puff.bobAmplitude
+        * shapeMotionScale;
+      const shape = Math.sin(
+        puff.phase * 1.47 + puff.puffIndex * 1.08 + motionTime * puff.shapeRate,
+      ) * puff.shapeAmplitude * shapeMotionScale;
+      this.tempPosition.set(
+        centreX + puff.offsetX,
+        puff.y + bob,
+        centreZ + puff.offsetZ,
+      );
       this.tempQuaternion.setFromAxisAngle(
         WORLD_UP,
-        puff.phase * 0.12 + elapsedSeconds * 0.0025 * motionScale,
+        puff.phase * 0.12 + motionTime * puff.rotationRate,
       );
-      this.tempScale.set(puff.scaleX, puff.scaleY, puff.scaleZ);
+      this.tempScale.set(
+        puff.scaleX * (1 + shape),
+        puff.scaleY * (1 - shape * 0.42),
+        puff.scaleZ * (1 - shape * 0.22),
+      );
       this.tempMatrix.compose(this.tempPosition, this.tempQuaternion, this.tempScale);
       this.cloudMesh.setMatrixAt(index, this.tempMatrix);
     }

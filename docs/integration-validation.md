@@ -57,8 +57,9 @@ release-gate and browser evidence rather than being implied by this historical r
 
 ## External release gates
 
-The client can ship in truthful solo mode. Do not set `VITE_MULTIPLAYER_URL` or
-mark multiplayer live until Colyseus Cloud, Neon, DNS, trusted proxy CIDRs,
+The client can ship in truthful solo mode. Canonical pages safely probe the
+canonical multiplayer hostname, but do not mark multiplayer live until
+Colyseus Cloud, Neon, DNS, trusted proxy CIDRs,
 stable HMAC secrets, Solana mainnet RPC/genesis, treasury, SOL/USD authority,
 admin wallets, and moderation ownership have all passed `/readyz` and the
 server-first smoke sequence.

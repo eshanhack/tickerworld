@@ -3,6 +3,45 @@ import {
   type RuntimeCapabilities,
 } from '../../shared/src/index.js';
 
+export const CANONICAL_MULTIPLAYER_ENDPOINT = 'wss://multiplayer.tickerworld.io';
+
+interface BrowserLocationLike {
+  readonly hostname: string;
+}
+
+function normalizeMultiplayerEndpoint(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  try {
+    const url = new URL(trimmed);
+    if ((url.protocol !== 'ws:' && url.protocol !== 'wss:')
+      || url.username
+      || url.password
+      || url.search
+      || url.hash) return '';
+    return url.toString().replace(/\/$/, '');
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Canonical production pages can safely probe the canonical room service
+ * without a Vercel rebuild. Preview and local origins remain fail-closed unless
+ * they opt into an explicit endpoint that the room server allowlists.
+ */
+export function resolveMultiplayerEndpoint(
+  configured = import.meta.env.VITE_MULTIPLAYER_URL ?? '',
+  browserLocation: BrowserLocationLike | null = typeof location === 'undefined' ? null : location,
+): string {
+  const explicit = normalizeMultiplayerEndpoint(configured);
+  if (explicit) return explicit;
+  const hostname = browserLocation?.hostname.toLowerCase();
+  return hostname === 'tickerworld.io' || hostname === 'www.tickerworld.io'
+    ? CANONICAL_MULTIPLAYER_ENDPOINT
+    : '';
+}
+
 /** Only the solo live-market fallback fails open when control-plane state is unreachable. */
 export const OFFLINE_RUNTIME_CAPABILITIES: RuntimeCapabilities = {
   protocolVersion: PROTOCOL_VERSION,
@@ -59,7 +98,7 @@ function isRuntimeCapabilities(value: unknown): value is RuntimeCapabilities {
 }
 
 export async function fetchRuntimeCapabilities(
-  endpoint = import.meta.env.VITE_MULTIPLAYER_URL ?? '',
+  endpoint = resolveMultiplayerEndpoint(),
   fetcher: typeof fetch = fetch,
 ): Promise<RuntimeCapabilities> {
   const origin = multiplayerHttpOrigin(endpoint);

@@ -1,5 +1,6 @@
 import {
   CLIENT_MESSAGES,
+  MARKET_SLUGS,
   PROTOCOL_VERSION,
   SERVER_MESSAGES,
   sampleBoundedTerrainHeight,
@@ -75,6 +76,30 @@ describe.sequential('Colyseus market rooms', () => {
       maxPlayersPerShard: 50,
       maxProcessConnections: 400,
     });
+  });
+
+  it('creates one correctly filtered room for every supported market slug', async () => {
+    const rooms = [];
+    for (const market of MARKET_SLUGS) {
+      const identity = runtime.anonymous.issue();
+      const room = await testServer.sdk.joinOrCreate('market', {
+        protocolVersion: PROTOCOL_VERSION,
+        market,
+        animal: identity.animal,
+        anonymousToken: identity.token,
+      });
+      room.onMessage(SERVER_MESSAGES.population, () => {});
+      expect((testServer.getRoomById(room.roomId).state as { market?: string }).market).toBe(market);
+      rooms.push(room);
+    }
+    expect(new Set(rooms.map(({ roomId }) => roomId)).size).toBe(MARKET_SLUGS.length);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    for (const market of MARKET_SLUGS) {
+      expect(runtime.populations.snapshot().find((entry) => entry.market === market))
+        .toMatchObject({ online: 1, shards: 1 });
+    }
+    await Promise.all(rooms.map((room) => room.leave()));
+    await new Promise((resolve) => setTimeout(resolve, 150));
   });
 
   it('binds wallet authentication to the signed anonymous actor and serves the canonical account API', async () => {

@@ -1,11 +1,26 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  CANONICAL_MULTIPLAYER_ENDPOINT,
   OFFLINE_RUNTIME_CAPABILITIES,
   fetchRuntimeCapabilities,
   multiplayerHttpOrigin,
+  resolveMultiplayerEndpoint,
 } from '../src/net';
 
 describe('runtime capabilities client', () => {
+  it('auto-selects only the canonical production endpoint and keeps previews fail-closed', () => {
+    expect(resolveMultiplayerEndpoint('', { hostname: 'tickerworld.io' }))
+      .toBe(CANONICAL_MULTIPLAYER_ENDPOINT);
+    expect(resolveMultiplayerEndpoint('', { hostname: 'www.tickerworld.io' }))
+      .toBe(CANONICAL_MULTIPLAYER_ENDPOINT);
+    expect(resolveMultiplayerEndpoint('', { hostname: 'preview.vercel.app' })).toBe('');
+    expect(resolveMultiplayerEndpoint('', { hostname: '127.0.0.1' })).toBe('');
+    expect(resolveMultiplayerEndpoint('ws://127.0.0.1:2567', null)).toBe('ws://127.0.0.1:2567');
+    expect(resolveMultiplayerEndpoint('javascript:alert(1)', { hostname: 'preview.vercel.app' })).toBe('');
+    expect(resolveMultiplayerEndpoint('wss://user:secret@example.test', null)).toBe('');
+    expect(resolveMultiplayerEndpoint('wss://example.test?token=secret', null)).toBe('');
+  });
+
   it('normalizes websocket endpoints without retaining paths or secrets', () => {
     expect(multiplayerHttpOrigin('wss://multiplayer.tickerworld.io/')).toBe(
       'https://multiplayer.tickerworld.io',

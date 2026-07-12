@@ -24,6 +24,32 @@ export type { MonumentCoordinate, PondDescriptor, TerrainSamplerOptions } from '
 export { DEFAULT_DAY_DURATION_SECONDS, WorldSystem } from './WorldSystem';
 export { OilWorldEffects } from './OilWorldEffects';
 export type { OilWorldEffectsOptions } from './OilWorldEffects';
+export {
+  PARKOUR_COURSE_IDS,
+  PARKOUR_FAIL_DELAY_SECONDS,
+  PARKOUR_MAX_STEP_UP,
+  PARKOUR_PARK_BOUNDS,
+  PARKOUR_PARK_CENTER,
+  ParkourParkSystem,
+  createParkourParkLayout,
+  parkourEdgeGap,
+  parkourLandingRadius,
+} from './ParkourParkSystem';
+export type {
+  ParkourArchDescriptor,
+  ParkourEvent,
+  ParkourEventType,
+  ParkourGroundSample,
+  ParkourPalette,
+  ParkourParkDebugStats,
+  ParkourParkLayout,
+  ParkourParkSystemOptions,
+  ParkourPlayerProbe,
+  ParkourRespawnPoint,
+  ParkourSurfaceDescriptor,
+  ParkourSurfaceRole,
+  ParkourSurfaceShape,
+} from './ParkourParkSystem';
 export type {
   DropFlashTier,
   RiseFlashTier,

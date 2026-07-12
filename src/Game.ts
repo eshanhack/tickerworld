@@ -6,6 +6,7 @@ import {
   GRAND_MONUMENTS,
   LAUNCH_CAPTURE_MODE,
   MULTIPLAYER_ALLOWED,
+  PARKOUR_QA_MODE,
   WORLD_SEED,
 } from './config';
 import {
@@ -64,7 +65,7 @@ import {
   type QualityTier,
   type UiInteractionOwner,
 } from './ui';
-import { OilWorldEffects, WorldGuard, WorldSystem } from './world';
+import { OilWorldEffects, ParkourParkSystem, WorldGuard, WorldSystem } from './world';
 
 const COMPASS_KEY = 'tickerworld:v1:compass';
 const QUALITY_KEY = 'tickerworld:v1:quality';
@@ -125,6 +126,7 @@ export class Game {
   private readonly audio = new AudioEngine();
   private readonly fireworks: FireworkPool;
   private readonly oilEffects: OilWorldEffects;
+  private readonly parkour: ParkourParkSystem;
   private readonly celebrationGate = new MarketCelebrationGate();
   private readonly worldGuard = new WorldGuard();
   private readonly uiInteractionLock = new UiInteractionLock();
@@ -261,6 +263,29 @@ export class Game {
       onExplosion: (position, intensity) => this.audio.playDistantExplosion(position, intensity),
     });
     this.oilEffects.setActiveMarket(this.activeMarket);
+    this.parkour = new ParkourParkSystem({
+      parent: this.scene,
+      heightAt: (x, z) => this.world.heightAt(x, z),
+      fontUrl: nunitoFontUrl,
+      reducedMotion: this.reducedMotion,
+      onEvent: (event) => {
+        if (!this.entered) return;
+        if (event.type === 'start') this.hud?.showToast('Parkour started — reach the glowing finish!');
+        else if (event.type === 'checkpoint') this.hud?.showToast('Checkpoint reached ✦');
+        else if (event.type === 'finish') this.hud?.showToast(`Parkour clear · ${event.elapsedSeconds.toFixed(1)}s!`);
+        else if (event.type === 'respawn') this.hud?.showToast('Back to checkpoint');
+        else this.hud?.showToast('Parkour reset — return to START.');
+      },
+      onRespawnRequested: (point) => {
+        // Server movement is terrain-authoritative, so only disconnected/solo
+        // sessions use an instant checkpoint. Online players keep their valid
+        // position and can run back along the low return side of the course.
+        if (this.roomClient?.state.connection === 'online') return false;
+        this.player.setPosition(point.x, point.y, point.z);
+        this.player.setHeadingYaw(point.yaw);
+        return true;
+      },
+    });
 
     const spawnZ = 21;
     this.player = new FoxPlayer({
@@ -273,7 +298,7 @@ export class Game {
     this.roomClient = new RoomClientSystem({
       // QA seeds intentionally alter terrain. Keep them local so authoritative
       // movement validation never compares the player with tickerworld-v1.
-      endpoint: MULTIPLAYER_ALLOWED ? undefined : '',
+      endpoint: MULTIPLAYER_ALLOWED && !PARKOUR_QA_MODE ? undefined : '',
       identity: guestIdentity,
       snapshot: () => {
         const playerState = this.player.snapshot;
@@ -388,6 +413,7 @@ export class Game {
         this.fireworks.setReducedMotion(enabled);
         this.world.setReducedMotion(enabled);
         this.oilEffects.setReducedMotion(enabled);
+        this.parkour.setReducedMotion(enabled);
         this.emotes?.setReducedMotion(enabled);
         this.portalSystem?.setReducedMotion(enabled);
         safeWrite(REDUCED_MOTION_KEY, String(enabled));
@@ -730,6 +756,7 @@ export class Game {
       );
       this.portalSystem.setActiveMarket(destination);
       this.oilEffects.setActiveMarket(destination);
+      this.parkour.resetRun();
 
       this.placeAtSpawn(destination, previousMarket);
       this.refreshAudioSources();
@@ -895,9 +922,9 @@ export class Game {
     // occluding the camera. An online room can still replace this immediately
     // with its authoritative collision-free slot.
     if (!previousMarket) {
-      const x = 0;
-      const z = -18;
-      const yaw = Math.PI;
+      const x = PARKOUR_QA_MODE ? 30 : 0;
+      const z = PARKOUR_QA_MODE ? 2 : -18;
+      const yaw = PARKOUR_QA_MODE ? -Math.PI * 0.5 : Math.PI;
       this.player.setPosition(x, this.groundHeightAt(x, z), z);
       this.player.setHeadingYaw(yaw);
       this.cameraRig.setOrbit(yaw, this.cameraRig.pitch, this.cameraRig.zoomDistance);
@@ -1008,8 +1035,16 @@ export class Game {
       (x, z) => this.groundSurfaceAt(x, z),
       (footstep) => this.onFootstep(footstep),
       (action) => this.onFoxAction(action),
-      this.worldGuard.resolveHorizontal,
+      this.resolvePlayerHorizontal,
     );
+    this.parkour.setPlayerProbe({
+      x: this.player.position.x,
+      y: this.player.position.y,
+      z: this.player.position.z,
+      grounded: this.player.snapshot.grounded,
+      enabled: this.entered,
+    });
+    this.parkour.update(delta, this.elapsed);
     if (this.entered && this.player.normalizedSpeed > 0.045) {
       this.hud.recordOnboardingAction('move');
       this.telemetry.emitOnce({ name: 'first_movement', market: this.activeMarket });
@@ -1282,18 +1317,48 @@ export class Game {
   }
 
   private cameraObstacleAt(x: number, y: number, z: number): boolean {
-    return this.worldGuard.collides(x, z) || this.monuments.collidesCamera(x, y, z);
+    return this.worldGuard.collides(x, z)
+      || this.monuments.collidesCamera(x, y, z)
+      || this.parkour.collidesCamera(x, y, z);
   }
+
+  private readonly resolvePlayerHorizontal = (
+    previousX: number,
+    previousZ: number,
+    proposedX: number,
+    proposedZ: number,
+  ): { x: number; z: number } => {
+    const guarded = this.worldGuard.resolve(previousX, previousZ, proposedX, proposedZ);
+    return this.parkour.resolveHorizontal(
+      previousX,
+      previousZ,
+      guarded.x,
+      guarded.z,
+      this.player.position.y,
+    );
+  };
 
   private groundHeightAt(x: number, z: number): number {
     const terrainHeight = this.world.heightAt(x, z);
     const monumentGround = this.monuments.sampleGround(x, z);
-    return monumentGround ? Math.max(terrainHeight, monumentGround.height) : terrainHeight;
+    const parkourGround = this.parkour.sampleGround(x, z);
+    return Math.max(
+      terrainHeight,
+      monumentGround?.height ?? Number.NEGATIVE_INFINITY,
+      parkourGround?.height ?? Number.NEGATIVE_INFINITY,
+    );
   }
 
   private groundSurfaceAt(x: number, z: number) {
+    const terrainHeight = this.world.heightAt(x, z);
     const monumentGround = this.monuments.sampleGround(x, z);
-    if (monumentGround && monumentGround.height >= this.world.heightAt(x, z) - 0.03) {
+    const parkourGround = this.parkour.sampleGround(x, z);
+    if (parkourGround
+      && parkourGround.height >= terrainHeight - 0.03
+      && parkourGround.height >= (monumentGround?.height ?? Number.NEGATIVE_INFINITY)) {
+      return parkourGround.surface;
+    }
+    if (monumentGround && monumentGround.height >= terrainHeight - 0.03) {
       return monumentGround.surface;
     }
     return this.world.surfaceAt(x, z);
@@ -1325,6 +1390,7 @@ export class Game {
       const audioState = this.audio.state;
       const playerState = this.player.snapshot;
       const oil = this.oilEffects.getDebugStats();
+      const parkour = this.parkour.getDebugStats();
       this.hud.setDebug([
         `fps ${this.fps.toFixed(1)} · ${this.qualityTier} · dpr ${this.pixelRatio.toFixed(2)}`,
         `draws ${this.renderer.info.render.calls} · tris ${this.estimateTriangles()}`,
@@ -1334,6 +1400,7 @@ export class Game {
         `room ${this.roomClient.state.connection} · remotes ${this.roomClient.state.remotes.length}${this.roomClient.state.lastError ? ` · ${this.roomClient.state.lastError.slice(0, 72)}` : ''}`,
         `news ${this.newsMode} · posts ${this.activeNewsCount} · fireworks ${this.fireworks.getDebugStats().activeParticles}`,
         `weather rain ${world.rainIntensity.toFixed(2)} · oil jets ${oil.jets} · blasts ${oil.blasts}`,
+        `parkour ${parkour.active ? `${parkour.elapsedSeconds.toFixed(1)}s` : 'idle'} · checkpoint ${parkour.checkpointId}`,
         `audio ${audioState.status} · music ${Math.round(audioState.musicVolume * 100)}${audioState.musicMuted ? 'x' : ''} · fx ${Math.round(audioState.sfxVolume * 100)}${audioState.sfxMuted ? 'x' : ''}`,
         `fox ${playerState.grounded ? 'grounded' : this.player.isGliding ? 'gliding' : 'airborne'} · jumps ${playerState.jumpsUsed}/2 · vy ${playerState.verticalSpeed.toFixed(2)}`,
         `pos ${this.player.position.x.toFixed(2)}, ${this.player.position.z.toFixed(2)} · yaw ${this.cameraRig.yaw.toFixed(2)}`,
@@ -1366,6 +1433,7 @@ export class Game {
   private readonly visibility = (): void => {
     this.visible = !document.hidden;
     this.audio.setVisible(this.visible);
+    this.parkour.setVisible(this.visible);
     this.portalSystem.setVisible(this.visible && this.entered && !LAUNCH_CAPTURE_MODE);
     this.roomClient.setVisible(this.visible);
     this.remoteAvatars?.setVisible(this.visible);
@@ -1447,6 +1515,7 @@ export class Game {
     this.fireworks.points.removeFromParent();
     this.fireworks.dispose();
     this.oilEffects.dispose();
+    this.parkour.dispose();
     this.portalSystem.dispose();
     this.player.dispose();
     this.cameraRig.dispose();

@@ -3,6 +3,7 @@ import {
   ASSET_SYMBOLS,
   CLIENT_MESSAGES,
   MARKET_ROOM_NAME,
+  MARKET_ROOM_MAX_CLIENTS,
   MOVE_SEND_RATE_HZ,
   PROTOCOL_VERSION,
   SERVER_MESSAGES,
@@ -29,6 +30,7 @@ import {
   type RoomPopulation,
   type PartyJoinResult,
   type SkinId,
+  isMarketSlug,
   isProtocolVersionAccepted,
 } from '../../shared/src/index.js';
 import type { GameSystem } from '../types';
@@ -58,6 +60,7 @@ import {
   type GuestIdentity,
   type SignedGuestIdentity,
 } from './identity';
+import { resolveMultiplayerEndpoint } from './RuntimeCapabilitiesClient';
 
 const LIVE_MARKET_SYMBOLS = new Set<string>(ASSET_SYMBOLS.filter((symbol) => symbol !== 'TEST'));
 
@@ -146,6 +149,29 @@ type MarketRelayListener = (state: RelayedMarketState) => void;
 type MarketMidsListener = (mids: readonly CompactMarketMid[]) => void;
 
 const EMPTY_POPULATIONS = new Map<MarketSlug, RoomPopulation>();
+
+export function parseRoomPopulations(value: unknown): readonly RoomPopulation[] {
+  const candidates = Array.isArray(value) ? value : [value];
+  const populations: RoomPopulation[] = [];
+  const seen = new Set<MarketSlug>();
+  for (const candidate of candidates) {
+    if (!candidate || typeof candidate !== 'object') continue;
+    const population = candidate as Partial<RoomPopulation>;
+    if (!isMarketSlug(population.market)
+      || seen.has(population.market)
+      || !Number.isSafeInteger(population.online)
+      || Number(population.online) < 0
+      || !Number.isSafeInteger(population.shards)
+      || Number(population.shards) < 0
+      || Number(population.online) > Number(population.shards) * MARKET_ROOM_MAX_CLIENTS
+      || typeof population.updatedAt !== 'number'
+      || !Number.isFinite(population.updatedAt)
+      || population.updatedAt < 0) continue;
+    seen.add(population.market);
+    populations.push(population as RoomPopulation);
+  }
+  return populations;
+}
 
 export interface AccountRoomSession {
   readonly token: string;
@@ -303,7 +329,9 @@ export class RoomClientSystem implements GameSystem {
     this.options = options;
     this.fallbackIdentity = options.identity ?? readGuestIdentity();
     this.anonymousIdentity = options.anonymousIdentity ?? readSignedGuestIdentity();
-    this.endpoint = (options.endpoint ?? import.meta.env.VITE_MULTIPLAYER_URL ?? '').trim();
+    this.endpoint = options.endpoint === undefined
+      ? resolveMultiplayerEndpoint()
+      : options.endpoint.trim();
     this.apiEndpoint = normalizeApiEndpoint(options.apiEndpoint ?? this.endpoint);
     // Calling Window.fetch as an object method supplies the wrong receiver in
     // some browsers. Keep the native function in a lexical wrapper.
@@ -559,6 +587,7 @@ export class RoomClientSystem implements GameSystem {
       this.setConnection('offline', 'Multiplayer is not configured yet.');
       return false;
     }
+    this.populations.clear();
     this.setConnection(this.retryAttempt > 0 ? 'reconnecting' : 'connecting', null);
     this.authoritativeSpawnReceived = false;
     try {
@@ -625,11 +654,11 @@ export class RoomClientSystem implements GameSystem {
         this.options.onChatRejected?.(message);
         for (const listener of this.chatRejectionListeners) listener(message);
       });
-      room.onMessage<RoomPopulation | readonly RoomPopulation[]>(SERVER_MESSAGES.population, (message) => {
+      room.onMessage<unknown>(SERVER_MESSAGES.population, (message) => {
         if (!isCurrentRoom()) return;
-        const updates = Array.isArray(message) ? message : [message];
+        const updates = parseRoomPopulations(message);
         for (const update of updates) this.populations.set(update.market, update);
-        this.emit();
+        if (updates.length > 0) this.emit();
       });
       room.onMessage<RelayedMarketState>(SERVER_MESSAGES.market, (state) => {
         if (isCurrentRoom()) this.queueMarketState(state);
@@ -789,7 +818,7 @@ export class RoomClientSystem implements GameSystem {
       return;
     }
     if (!this.apiEndpoint) throw new Error('Multiplayer identity service is not configured.');
-    const response = await this.requestFetch(`${this.apiEndpoint}/api/anonymous/session`, {
+    const response = await this.fetchWithDeadline(`${this.apiEndpoint}/api/anonymous/session`, {
       method: 'POST',
       headers: { Accept: 'application/json' },
     });
@@ -813,7 +842,7 @@ export class RoomClientSystem implements GameSystem {
 
   private async redeemPartyToken(token: string): Promise<PartyJoinResult> {
     if (!this.apiEndpoint) throw new Error('Party invites are unavailable while multiplayer is offline.');
-    const response = await this.requestFetch(`${this.apiEndpoint}/api/invites/redeem`, {
+    const response = await this.fetchWithDeadline(`${this.apiEndpoint}/api/invites/redeem`, {
       method: 'POST',
       headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
       body: JSON.stringify({ token }),
@@ -823,6 +852,26 @@ export class RoomClientSystem implements GameSystem {
       throw new Error('Party invite lookup failed.');
     }
     return payload;
+  }
+
+  private async fetchWithDeadline(input: string, init: RequestInit): Promise<Response> {
+    const controller = new AbortController();
+    const timeoutMs = Math.min(4_000, this.joinTimeoutMs);
+    let timer: ReturnType<typeof globalThis.setTimeout> | undefined;
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timer = globalThis.setTimeout(() => {
+        controller.abort();
+        reject(new Error(`Multiplayer request timed out after ${timeoutMs}ms.`));
+      }, timeoutMs);
+    });
+    try {
+      return await Promise.race([
+        this.requestFetch(input, { ...init, signal: controller.signal }),
+        timeout,
+      ]);
+    } finally {
+      if (timer !== undefined) globalThis.clearTimeout(timer);
+    }
   }
 
   private fallbackFromParty(token: string, failure: 'party_full' | 'party_invalid' | 'party_expired'): void {

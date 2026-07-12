@@ -14,6 +14,8 @@ export const MULTIPLAYER_ALLOWED = multiplayerAllowedForSeed(WORLD_SEED);
 export const QA_MODE_ALLOWED = !import.meta.env.PROD || import.meta.env.VITE_ENABLE_QA_MODE === '1';
 export const FORCE_SIMULATION = QA_MODE_ALLOWED && SEARCH_PARAMS.get('data') === 'sim';
 export const DEBUG_MODE = QA_MODE_ALLOWED && SEARCH_PARAMS.get('debug') === '1';
+/** Local/preview framing for visual and collision QA of the parkour course. */
+export const PARKOUR_QA_MODE = QA_MODE_ALLOWED && SEARCH_PARAMS.get('parkour') === '1';
 /** Deterministic, UI-free staging used only to capture launch media locally/preview. */
 export const LAUNCH_CAPTURE_MODE = QA_MODE_ALLOWED && SEARCH_PARAMS.get('capture') === '1';
 

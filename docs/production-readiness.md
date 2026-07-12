@@ -36,9 +36,11 @@ read-only and must pass before a public announcement.
 - Keep the three disconnected duplicate projects as rollback history until the
   owner deliberately archives them. Do not detach their default domains or delete
   their deployments as part of this release.
-- Configure `VITE_MULTIPLAYER_URL=wss://multiplayer.tickerworld.io` only after the
-  server is healthy. Configure `X_BEARER_TOKEN` only as a server-side Vercel
-  secret; never use a `VITE_` prefix.
+- Canonical production pages automatically probe
+  `wss://multiplayer.tickerworld.io`; `VITE_MULTIPLAYER_URL` is reserved for an
+  explicitly allowlisted local/preview server. Do not mark multiplayer live
+  until the canonical server is healthy. Configure `X_BEARER_TOKEN` only as a
+  server-side secret; never use a `VITE_` prefix.
 - Verify all ten direct tickerworld routes, `/admin` with its `X-Robots-Tag:
   noindex`, `/api/news`, and the legacy-domain redirect in a preview deployment
   before promotion. Route-specific launch metadata and legal pages belong to the
@@ -111,15 +113,16 @@ read-only and must pass before a public announcement.
 
 1. Freeze a reviewed commit. Require the `Verify Tickerworld` GitHub check and run
    `npm run verify:release` locally with Node 22.
-2. While external server credentials are unavailable, deploy the client without
-   `VITE_MULTIPLAYER_URL`; verify every route and the explicit solo fallback.
+2. While external server credentials are unavailable, verify every route and
+   the explicit solo fallback. The canonical endpoint probe must fail calmly.
 3. For multiplayer activation, back up the database, apply migrations, deploy the
    backward-compatible server, and wait for healthy/readiness responses.
 4. Run a two-client/bot smoke against the provider URL; verify movement, chat,
    reconnect, room isolation, capacity fallback, and clean server logs.
 5. Move `multiplayer.tickerworld.io` to the healthy service and repeat the smoke.
-6. Set the Vercel multiplayer URL, build one preview, then promote that exact
-   artifact only after the multiplayer smoke passes.
+6. Build one preview against the explicitly configured provider URL, then
+   promote that exact artifact only after the multiplayer smoke passes. The
+   canonical build itself needs no endpoint variable.
 7. Run `npm run smoke:production`; add `SMOKE_EXPECT_MULTIPLAYER_LIVE=1` only
    after activation. In that mode the smoke requires every readiness feature,
    not merely database connectivity. Scan early runtime errors.

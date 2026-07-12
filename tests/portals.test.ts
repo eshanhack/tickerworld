@@ -84,9 +84,9 @@ describe('fixed portal routes', () => {
       feedMode: 'live',
     })).toMatchObject({
       priceText: '$1,234.5',
-      populationText: '1,204 PEOPLE',
+      populationText: '1,204 ONLINE',
       marketText: 'LIVE',
-      text: `${route.destination}\nLIVE\n1,204 PEOPLE`,
+      text: `${route.destination}\nLIVE\n1,204 ONLINE`,
     });
     expect(createPortalLabelModel(route, {
       price: null,
@@ -95,14 +95,32 @@ describe('fixed portal routes', () => {
       feedMode: 'live',
     })).toMatchObject({
       priceText: '$—',
-      populationText: 'OFFLINE',
-      text: `${route.destination}\nLIVE\nOFFLINE`,
+      populationText: 'SOLO WORLD',
+      text: `${route.destination}\nLIVE\nSOLO WORLD`,
     });
-    expect(formatPortalPopulation(0, 'online')).toBe('0 PEOPLE');
-    expect(formatPortalPopulation(1, 'online')).toBe('1 PERSON');
-    expect(formatPortalPopulation(Number.NaN, 'online')).toBe('— PEOPLE');
-    expect(formatPortalPopulation(-4, 'online')).toBe('— PEOPLE');
+    expect(formatPortalPopulation(0, 'online')).toBe('0 ONLINE');
+    expect(formatPortalPopulation(1, 'online')).toBe('1 ONLINE');
+    expect(formatPortalPopulation(Number.NaN, 'online')).toBe('— ONLINE');
+    expect(formatPortalPopulation(-4, 'online')).toBe('— ONLINE');
     expect(formatPortalPopulation(null, 'connecting')).toBe('CONNECTING');
+    expect(formatPortalPopulation(null, 'offline')).toBe('SOLO WORLD');
+  });
+
+  it('shows truthful connected population labels for every destination in every world', () => {
+    for (const activeMarket of ASSET_SYMBOLS) {
+      for (const [index, route] of createPortalRoutes(activeMarket).entries()) {
+        const population = index;
+        const label = createPortalLabelModel(route, {
+          price: 100 + index,
+          population,
+          connectionMode: 'online',
+          feedMode: route.destination === 'TEST' ? 'simulated' : 'live',
+        });
+        expect(label.populationText).toBe(`${population} ONLINE`);
+        expect(label.populationText).not.toContain('OFFLINE');
+        expect(label.marketText).toBe(route.destination === 'TEST' ? 'DEMO' : 'LIVE');
+      }
+    }
   });
 
   it('assigns non-overlapping label cards and line bands in all ten worlds', () => {
@@ -206,7 +224,7 @@ describe('PortalSystem presentation', () => {
       && material.opacity === 1
     ))).toBe(true);
     expect(texts.filter(({ text }) => text === route.destination)).toHaveLength(2);
-    expect(texts.filter(({ text }) => text === '18 PEOPLE')).toHaveLength(2);
+    expect(texts.filter(({ text }) => text === '18 ONLINE')).toHaveLength(2);
     expect(texts.every(({ text }) => !text.includes('$42.25'))).toBe(true);
 
     system.setPlayerProbe({ x: route.x, z: route.z, grounded: true });

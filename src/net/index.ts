@@ -15,6 +15,7 @@ export {
   createRoomJoinOptions,
   createIdentityRefreshMessage,
   classifyIdentityTransition,
+  parseRoomPopulations,
   RoomClientSystem,
   type AccountRoomSession,
   type IdentityTransitionMode,
@@ -23,7 +24,9 @@ export {
   type RoomClientSystemOptions,
 } from './RoomClientSystem';
 export {
+  CANONICAL_MULTIPLAYER_ENDPOINT,
   OFFLINE_RUNTIME_CAPABILITIES,
   fetchRuntimeCapabilities,
   multiplayerHttpOrigin,
+  resolveMultiplayerEndpoint,
 } from './RuntimeCapabilitiesClient';
