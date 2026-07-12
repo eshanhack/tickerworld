@@ -4,6 +4,7 @@ import { createRandom, hashSeed } from './random';
 import { createRoadSignExclusionPoints } from './RoadSignLayout';
 import type { MonumentCoordinate, PondDescriptor } from './terrain';
 import { TerrainSampler } from './terrain';
+import { isInsideParkourPropExclusion } from './ParkourParkSystem';
 
 export const ECHO_MACROCELL_CHUNKS = 6;
 export const ECHO_SCALE = 0.6;
@@ -179,6 +180,7 @@ export function generateChunkLayout(options: ChunkLayoutOptions): ChunkLayout {
   const roadSignExclusions = createRoadSignExclusionPoints(monuments);
 
   const candidateIsClear = (x: number, z: number, spacing: number): boolean => {
+    if (isInsideParkourPropExclusion(x, z)) return false;
     if (echo && Math.hypot(x - echo.x, z - echo.z) < 22) {
       return false;
     }

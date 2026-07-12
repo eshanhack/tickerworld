@@ -9,6 +9,7 @@ const MARKETS = [
   ['btc', 'BTC'], ['eth', 'ETH'], ['sol', 'SOL'], ['xrp', 'XRP'],
   ['doge', 'DOGE'], ['bnb', 'BNB'], ['link', 'LINK'], ['avax', 'AVAX'],
   ['wti', 'WTI'], ['test', 'TEST'],
+  ['pump', 'PUMP'], ['ansem', 'ANSEM'], ['shfl', 'SHFL'],
 ];
 const TRUST_ROUTES = ['privacy', 'terms', 'community', 'support', 'status'];
 

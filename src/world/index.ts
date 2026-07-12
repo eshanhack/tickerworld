@@ -20,18 +20,27 @@ export { createRandom, fbm2D, hashCoordinates, hashSeed, mix32, valueNoise2D } f
 export { rainStateAt, stormWindowForCycle } from './weather';
 export type { RainState, StormWindow, ThunderMoment } from './weather';
 export { TerrainSampler } from './terrain';
+export { AmbientWorldDetails } from './AmbientWorldDetails';
+export type {
+  AmbientWorldDetailsOptions,
+  AmbientWorldDetailsStats,
+  AmbientWorldDetailsUpdate,
+} from './AmbientWorldDetails';
 export type { MonumentCoordinate, PondDescriptor, TerrainSamplerOptions } from './terrain';
 export { DEFAULT_DAY_DURATION_SECONDS, WorldSystem } from './WorldSystem';
 export { OilWorldEffects } from './OilWorldEffects';
 export type { OilWorldEffectsOptions } from './OilWorldEffects';
 export {
   PARKOUR_COURSE_IDS,
+  PARKOUR_CHECKPOINT_IDS,
   PARKOUR_FAIL_DELAY_SECONDS,
+  PARKOUR_FINISH_CHECKPOINT_ID,
   PARKOUR_MAX_STEP_UP,
   PARKOUR_PARK_BOUNDS,
   PARKOUR_PARK_CENTER,
   ParkourParkSystem,
   createParkourParkLayout,
+  isInsideParkourPropExclusion,
   parkourEdgeGap,
   parkourLandingRadius,
 } from './ParkourParkSystem';
@@ -40,6 +49,7 @@ export type {
   ParkourEvent,
   ParkourEventType,
   ParkourGroundSample,
+  ParkourHoopDescriptor,
   ParkourPalette,
   ParkourParkDebugStats,
   ParkourParkLayout,

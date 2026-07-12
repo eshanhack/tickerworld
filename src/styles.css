@@ -171,6 +171,71 @@ canvas {
   pointer-events: auto;
 }
 
+.parkour-hud {
+  position: absolute;
+  top: max(1rem, env(safe-area-inset-top));
+  left: 50%;
+  width: min(20rem, calc(100vw - 2rem));
+  transform: translateX(-50%);
+  color: #3b4947;
+}
+
+.parkour-run-card,
+.parkour-session-log {
+  border: 1px solid rgba(255, 255, 255, .64);
+  border-radius: 1.15rem;
+  background: rgba(255, 241, 207, .88);
+  box-shadow: 0 .85rem 2.8rem rgba(38, 55, 55, .18);
+  backdrop-filter: blur(14px);
+  transition: opacity .18s ease, transform .18s ease, visibility .18s ease;
+}
+
+.parkour-run-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .8rem;
+  width: min(18rem, 100%);
+  margin: 0 auto;
+  padding: .62rem .68rem .62rem .9rem;
+}
+
+.parkour-run-card > div { display: grid; grid-template-columns: auto auto; align-items: baseline; column-gap: .6rem; }
+.parkour-run-card small { grid-column: 1 / -1; color: rgba(49, 55, 61, .54); font-size: .52rem; font-weight: 900; letter-spacing: .12em; }
+.parkour-run-card strong { font-size: 1.35rem; font-variant-numeric: tabular-nums; letter-spacing: .02em; }
+.parkour-run-card span { color: #6d776e; font-size: .57rem; font-weight: 900; letter-spacing: .04em; }
+.parkour-run-card button {
+  min-width: 3.7rem;
+  min-height: 2.45rem;
+  padding: .5rem .72rem;
+  border: 1px solid rgba(173, 105, 94, .2);
+  border-radius: 999px;
+  color: #8d5d55;
+  background: rgba(231, 164, 170, .22);
+  cursor: pointer;
+  font-size: .72rem;
+  font-weight: 900;
+  touch-action: manipulation;
+}
+.parkour-run-card button:hover,
+.parkour-run-card button:focus-visible { outline: 2px solid rgba(201, 116, 79, .3); background: rgba(231, 164, 170, .36); }
+
+.parkour-session-log { width: 17rem; margin: .45rem auto 0; padding: .7rem .78rem .75rem; }
+.parkour-session-log header { display: flex; align-items: baseline; justify-content: space-between; gap: .5rem; margin-bottom: .4rem; }
+.parkour-session-log header small { color: rgba(49, 55, 61, .48); font-size: .48rem; font-weight: 900; letter-spacing: .11em; }
+.parkour-session-log header strong { font-size: .78rem; }
+.parkour-session-log ol { display: grid; gap: .18rem; max-height: 9.5rem; margin: 0; padding: 0; overflow: auto; list-style: none; }
+.parkour-session-log li { display: grid; grid-template-columns: 1.15rem minmax(0, 1fr) auto auto; align-items: center; gap: .38rem; min-height: 1.7rem; padding: .22rem .32rem; border-radius: .55rem; background: rgba(255, 255, 255, .36); }
+.parkour-session-log li span { display: grid; place-items: center; width: 1.05rem; height: 1.05rem; border-radius: 50%; color: #fff7e7; background: #7fc5b8; font-size: .55rem; font-weight: 900; }
+.parkour-session-log li strong { overflow: hidden; font-size: .67rem; text-overflow: ellipsis; white-space: nowrap; }
+.parkour-session-log li small { color: rgba(49, 55, 61, .5); font-size: .5rem; font-weight: 900; }
+.parkour-session-log li b { font-size: .68rem; font-variant-numeric: tabular-nums; }
+.parkour-run-card.is-hidden,
+.parkour-session-log.is-hidden { opacity: 0; visibility: hidden; pointer-events: none; transform: translateY(-.35rem) scale(.97); }
+.parkour-hud.is-running .parkour-session-log { opacity: 0; visibility: hidden; pointer-events: none; }
+.hud.is-parkour-running .onboarding-hint { opacity: 0; visibility: hidden; pointer-events: none; }
+.hud[data-large-overlay]:not([data-large-overlay=""]) .parkour-session-log { opacity: 0; visibility: hidden; pointer-events: none; }
+
 .enter-overlay {
   position: absolute;
   inset: 0;
@@ -878,6 +943,12 @@ html.is-launch-capture body::after {
 }
 
 @media (max-width: 700px) {
+  .parkour-hud { top: calc(max(.65rem, env(safe-area-inset-top)) + 4.25rem); width: calc(100vw - 1rem); }
+  .parkour-run-card { width: min(18rem, calc(100vw - 1rem)); padding: .52rem .55rem .52rem .72rem; }
+  .parkour-run-card button { min-width: 4rem; min-height: 2.75rem; }
+  .parkour-session-log { width: min(17rem, calc(100vw - 1rem)); max-height: 6.4rem; }
+  .parkour-session-log ol { max-height: 4.15rem; }
+
   .enter-card { border-radius: 2rem; }
   .nearby-panel { transform: scale(.9); transform-origin: top left; }
   .hud-actions { gap: .4rem; }

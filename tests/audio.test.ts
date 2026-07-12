@@ -789,8 +789,8 @@ describe('AudioEngine lifecycle', () => {
       return result;
     };
 
-    await expect(render('up', 'large')).resolves.toEqual({ oscillators: 4, buffers: 1 });
-    await expect(render('up', 'exceptional')).resolves.toEqual({ oscillators: 5, buffers: 1 });
+    await expect(render('up', 'large')).resolves.toEqual({ oscillators: 6, buffers: 1 });
+    await expect(render('up', 'exceptional')).resolves.toEqual({ oscillators: 9, buffers: 2 });
     await expect(render('down', 'large')).resolves.toEqual({ oscillators: 2, buffers: 0 });
     await expect(render('down', 'exceptional')).resolves.toEqual({ oscillators: 4, buffers: 0 });
     vi.useRealTimers();
@@ -851,6 +851,47 @@ describe('AudioEngine lifecycle', () => {
       moveRatio: MARKET_MOVE_THRESHOLDS.exceptional,
     });
     expect(fake.oscillators.length - baselineOscillators).toBe(4);
+    engine.dispose();
+    vi.useRealTimers();
+  });
+
+  it('reserves enough priority voices for the full exceptional fanfare and caps overlap', async () => {
+    vi.useFakeTimers();
+    const fake = makeFakeContext();
+    const engine = new AudioEngine({ contextFactory: () => fake.context, storage: null, random: () => 0.5 });
+    engine.setMonumentSources([{
+      id: 'grand:BTC',
+      symbol: 'BTC',
+      position: { x: 0, y: 2, z: 0 },
+    }]);
+    await engine.unlock();
+
+    for (let index = 0; index < 30; index += 1) engine.playJump('double-jump');
+    const scheduled = (engine as unknown as {
+      scheduledSources: Set<AudioScheduledSourceNode>;
+    }).scheduledSources;
+    expect(scheduled.size).toBe(36);
+    const baselineOscillators = fake.oscillators.length;
+    const baselineBuffers = fake.bufferSources.length;
+    engine.playMarketAccent('grand:BTC', {
+      direction: 'up',
+      tier: 'exceptional',
+      moveRatio: MARKET_MOVE_THRESHOLDS.exceptional,
+    });
+    expect(fake.oscillators.length - baselineOscillators).toBe(9);
+    expect(fake.bufferSources.length - baselineBuffers).toBe(2);
+    expect(scheduled.size).toBe(47);
+
+    // Only one voice remains; another seven-voice large fanfare fails closed
+    // instead of overcommitting the global Web Audio resource cap.
+    engine.playMarketAccent('grand:BTC', {
+      direction: 'up',
+      tier: 'large',
+      moveRatio: MARKET_MOVE_THRESHOLDS.large,
+    });
+    expect(fake.oscillators.length - baselineOscillators).toBe(9);
+    expect(fake.bufferSources.length - baselineBuffers).toBe(2);
+    expect(scheduled.size).toBe(47);
     engine.dispose();
     vi.useRealTimers();
   });

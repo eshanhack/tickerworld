@@ -12,6 +12,9 @@ export const MARKET_SLUGS = [
   'avax',
   'wti',
   'test',
+  'pump',
+  'ansem',
+  'shfl',
 ] as const;
 
 export type MarketSlug = (typeof MARKET_SLUGS)[number];
@@ -58,6 +61,9 @@ const SYMBOL_BY_SLUG: Readonly<Record<MarketSlug, AssetSymbol>> = {
   avax: 'AVAX',
   wti: 'WTI',
   test: 'TEST',
+  pump: 'PUMP',
+  ansem: 'ANSEM',
+  shfl: 'SHFL',
 };
 
 const MARKET_CHOICES: readonly MarketChoice[] = MARKET_SLUGS.map((slug) => {

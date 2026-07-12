@@ -86,10 +86,14 @@ describe('WorldSystem lamp ambience', () => {
     const clouds = world.root.getObjectByName('AtmosphereClouds') as THREE.InstancedMesh;
     expect(clouds).toBeDefined();
     expect(world.getDebugStats()).toMatchObject({
-      cloudPuffs: 42,
+      cloudPuffs: 64,
       cloudDrawCalls: 1,
+      ambientFireflies: 0,
+      ambientPetals: 28,
+      ambientBirds: 8,
+      ambientDetailDrawCalls: 2,
     });
-    expect(clouds.count).toBe(42);
+    expect(clouds.count).toBe(64);
     const cloudMaterial = clouds.material as THREE.MeshLambertMaterial;
     expect(cloudMaterial.transparent).toBe(false);
     expect(cloudMaterial.alphaHash).toBe(false);
@@ -103,9 +107,9 @@ describe('WorldSystem lamp ambience', () => {
       clouds.getMatrixAt(index, after);
       position.setFromMatrixPosition(after);
       expect(Math.abs(position.x)).toBeLessThanOrEqual(108);
-      expect(Math.abs(position.z)).toBeLessThanOrEqual(112);
-      expect(position.y).toBeGreaterThanOrEqual(26.5);
-      expect(position.y).toBeLessThanOrEqual(40);
+      expect(Math.abs(position.z)).toBeLessThanOrEqual(108);
+      expect(position.y).toBeGreaterThanOrEqual(17.5);
+      expect(position.y).toBeLessThanOrEqual(35);
     }
     const dayColor = cloudMaterial.color.clone();
     world.update({ x: 0, z: 0 }, 90);
@@ -115,6 +119,12 @@ describe('WorldSystem lamp ambience', () => {
     world.update({ x: 0, z: 0 }, DEFAULT_DAY_DURATION_SECONDS / 2);
     const nightColor = cloudMaterial.color.clone();
     expect(nightColor.equals(dayColor)).toBe(false);
+    expect(world.getDebugStats()).toMatchObject({
+      ambientFireflies: 56,
+      ambientPetals: 0,
+      ambientBirds: 0,
+      ambientDetailDrawCalls: 1,
+    });
 
     const geometryDispose = vi.spyOn(clouds.geometry, 'dispose');
     const materialDispose = vi.spyOn(clouds.material as THREE.Material, 'dispose');
@@ -147,14 +157,16 @@ describe('WorldSystem lamp ambience', () => {
         driftX: number;
         driftZ: number;
         parallax: number;
+        layer: 0 | 1 | 2;
         puffIndex: number;
       }>;
     };
-    expect(new Set(internals.cloudPuffs.map((puff) => puff.parallax.toFixed(4))).size).toBeGreaterThan(8);
-    expect(internals.cloudPuffs.every((puff) => puff.parallax >= 0.8 && puff.parallax <= 1.18)).toBe(true);
-    for (let index = 0; index < internals.cloudPuffs.length; index += 3) {
-      const group = internals.cloudPuffs.slice(index, index + 3);
-      expect(group.map((puff) => puff.puffIndex)).toEqual([0, 1, 2]);
+    expect(new Set(internals.cloudPuffs.map((puff) => puff.parallax.toFixed(4))).size).toBeGreaterThan(10);
+    expect(internals.cloudPuffs.every((puff) => puff.parallax >= 0.67 && puff.parallax <= 1.55)).toBe(true);
+    expect(new Set(internals.cloudPuffs.map((puff) => puff.layer))).toEqual(new Set([0, 1, 2]));
+    for (let index = 0; index < internals.cloudPuffs.length; index += 4) {
+      const group = internals.cloudPuffs.slice(index, index + 4);
+      expect(group.map((puff) => puff.puffIndex)).toEqual([0, 1, 2, 3]);
       expect(new Set(group.map((puff) => `${puff.driftX}:${puff.driftZ}`))).toHaveLength(1);
     }
 
@@ -190,19 +202,20 @@ describe('WorldSystem lamp ambience', () => {
     );
     const normalTravel = meanTravel(beforeNormal, afterNormal);
     const reducedTravel = meanTravel(beforeReduced, afterReduced);
-    expect(normalTravel).toBeGreaterThan(1.1);
-    expect(reducedTravel).toBeGreaterThan(0.1);
-    expect(reducedTravel).toBeLessThan(normalTravel * 0.2);
+    expect(normalTravel).toBeGreaterThan(2);
+    expect(reducedTravel).toBeGreaterThan(0.28);
+    expect(reducedTravel).toBeLessThan(normalTravel * 0.25);
 
     // The first group's three puffs translate together while their individual
     // matrices still breathe into distinct silhouettes.
-    const groupTravel = [0, 1, 2].map((index) => {
+    const groupTravel = [0, 1, 2, 3].map((index) => {
       const before = new THREE.Vector3().setFromMatrixPosition(beforeNormal[index]!);
       const after = new THREE.Vector3().setFromMatrixPosition(afterNormal[index]!);
       return after.sub(before);
     });
     expect(groupTravel[0]!.distanceTo(groupTravel[1]!)).toBeLessThan(0.0001);
     expect(groupTravel[0]!.distanceTo(groupTravel[2]!)).toBeLessThan(0.0001);
+    expect(groupTravel[0]!.distanceTo(groupTravel[3]!)).toBeLessThan(0.0001);
     expect(afterNormal[0]!.equals(beforeNormal[0]!)).toBe(false);
     expect(afterNormal[1]!.equals(afterNormal[0]!)).toBe(false);
 
@@ -214,12 +227,61 @@ describe('WorldSystem lamp ambience', () => {
       position.setFromMatrixPosition(matrix);
       expect(Math.abs(position.x)).toBeLessThanOrEqual(108);
       expect(Math.abs(position.z)).toBeLessThanOrEqual(108);
-      expect(position.y).toBeGreaterThanOrEqual(26.5);
-      expect(position.y).toBeLessThanOrEqual(40);
+      expect(position.y).toBeGreaterThanOrEqual(17.5);
+      expect(position.y).toBeLessThanOrEqual(35);
     }
     normal.dispose();
     reduced.dispose();
     mirror.dispose();
+  });
+
+  it('moves a near cloud bank unmistakably in a ground-level screen-space proxy', () => {
+    const options = {
+      seed: 'cloud-screen-space-test',
+      activeRadius: 0,
+      loadBudgetPerUpdate: 1,
+      unloadBudgetPerUpdate: 1,
+    } as const;
+    const normal = new WorldSystem(new THREE.Scene(), options);
+    const reduced = new WorldSystem(new THREE.Scene(), { ...options, reducedMotion: true });
+    const player = { x: 0, z: 0 };
+    normal.update(player, 0);
+    reduced.update(player, 0);
+    const normalClouds = normal.root.getObjectByName('AtmosphereClouds') as THREE.InstancedMesh;
+    const reducedClouds = reduced.root.getObjectByName('AtmosphereClouds') as THREE.InstancedMesh;
+
+    const projectedTravel = (
+      world: WorldSystem,
+      clouds: THREE.InstancedMesh,
+      seconds: number,
+    ): number => {
+      const matrix = new THREE.Matrix4();
+      const before = new THREE.Vector3();
+      const after = new THREE.Vector3();
+      clouds.getMatrixAt(0, matrix);
+      before.setFromMatrixPosition(matrix);
+      const camera = new THREE.PerspectiveCamera(60, 16 / 9, 0.1, 300);
+      camera.position.set(0, 2.2, 0);
+      camera.lookAt(before);
+      camera.updateMatrixWorld(true);
+      const beforeNdc = before.clone().project(camera);
+      world.update(player, seconds);
+      clouds.getMatrixAt(0, matrix);
+      after.setFromMatrixPosition(matrix);
+      const afterNdc = after.project(camera);
+      return Math.hypot(
+        (afterNdc.x - beforeNdc.x) * 640,
+        (afterNdc.y - beforeNdc.y) * 360,
+      );
+    };
+
+    const normalPixels = projectedTravel(normal, normalClouds, 1.5);
+    const reducedPixels = projectedTravel(reduced, reducedClouds, 1.5);
+    expect(normalPixels).toBeGreaterThan(24);
+    expect(reducedPixels).toBeGreaterThan(3);
+    expect(reducedPixels).toBeLessThan(normalPixels * 0.35);
+    normal.dispose();
+    reduced.dispose();
   });
 
   it('uses only bounded real lights and motes without additive ground planes', () => {

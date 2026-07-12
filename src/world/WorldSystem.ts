@@ -22,6 +22,7 @@ import type {
 import { hashCoordinates, hashSeed } from './random';
 import { TerrainSampler } from './terrain';
 import { rainStateAt } from './weather';
+import { AmbientWorldDetails } from './AmbientWorldDetails';
 
 export interface WorldPosition {
   x: number;
@@ -79,6 +80,10 @@ export interface WorldDebugStats {
   bendingVegetation: number;
   cloudPuffs: number;
   cloudDrawCalls: number;
+  ambientFireflies: number;
+  ambientPetals: number;
+  ambientBirds: number;
+  ambientDetailDrawCalls: number;
 }
 
 export type DropFlashTier = 'large' | 'exceptional';
@@ -145,6 +150,7 @@ interface CloudPuff {
   readonly shapeRate: number;
   readonly rotationRate: number;
   readonly parallax: number;
+  readonly layer: 0 | 1 | 2;
   readonly phase: number;
   readonly puffIndex: number;
 }
@@ -162,11 +168,11 @@ const RAIN_RADIUS = 19;
 const RAIN_COLUMN_HEIGHT = 17;
 const VEGETATION_GRID_SIZE = 5;
 const VEGETATION_SOUND_COOLDOWN_SECONDS = 0.3;
-const CLOUD_GROUP_COUNT = 14;
-const CLOUD_PUFFS_PER_GROUP = 3;
+const CLOUD_GROUP_COUNT = 16;
+const CLOUD_PUFFS_PER_GROUP = 4;
 const CLOUD_PUFF_CAPACITY = CLOUD_GROUP_COUNT * CLOUD_PUFFS_PER_GROUP;
 const CLOUD_FIELD_RADIUS = 108;
-const CLOUD_CENTRE_WRAP_RADIUS = CLOUD_FIELD_RADIUS - 8;
+const CLOUD_CENTRE_WRAP_RADIUS = CLOUD_FIELD_RADIUS - 12;
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
 
 function clamp01(value: number): number {
@@ -244,6 +250,7 @@ export class WorldSystem {
   private readonly cloudMesh: THREE.InstancedMesh<THREE.BufferGeometry, THREE.MeshLambertMaterial>;
   private readonly cloudMaterial: THREE.MeshLambertMaterial;
   private readonly cloudPuffs: readonly CloudPuff[];
+  private readonly ambientDetails: AmbientWorldDetails;
   private readonly cloudDay = new THREE.Color(0xfff2dc);
   private readonly cloudNight = new THREE.Color(0x91a2b6);
   private readonly cloudStorm = new THREE.Color(0x74869a);
@@ -351,6 +358,8 @@ export class WorldSystem {
     const cloudGeometry = this.trackGeometry(new THREE.IcosahedronGeometry(1, 1));
     this.cloudMaterial = this.trackMaterial(new THREE.MeshLambertMaterial({
       color: this.cloudDay,
+      emissive: this.cloudDay,
+      emissiveIntensity: 0.28,
       // Opaque low-poly puffs stay in the early depth-writing pass, so the
       // later market overlays always remain perfectly legible.
       transparent: false,
@@ -372,6 +381,13 @@ export class WorldSystem {
     this.cloudMesh.renderOrder = -1;
     this.cloudPuffs = this.createCloudPuffs();
     this.propRoot.add(this.cloudMesh);
+
+    this.ambientDetails = new AmbientWorldDetails({
+      seed: this.seed,
+      heightAt: (x, z) => this.terrain.heightAt(x, z),
+      surfaceAt: (x, z) => this.terrain.surfaceAt(x, z),
+    });
+    this.propRoot.add(this.ambientDetails.root);
 
     const lampMoteGeometry = this.trackGeometry(new THREE.BufferGeometry());
     this.lampMotePositions = new Float32Array(LAMP_MOTE_CAPACITY * 3);
@@ -498,6 +514,7 @@ export class WorldSystem {
   }
 
   getDebugStats(): WorldDebugStats {
+    const ambient = this.ambientDetails.getDebugStats();
     const propDrawCalls = Object.values(this.pools).reduce(
       (total, pool) => total + (pool.mesh.count > 0 ? 1 : 0),
       0,
@@ -522,6 +539,10 @@ export class WorldSystem {
       bendingVegetation: this.activeVegetation.size,
       cloudPuffs: this.cloudMesh.count,
       cloudDrawCalls: Number(this.cloudMesh.visible && this.cloudMesh.count > 0),
+      ambientFireflies: ambient.fireflies,
+      ambientPetals: ambient.petals,
+      ambientBirds: ambient.birds,
+      ambientDetailDrawCalls: ambient.drawCalls,
     };
   }
 
@@ -577,35 +598,48 @@ export class WorldSystem {
     this.updateLampLights(playerPosition, elapsedSeconds);
     this.updateWeather(playerPosition, elapsedSeconds);
     this.updateClouds(elapsedSeconds);
+    this.ambientDetails.update({
+      elapsedSeconds,
+      daylight: this.daylight,
+      rainIntensity: this.rainIntensity,
+      reducedMotion: this.reducedMotion,
+    });
     this.updateVegetation(playerPosition, elapsedSeconds);
   }
 
   private createCloudPuffs(): readonly CloudPuff[] {
     const puffs: CloudPuff[] = [];
     const offsets = [
-      { x: -0.72, z: 0.08, scale: 0.82 },
-      { x: 0, z: -0.12, scale: 1 },
-      { x: 0.68, z: 0.14, scale: 0.76 },
+      { x: -0.78, z: 0.08, y: 0, scale: 0.82 },
+      { x: -0.08, z: -0.12, y: 0.48, scale: 1 },
+      { x: 0.7, z: 0.14, y: 0.08, scale: 0.78 },
+      { x: 0.16, z: 0.5, y: -0.12, scale: 0.66 },
     ] as const;
     for (let group = 0; group < CLOUD_GROUP_COUNT; group += 1) {
+      const layer = (group % 3) as 0 | 1 | 2;
       const angle = hashCoordinates(this.weatherSeed, group, 1, 41_011) * Math.PI * 2;
-      const radius = 18 + Math.sqrt(
+      const radiusMin = [14, 28, 44][layer] ?? 14;
+      const radiusMax = [50, 72, 92][layer] ?? 50;
+      const radius = radiusMin + Math.sqrt(
         hashCoordinates(this.weatherSeed, group, 2, 41_027),
-      ) * (CLOUD_CENTRE_WRAP_RADIUS - 24);
+      ) * (radiusMax - radiusMin);
       const centreX = Math.cos(angle) * radius;
       const centreZ = Math.sin(angle) * radius;
-      const baseScale = 3.2 + hashCoordinates(this.weatherSeed, group, 3, 41_039) * 2.7;
-      const y = 27 + hashCoordinates(this.weatherSeed, group, 4, 41_053) * 12;
+      const baseScale = ([5.1, 4.45, 3.75][layer] ?? 4)
+        + hashCoordinates(this.weatherSeed, group, 3, 41_039) * 1.65;
+      const y = ([18.5, 24.5, 31][layer] ?? 24)
+        + hashCoordinates(this.weatherSeed, group, 4, 41_053) * 3;
       const phase = hashCoordinates(this.weatherSeed, group, 6, 41_087) * Math.PI * 2;
       // The lower groups cross the viewer's sightline a little faster, giving
-      // the sky readable depth without adding layers or draw calls.
-      const parallax = 1.18 - ((y - 27) / 12) * 0.38;
-      const speed = (0.72 + hashCoordinates(this.weatherSeed, group, 5, 41_071) * 0.5)
+      // the sky readable depth without adding draw calls.
+      const parallax = ([1.38, 1.03, 0.72][layer] ?? 1)
+        * (0.94 + hashCoordinates(this.weatherSeed, group, 13, 41_159) * 0.12);
+      const speed = (1.55 + hashCoordinates(this.weatherSeed, group, 5, 41_071) * 0.85)
         * parallax;
-      const windAngle = -0.15 + hashCoordinates(this.weatherSeed, group, 7, 41_093) * 0.3;
+      const windAngle = -0.11 + hashCoordinates(this.weatherSeed, group, 7, 41_093) * 0.22;
       const driftX = Math.cos(windAngle) * speed;
       const driftZ = Math.sin(windAngle) * speed;
-      const bobAmplitude = 0.2 + hashCoordinates(this.weatherSeed, group, 8, 41_099) * 0.24;
+      const bobAmplitude = 0.24 + hashCoordinates(this.weatherSeed, group, 8, 41_099) * 0.3;
       const bobRate = 0.17 + hashCoordinates(this.weatherSeed, group, 9, 41_117) * 0.11;
       const shapeAmplitude = 0.025 + hashCoordinates(this.weatherSeed, group, 10, 41_123) * 0.025;
       const shapeRate = 0.22 + hashCoordinates(this.weatherSeed, group, 11, 41_141) * 0.13;
@@ -617,7 +651,7 @@ export class WorldSystem {
           baseZ: centreZ,
           offsetX: offset.x * baseScale * 1.42,
           offsetZ: offset.z * baseScale,
-          y: y + (puffIndex === 1 ? 0.48 : 0),
+          y: y + offset.y,
           scaleX: scale * 1.18,
           scaleY: scale * 0.42,
           scaleZ: scale * 0.72,
@@ -629,6 +663,7 @@ export class WorldSystem {
           shapeRate,
           rotationRate,
           parallax,
+          layer,
           phase,
           puffIndex,
         });
@@ -638,8 +673,8 @@ export class WorldSystem {
   }
 
   private updateClouds(elapsedSeconds: number): void {
-    const motionScale = this.reducedMotion ? 0.12 : 1;
-    const shapeMotionScale = this.reducedMotion ? 0.24 : 1;
+    const motionScale = this.reducedMotion ? 0.18 : 1;
+    const shapeMotionScale = this.reducedMotion ? 0.32 : 1;
     const motionTime = elapsedSeconds * motionScale;
     for (let index = 0; index < this.cloudPuffs.length; index += 1) {
       const puff = this.cloudPuffs[index];
@@ -686,6 +721,11 @@ export class WorldSystem {
         this.marketFlashIntensity * 0.34,
       );
     }
+    // Clouds are viewed from below far more often than from above. A warm,
+    // restrained self-light keeps their low-poly undersides pastel instead of
+    // turning into black silhouettes when the sun is behind them.
+    this.cloudMaterial.emissive.copy(this.cloudMaterial.color);
+    this.cloudMaterial.emissiveIntensity = 0.16 + this.daylight * 0.18;
     this.cloudMaterial.opacity = 1;
     this.cloudMesh.visible = true;
   }
@@ -1575,6 +1615,7 @@ export class WorldSystem {
     this.desiredKeys.clear();
     this.activeEchoes = [];
     this.onEchoPlacementsChanged?.([]);
+    this.ambientDetails.dispose();
     this.scene.remove(this.root);
     for (const geometry of this.sharedGeometries) {
       geometry.dispose();

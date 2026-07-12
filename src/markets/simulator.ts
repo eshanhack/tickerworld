@@ -11,6 +11,9 @@ export const BASE_PRICES: Record<AssetSymbol, number> = {
   AVAX: 24.8,
   WTI: 74,
   TEST: 100,
+  PUMP: 0.0015,
+  ANSEM: 0.24,
+  SHFL: 0.26,
 };
 
 const VOLATILITY: Record<AssetSymbol, number> = {
@@ -26,6 +29,9 @@ const VOLATILITY: Record<AssetSymbol, number> = {
   // TEST history stays compact enough that its much larger live moves remain
   // visually legible instead of disappearing inside an oversized seed range.
   TEST: 0.0045,
+  PUMP: 0.0042,
+  ANSEM: 0.0052,
+  SHFL: 0.0032,
 };
 
 export function hashString(value: string): number {

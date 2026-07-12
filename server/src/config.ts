@@ -231,7 +231,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     xDailyRequestLimit: positiveInteger(env, 'X_DAILY_REQUEST_LIMIT', 500),
     limits: {
       maxProcessConnections: launchLimit('MAX_PROCESS_CONNECTIONS', 400, 400),
-      maxRooms: launchLimit('MAX_ROOMS', 18, 18),
+      // Thirteen ticker worlds plus bounded launch overflow on one process.
+      maxRooms: launchLimit('MAX_ROOMS', 24, 24),
       maxMarketShards: launchLimit('MAX_MARKET_SHARDS', 8, 8),
       maxConcurrentConnectionsPerIp: launchLimit('MAX_CONCURRENT_PER_IP', 20, 20),
       actorJoinsPerMinute: launchLimit('ACTOR_JOINS_PER_MINUTE', 12, 12),

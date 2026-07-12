@@ -1,8 +1,8 @@
 import { MARKET_SLUGS } from './constants.js';
 import type { MarketSlug, PortalRoute } from './contracts.js';
 
-// Canonical directions derived from the original BTC roads plus the two new
-// WTI and TEST portal bearings.
+// Canonical directions derived from the original BTC roads. DEX destinations
+// live on a second field ring so the central portal cluster remains legible.
 const ROAD_TARGETS: Readonly<Record<Exclude<MarketSlug, 'btc'>, readonly [number, number]>> = {
   eth: [190, 70],
   sol: [-240, 150],
@@ -13,7 +13,12 @@ const ROAD_TARGETS: Readonly<Record<Exclude<MarketSlug, 'btc'>, readonly [number
   avax: [510, -400],
   wti: [450, 780],
   test: [-620, 0],
+  pump: [-500, 720],
+  ansem: [-420, -780],
+  shfl: [710, -560],
 };
+
+const FIELD_PORTAL_MARKETS = new Set<MarketSlug>(['pump', 'ansem', 'shfl']);
 
 const BTC_DESTINATIONS = MARKET_SLUGS.filter(
   (market): market is Exclude<MarketSlug, 'btc'> => market !== 'btc',
@@ -28,8 +33,9 @@ export function createPortalRoutes(activeMarket: MarketSlug): readonly PortalRou
         : btcDestination;
     const [roadX, roadZ] = ROAD_TARGETS[btcDestination];
     const roadLength = Math.hypot(roadX, roadZ);
-    const x = roadX / roadLength * 24;
-    const z = roadZ / roadLength * 24;
+    const radius = FIELD_PORTAL_MARKETS.has(btcDestination) ? 47 : 24;
+    const x = roadX / roadLength * radius;
+    const z = roadZ / roadLength * radius;
     return {
       slot,
       from: activeMarket,

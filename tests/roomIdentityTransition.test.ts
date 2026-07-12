@@ -416,6 +416,11 @@ describe('RoomClientSystem identity transitions', () => {
     const requestId = (request.payload as { requestId: string }).requestId;
     room.emit(PARTY_SERVER_INVITE, { requestId, token: 'party_123456', expiresAt: Date.now() + 60_000 });
     await expect(invitePromise).resolves.toMatchObject({ requestId, token: 'party_123456' });
+    expect(system.requestParkourRespawn('parkour-checkpoint-a')).toBe(true);
+    expect(room.sent.at(-1)).toEqual({
+      type: CLIENT_MESSAGES.parkourRespawn,
+      payload: { protocolVersion: 2, checkpointId: 'parkour-checkpoint-a' },
+    });
     system.dispose();
   });
 
@@ -479,7 +484,10 @@ describe('RoomClientSystem identity transitions', () => {
       instrument: 'BTC', candles: [], candle: null, price: 64_000,
       upstreamAt: 1, publishedAt: 2, ageMs: 1, stale: false,
     } as const;
-    const instruments = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'BNB', 'LINK', 'AVAX', 'WTI', 'TEST'] as const;
+    const instruments = [
+      'BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'BNB', 'LINK', 'AVAX', 'WTI', 'TEST',
+      'PUMP', 'ANSEM', 'SHFL',
+    ] as const;
     const mids = instruments.map((instrument, index) => ({
       instrument,
       price: 64_000 + index,
@@ -489,7 +497,7 @@ describe('RoomClientSystem identity transitions', () => {
     firstRoom.emit(SERVER_MESSAGES.marketMids, mids);
     expect(order).toEqual(['mids', 'market']);
     expect(onMarket).toHaveBeenCalledWith(state);
-    expect(onMids).toHaveBeenCalledWith(mids.slice(0, 9));
+    expect(onMids).toHaveBeenCalledWith(mids.filter(({ instrument }) => instrument !== 'TEST'));
 
     await system.switchMarket('eth');
     firstRoom.emit(SERVER_MESSAGES.market, { ...state, price: 1 });

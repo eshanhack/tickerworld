@@ -2,13 +2,19 @@ import * as THREE from 'three';
 import { Text } from 'troika-three-text';
 import { describe, expect, it, vi } from 'vitest';
 import { createPortalRoutes } from '../src/portals';
+import { ANIMAL_KINDS } from '../shared/src/index.js';
+import { ANIMAL_MOTION_PROFILES } from '../src/player/animalProfiles';
+import { GRAND_MONUMENTS } from '../src/config';
 import {
   PARKOUR_COURSE_IDS,
   PARKOUR_FAIL_DELAY_SECONDS,
   PARKOUR_PARK_BOUNDS,
   ParkourParkSystem,
+  TerrainSampler,
   createCanonicalRoadDescriptors,
   createParkourParkLayout,
+  generateChunkLayout,
+  isInsideParkourPropExclusion,
   parkourEdgeGap,
   type ParkourRespawnPoint,
   type ParkourSurfaceDescriptor,
@@ -36,14 +42,15 @@ describe('nearby parkour park', () => {
     expect(new Set(first.surfaces.map(({ shape }) => shape))).toEqual(
       new Set(['rect', 'circle', 'ramp']),
     );
-    expect(first.arches).toHaveLength(3);
-    expect(first.arches.filter(({ label }) => label)).toHaveLength(3);
+    expect(first.arches).toHaveLength(4);
+    expect(first.arches.filter(({ label }) => label)).toHaveLength(4);
+    expect(first.hoops).toHaveLength(2);
 
     const roads = createCanonicalRoadDescriptors();
     const portals = createPortalRoutes('BTC');
     for (const surface of first.surfaces) {
       const radius = descriptorRadius(surface);
-      expect(Math.hypot(surface.x, surface.z) + radius).toBeLessThan(76);
+      expect(Math.hypot(surface.x, surface.z) + radius).toBeLessThan(80);
       expect(Math.hypot(surface.x, surface.z) - radius).toBeGreaterThan(17);
       expect(surface.x - radius).toBeGreaterThanOrEqual(PARKOUR_PARK_BOUNDS.left - 0.9);
       expect(surface.x + radius).toBeLessThanOrEqual(PARKOUR_PARK_BOUNDS.right + 0.9);
@@ -60,13 +67,49 @@ describe('nearby parkour park', () => {
     for (let index = 0; index < first.surfaces.length - 1; index += 1) {
       const current = first.surfaces[index]!;
       const next = first.surfaces[index + 1]!;
-      expect(parkourEdgeGap(current, next)).toBeLessThanOrEqual(1.7);
+      expect(parkourEdgeGap(current, next)).toBeLessThanOrEqual(1.35);
       const departure = current.shape === 'ramp' ? current.endElevation : current.elevation;
       expect(next.elevation - departure).toBeLessThanOrEqual(0.300_001);
     }
     expect(Math.max(...first.surfaces.map(({ elevation, endElevation }) => (
       Math.max(elevation, endElevation)
     )))).toBeLessThan(3.5);
+
+    const terrain = new TerrainSampler({ seed: 'tickerworld-v1', monuments: GRAND_MONUMENTS });
+    const layouts = [0, 1, 2].flatMap((chunkX) => [-1, 0, 1].map((chunkZ) => generateChunkLayout({
+      seed: 'tickerworld-v1',
+      chunkX,
+      chunkZ,
+      chunkSize: 48,
+      terrain,
+      monuments: GRAND_MONUMENTS,
+      echoSuppressionRadius: Number.POSITIVE_INFINITY,
+    })));
+    expect(layouts.flatMap(({ props }) => props).some(({ x, z }) => (
+      isInsideParkourPropExclusion(x, z)
+    ))).toBe(false);
+  });
+
+  it('keeps every jump link reachable for all eight animal movement profiles', () => {
+    const { surfaces } = createParkourParkLayout();
+    for (const animal of ANIMAL_KINDS) {
+      const profile = ANIMAL_MOTION_PROFILES[animal];
+      for (let index = 0; index < surfaces.length - 1; index += 1) {
+        const current = surfaces[index]!;
+        const next = surfaces[index + 1]!;
+        const departure = current.shape === 'ramp' ? current.endElevation : current.elevation;
+        const rise = Math.max(0, next.elevation - departure);
+        const discriminant = profile.jumpImpulse ** 2 - 2 * profile.gravity * rise;
+        expect(discriminant, `${animal} vertical link ${current.id} -> ${next.id}`).toBeGreaterThan(0);
+        const flightSeconds = (profile.jumpImpulse + Math.sqrt(discriminant)) / profile.gravity;
+        const conservativeRange = profile.sprintSpeed * flightSeconds * 0.66;
+        expect(
+          parkourEdgeGap(current, next),
+          `${animal} horizontal link ${current.id} -> ${next.id}`,
+        ).toBeLessThanOrEqual(conservativeRange);
+        expect(rise).toBeLessThanOrEqual(profile.jumpImpulse ** 2 / (2 * profile.gravity) * 0.7);
+      }
+    }
   });
 
   it('samples platforms and true ramp slopes while blocking only unearned step-ups', () => {
@@ -80,24 +123,48 @@ describe('nearby parkour park', () => {
       role: 'start',
     });
     expect(park.sampleGround(30.6, 2)?.height).toBeCloseTo(0.18, 5);
-    expect(park.sampleGround(35.4, 2)?.height).toBeCloseTo(0.75, 5);
-    expect(park.sampleGround(55.5, 3.5)?.height).toBeCloseTo(2.15, 5);
+    expect(park.sampleGround(35.4, 2)?.height).toBeCloseTo(0.72, 5);
+    expect(park.sampleGround(60.6, 0.4)?.height).toBeCloseTo(2.62, 5);
     expect(park.sampleGround(20, 20)).toBeNull();
 
-    const blocked = park.resolveHorizontal(53, 0, 55.5, 3.5, 0);
-    expect(blocked).not.toEqual({ x: 55.5, z: 3.5 });
-    expect(park.resolveHorizontal(53, 0, 55.5, 3.5, 1.8)).toEqual({ x: 55.5, z: 3.5 });
+    const blocked = park.resolveHorizontal(58, -1, 60.6, 0.4, 0);
+    expect(blocked).not.toEqual({ x: 60.6, z: 0.4 });
+    expect(park.resolveHorizontal(58, -1, 60.6, 0.4, 2.2)).toEqual({ x: 60.6, z: 0.4 });
     expect(park.resolveHorizontal(30, 2, 30.7, 2, 0)).toEqual({ x: 30.7, z: 2 });
 
-    expect(park.collidesCamera(55.5, 1, 3.5)).toBe(true);
-    expect(park.collidesCamera(55.5, 3, 3.5)).toBe(false);
+    expect(park.collidesCamera(60.6, 1, 0.4)).toBe(true);
+    expect(park.collidesCamera(60.6, 3.5, 0.4)).toBe(false);
     // The middle of an arch remains a generous pass-through for the bear,
     // while its actual support stays solid.
-    const checkpointHeight = park.sampleGround(48.5, 2.2)!.height;
-    expect(park.resolveHorizontal(47.8, 2.2, 48.5, 2.2, checkpointHeight))
-      .toEqual({ x: 48.5, z: 2.2 });
-    expect(park.resolveHorizontal(47.8, 3.6, 48.5, 3.6, checkpointHeight))
-      .not.toEqual({ x: 48.5, z: 3.6 });
+    const checkpointHeight = park.sampleGround(47, 2.2)!.height;
+    expect(park.resolveHorizontal(46.4, 2.2, 47, 2.2, checkpointHeight))
+      .toEqual({ x: 47, z: 2.2 });
+    expect(park.resolveHorizontal(46.4, 3.6, 47, 3.6, checkpointHeight))
+      .not.toEqual({ x: 47, z: 3.6 });
+    park.dispose();
+  });
+
+  it('resets ordinary-ground contact to START before any checkpoint', () => {
+    const respawn = vi.fn((_point: ParkourRespawnPoint) => true);
+    const events: string[] = [];
+    const park = new ParkourParkSystem({
+      parent: new THREE.Group(),
+      heightAt: () => 0,
+      onRespawnRequested: respawn,
+      onEvent: ({ type }) => events.push(type),
+    });
+    park.setPlayerProbe({ x: 30, y: 0.18, z: 2, grounded: true });
+    park.update(0.1, 0.1);
+    park.setPlayerProbe({ x: 34, y: 0, z: -1, grounded: true });
+    park.update(0.1, 0.2);
+    park.update(0.1, 0.3);
+    expect(respawn).toHaveBeenCalledTimes(1);
+    expect(respawn.mock.calls[0]?.[0]).toMatchObject({
+      checkpointId: 'parkour-start',
+      x: 30,
+      z: 2,
+    });
+    expect(events).toEqual(['start', 'respawn']);
     park.dispose();
   });
 
@@ -116,10 +183,16 @@ describe('nearby parkour park', () => {
     park.setPlayerProbe({ x: 30, y: 0.18, z: 2, grounded: true });
     park.update(0.1, 0.1);
     expect(events).toEqual(['start']);
-    park.setPlayerProbe({ x: 63, y: 0.18, z: 0.2, grounded: true });
+    // The final checkpoint cannot be taken out of order.
+    park.setPlayerProbe({ x: 66, y: 2.55, z: 2.5, grounded: true });
+    park.update(0.1, 0.12);
+    park.setPlayerProbe({ x: 72.3, y: 0.18, z: 2.5, grounded: true });
+    park.update(0.1, 0.14);
+    expect(events).toEqual(['start']);
+    park.setPlayerProbe({ x: 72.3, y: 0.18, z: 2.5, grounded: true });
     park.update(0.1, 0.15);
     expect(events).toEqual(['start']);
-    park.setPlayerProbe({ x: 48.5, y: 1.85, z: 2.2, grounded: true });
+    park.setPlayerProbe({ x: 47, y: 1.7, z: 2.2, grounded: true });
     park.update(0.1, 0.2);
     expect(events).toEqual(['start', 'checkpoint']);
 
@@ -129,18 +202,21 @@ describe('nearby parkour park', () => {
     }
     expect(respawn).toHaveBeenCalledTimes(1);
     const respawnPoint = respawn.mock.calls[0]?.[0];
-    expect(respawnPoint).toMatchObject({ checkpointId: 'parkour-checkpoint', x: 48.5, z: 2.2 });
-    expect(respawnPoint?.y).toBeCloseTo(1.89, 8);
+    expect(respawnPoint).toMatchObject({ checkpointId: 'parkour-checkpoint-a', x: 47, z: 2.2 });
+    expect(respawnPoint?.y).toBeCloseTo(1.74, 8);
     expect(events).toContain('respawn');
 
-    park.setPlayerProbe({ x: 63, y: 0.18, z: 0.2, grounded: true });
+    park.setPlayerProbe({ x: 66, y: 2.55, z: 2.5, grounded: true });
+    park.update(0.1, 1.8);
+    park.setPlayerProbe({ x: 72.3, y: 0.18, z: 2.5, grounded: true });
     park.update(0.1, 2);
     expect(events.at(-1)).toBe('finish');
     expect(park.getDebugStats()).toMatchObject({
       surfaces: PARKOUR_COURSE_IDS.length,
-      arches: 3,
+      arches: 4,
+      hoops: 2,
       active: false,
-      checkpointId: 'parkour-checkpoint',
+      checkpointId: 'parkour-checkpoint-b',
     });
     for (let frame = 0; frame < 300; frame += 1) park.update(1 / 60, frame / 60);
     expect(park.root.children).toHaveLength(initialChildren);
@@ -151,6 +227,21 @@ describe('nearby parkour park', () => {
       checkpointId: 'parkour-start',
       elapsedSeconds: 0,
     });
+
+    park.setPlayerProbe({ x: 30, y: 0.18, z: 2, grounded: true });
+    park.update(0.1, 8);
+    const respawnsBeforeQuit = respawn.mock.calls.length;
+    expect(park.quitRun()).toBe(true);
+    expect(events.at(-1)).toBe('quit');
+    park.setPlayerProbe({ x: 30, y: 1.8, z: 2, grounded: false });
+    park.update(0.1, 8.1);
+    park.setPlayerProbe({ x: 30, y: 0.18, z: 2, grounded: true });
+    park.update(0.1, 8.2);
+    expect(park.getDebugStats().active).toBe(false);
+    park.setPlayerProbe({ x: 40, y: 0, z: -1, grounded: true });
+    park.update(0.5, 8.5);
+    expect(respawn).toHaveBeenCalledTimes(respawnsBeforeQuit);
+    expect(park.quitRun()).toBe(false);
 
     const solid = park.root.getObjectByName('parkour-start-solid') as THREE.Mesh;
     const label = park.root.getObjectByName('parkour-start-arch-label') as Text;

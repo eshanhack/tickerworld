@@ -29,6 +29,16 @@ export function entryShellForMarket(symbol: AssetSymbol): EntryShellModel {
       enterLabel: 'Enter WTI world',
     };
   }
+  if (symbol === 'PUMP' || symbol === 'ANSEM' || symbol === 'SHFL') {
+    const chain = symbol === 'SHFL' ? 'Ethereum' : 'Solana';
+    return {
+      symbol,
+      kicker: `${symbol} WORLD · LIVE DEX`,
+      title: 'Tickerworld',
+      description: `Walk inside ${symbol}'s live ${chain} DEX chart with other tiny animals.`,
+      enterLabel: `Enter ${symbol} world`,
+    };
+  }
   return {
     symbol,
     kicker: `${symbol} WORLD · LIVE`,

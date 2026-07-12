@@ -13,15 +13,23 @@ export const MARKET_SHELLS = [
   ['avax', 'AVAX'],
   ['wti', 'WTI'],
   ['test', 'TEST'],
+  ['pump', 'PUMP'],
+  ['ansem', 'ANSEM'],
+  ['shfl', 'SHFL'],
 ];
 
 export function socialCardExtension(symbol) {
-  return symbol === 'WTI' || symbol === 'TEST' ? 'png' : 'jpg';
+  return symbol === 'WTI' || symbol === 'TEST'
+    || symbol === 'PUMP' || symbol === 'ANSEM' || symbol === 'SHFL'
+    ? 'png'
+    : 'jpg';
 }
 
 function routeDescription(symbol) {
   if (symbol === 'TEST') return 'A deliberately wild simulated market for testing sounds, fireworks, and live-chart events.';
   if (symbol === 'WTI') return 'Walk inside the live CL crude-oil perpetual chart with other tiny animals.';
+  if (symbol === 'PUMP' || symbol === 'ANSEM') return `Walk inside ${symbol}'s live Solana DEX chart with other tiny animals.`;
+  if (symbol === 'SHFL') return "Walk inside SHFL's live Ethereum DEX chart with other tiny animals.";
   return `Walk inside ${symbol}’s live one-minute chart with other tiny animals.`;
 }
 

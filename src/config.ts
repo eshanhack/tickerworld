@@ -41,6 +41,10 @@ export const GRAND_MONUMENTS: ReadonlyArray<{
   // shape roads only; bounded worlds still instantiate one central monument.
   { symbol: 'WTI', x: 450, z: 780, scale: 1 },
   { symbol: 'TEST', x: -620, z: 0, scale: 1 },
+  // Contract-verified DEX markets occupy a second portal ring in the fields.
+  { symbol: 'PUMP', x: -500, z: 720, scale: 1 },
+  { symbol: 'ANSEM', x: -420, z: -780, scale: 1 },
+  { symbol: 'SHFL', x: 710, z: -560, scale: 1 },
 ];
 
 export const PALETTE = {

@@ -56,6 +56,8 @@ const SFX_FULL_DEFAULT_MIGRATION_KEY = 'tickerworld:audio:sfx-full-default-v1';
 const MAX_MONUMENT_SOURCES = 24;
 const MAX_SCHEDULED_SOURCES = 48;
 const MARKET_ALERT_RESERVED_VOICES = 12;
+const LARGE_UP_ALERT_VOICES = 7;
+const EXCEPTIONAL_UP_ALERT_VOICES = 11;
 const DEFAULT_VOLUME = 0.72;
 const DEFAULT_SFX_VOLUME = 1;
 const NEWS_ALERT_COOLDOWN_SECONDS = 1.4;
@@ -561,7 +563,9 @@ export class AudioEngine {
     const graph = this.monumentGraphs.get(sourceId);
     if (!graph || !this.isMonumentGraphAudible(graph)) return;
     const exceptional = options.tier === 'exceptional';
-    const requiredVoices = options.direction === 'up' ? (exceptional ? 6 : 5) : (exceptional ? 4 : 2);
+    const requiredVoices = options.direction === 'up'
+      ? (exceptional ? EXCEPTIONAL_UP_ALERT_VOICES : LARGE_UP_ALERT_VOICES)
+      : (exceptional ? 4 : 2);
     if (this.scheduledSources.size > MAX_SCHEDULED_SOURCES - requiredVoices) return;
     const profile = ASSET_AUDIO_PROFILES[graph.descriptor.symbol];
     if (options.direction === 'up') {
@@ -1660,17 +1664,26 @@ export class AudioEngine {
     moveRatio: number,
     exceptional: boolean,
   ): void {
-    if (!this.context || this.scheduledSources.size > MAX_SCHEDULED_SOURCES - (exceptional ? 6 : 5)) return;
+    const requiredVoices = exceptional ? EXCEPTIONAL_UP_ALERT_VOICES : LARGE_UP_ALERT_VOICES;
+    if (!this.context || this.scheduledSources.size > MAX_SCHEDULED_SOURCES - requiredVoices) return;
     const root = Math.min(523.25, Math.max(246.94, baseFrequency));
     const severity = marketMoveSeverity(moveRatio);
-    const peak = marketMovePeakGain(moveRatio);
-    this.playGentleNote(destination, at, root, 0.72, peak * 0.74, -2);
-    this.playGentleNote(destination, at + 0.09, root * 1.2599, 0.9, peak * 0.88, 2);
-    this.playGentleNote(destination, at + 0.19, root * 1.4983, 1.16, peak, 0);
-    this.playMagicalSweep(destination, at + 0.03, root * 0.75, root * 1.68, 0.86, peak * 0.68);
-    this.playNoiseBurst(destination, at + 0.12, 0.2, 'bandpass', 1700, 0.014 + severity * 0.012);
+    const peak = Math.min(0.15, marketMovePeakGain(moveRatio) * (exceptional ? 1.15 : 1.05));
+    // Original add6 fanfare: a warm root/third/fifth climb, rounded bass bloom,
+    // airy sweep, and delayed sixth answer. It stays positional and avoids a
+    // recognizable melody while reading clearly over the ambient soundtrack.
+    this.playGentleNote(destination, at, root, 0.88, peak * 0.76, -2);
+    this.playGentleNote(destination, at + 0.1, root * 1.2599, 1.04, peak * 0.9, 2);
+    this.playGentleNote(destination, at + 0.22, root * 1.4983, 1.34, peak, 0);
+    this.playMagicalSweep(destination, at + 0.025, root * 0.68, root * 1.72, 1.08, peak * 0.72);
+    this.playNoiseBurst(destination, at + 0.12, 0.24, 'bandpass', 1780, 0.016 + severity * 0.014);
+    this.playDampedResonator(destination, at + 0.015, Math.max(110, root * 0.48), 1.28, peak * 0.68);
+    this.playGentleNote(destination, at + 0.4, Math.min(880, root * 1.6818), 1.32, peak * 0.88, 3);
     if (exceptional) {
-      this.playGentleNote(destination, at + 0.34, Math.min(1046.5, root * 2), 1.5, peak * 1.08, 3);
+      this.playGentleNote(destination, at + 0.58, Math.min(1046.5, root * 2), 1.8, peak * 1.08, 3);
+      this.playMagicalSweep(destination, at + 0.32, root * 0.86, Math.min(1174.66, root * 2.24), 1.42, peak * 0.78);
+      this.playDampedResonator(destination, at + 0.44, Math.max(92, root * 0.36), 1.5, peak * 0.62);
+      this.playNoiseBurst(destination, at + 0.58, 0.34, 'bandpass', 2640, 0.02 + severity * 0.016);
     }
   }
 

@@ -32,3 +32,19 @@ export {
 } from './simulator';
 export { MarketCelebrationGate } from './marketCelebration';
 export type { MarketCelebrationEvent, MarketCelebrationTier } from './marketCelebration';
+export {
+  DEX_ASSET_SYMBOLS,
+  DEX_MARKETS,
+  isDexAssetSymbol,
+  parseDexHistoryResponse,
+  parseDexQuotesResponse,
+  parseDexScreenerQuote,
+  parseGeckoTerminalCandles,
+} from './dexMarket';
+export type {
+  DexAssetSymbol,
+  DexHistoryResponse,
+  DexMarketDefinition,
+  DexMarketQuote,
+  DexQuotesResponse,
+} from './dexMarket';

@@ -332,7 +332,7 @@ export async function handleNewsRequest(
   if (
     [...requestUrl.searchParams.keys()].some((key) => key !== 'scope')
     || scopeValues.length > 1
-    || (scope !== null && !/^(?:BTC|ETH|SOL|XRP|DOGE|BNB|LINK|AVAX|WTI|TEST)$/.test(scope))
+    || (scope !== null && !/^(?:BTC|ETH|SOL|XRP|DOGE|BNB|LINK|AVAX|WTI|TEST|PUMP|ANSEM|SHFL)$/.test(scope))
     || request.headers.has('authorization')
     || request.headers.has('range')
   ) return rejectedRequest(400);

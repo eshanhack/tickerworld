@@ -34,6 +34,9 @@ export const ASSET_AUDIO_PROFILES: Readonly<Record<AssetSymbol, AssetAudioProfil
   LINK: { frequency: 440, accent: 4 },
   AVAX: { frequency: 493.88, accent: -5 },
   TEST: { frequency: 523.25, accent: 9 },
+  PUMP: { frequency: 587.33, accent: 5 },
+  ANSEM: { frequency: 261.63, accent: -9 },
+  SHFL: { frequency: 415.3, accent: 7 },
 };
 
 /**

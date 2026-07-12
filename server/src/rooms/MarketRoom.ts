@@ -2,6 +2,7 @@ import {
   CHAT_HISTORY_LIMIT,
   CLIENT_MESSAGES,
   MARKET_ROOM_MAX_CLIENTS,
+  PARKOUR_CHECKPOINT_IDS,
   PROTOCOL_VERSION,
   SERVER_MESSAGES,
   STATE_PATCH_RATE_MS,
@@ -27,6 +28,8 @@ import {
   type ReportSendMessage,
   type EmoteSendMessage,
   type PartyInviteRequestMessage,
+  type ParkourCheckpointId,
+  type ParkourRespawnMessage,
   type SpawnAssignment,
 } from '@tickerworld/shared';
 import { CloseCode, Room, validate, type AuthContext, type Client } from '@colyseus/core';
@@ -56,6 +59,7 @@ interface MarketClientData extends Omit<RoomIdentity, 'entitlements'> {
   move: MoveTracker;
   lastReportAt: number;
   lastEmoteAt: number;
+  lastParkourRespawnAt: number;
   spawnSlot: number;
 }
 
@@ -121,6 +125,22 @@ const partyInviteRequestSchema = z.object({
   protocolVersion: z.number().int(),
   requestId: z.string().regex(/^[A-Za-z0-9_-]{6,64}$/),
 });
+
+const parkourRespawnSchema = z.object({
+  protocolVersion: z.number().int(),
+  checkpointId: z.enum(PARKOUR_CHECKPOINT_IDS),
+});
+
+const PARKOUR_RESPAWNS: Readonly<Record<ParkourCheckpointId, {
+  readonly x: number;
+  readonly z: number;
+  readonly elevation: number;
+  readonly yaw: number;
+}>> = {
+  'parkour-start': { x: 30, z: 2, elevation: 0.22, yaw: -Math.PI * 0.5 },
+  'parkour-checkpoint-a': { x: 47, z: 2.2, elevation: 1.74, yaw: -Math.PI * 0.5 },
+  'parkour-checkpoint-b': { x: 66, z: 2.5, elevation: 2.59, yaw: -Math.PI * 0.5 },
+};
 
 function nearbyPartySpawn(
   actorId: string,
@@ -189,6 +209,9 @@ export class MarketRoom extends Room<{ state: MarketRoomState; client: MarketCli
     }),
     [CLIENT_MESSAGES.partyInviteRequest]: validate(partyInviteRequestSchema, (client, message) => {
       this.handlePartyInviteRequest(client, message as PartyInviteRequestMessage);
+    }),
+    [CLIENT_MESSAGES.parkourRespawn]: validate(parkourRespawnSchema, (client, message) => {
+      this.handleParkourRespawn(client, message as ParkourRespawnMessage);
     }),
   };
 
@@ -298,6 +321,7 @@ export class MarketRoom extends Room<{ state: MarketRoomState; client: MarketCli
       move: { lastSequence: -1, lastAcceptedAt: 0, lastReceivedAt: 0 },
       lastReportAt: 0,
       lastEmoteAt: 0,
+      lastParkourRespawnAt: 0,
       spawnSlot: spawn.slot,
     };
     const player = new PlayerState();
@@ -378,6 +402,40 @@ export class MarketRoom extends Room<{ state: MarketRoomState; client: MarketCli
     player.gait = snapshot.gait;
     player.updatedAt = now;
     getRoomServices().admissions.updatePosition(`${this.roomId}:${client.sessionId}`, player.x, player.z);
+  }
+
+  private handleParkourRespawn(client: MarketClient, message: ParkourRespawnMessage): void {
+    if (!isProtocolVersionAccepted(message.protocolVersion)) return;
+    const player = this.state.players.get(client.sessionId);
+    if (!player) return;
+    const data = this.clientData(client);
+    const now = Date.now();
+    if (now - data.lastParkourRespawnAt < 500) return;
+    // A checkpoint reset is useful only after falling beside the bounded east
+    // course. This prevents the message from becoming a general teleport.
+    if (player.x < 24 || player.x > 80 || player.z < -12 || player.z > 14) return;
+    const checkpoint = PARKOUR_RESPAWNS[message.checkpointId];
+    data.lastParkourRespawnAt = now;
+    player.x = checkpoint.x;
+    player.z = checkpoint.z;
+    player.y = sampleBoundedTerrainHeight(checkpoint.x, checkpoint.z) + checkpoint.elevation;
+    player.yaw = checkpoint.yaw;
+    player.speed = 0;
+    player.verticalSpeed = 0;
+    player.grounded = true;
+    player.gait = 'idle';
+    player.updatedAt = now;
+    data.move.lastAcceptedAt = now;
+    data.move.lastReceivedAt = now;
+    getRoomServices().admissions.updatePosition(`${this.roomId}:${client.sessionId}`, player.x, player.z);
+    client.send(SERVER_MESSAGES.correction, {
+      sequence: data.move.lastSequence,
+      x: player.x,
+      y: player.y,
+      z: player.z,
+      reason: 'parkour',
+      hard: true,
+    });
   }
 
   private handleChat(

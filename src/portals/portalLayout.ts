@@ -9,7 +9,10 @@ import {
 } from '../world/RoadSignLayout';
 
 export const PORTAL_RADIUS = 24;
+export const DEX_FIELD_PORTAL_RADIUS = 47;
 export const PORTAL_ARRIVAL_OFFSET = 4.5;
+
+const DEX_FIELD_PORTALS = new Set<AssetSymbol>(['PUMP', 'ANSEM', 'SHFL']);
 
 export interface PortalRoute {
   readonly id: string;
@@ -22,6 +25,7 @@ export interface PortalRoute {
   readonly direction: RoadVector;
   readonly x: number;
   readonly z: number;
+  readonly radius: number;
   readonly isReturnPortal: boolean;
 }
 
@@ -84,6 +88,7 @@ export function createPortalRoutes(
     const destination = activeMarket !== 'BTC' && slotMarket === activeMarket
       ? 'BTC'
       : slotMarket;
+    const radius = DEX_FIELD_PORTALS.has(slotMarket) ? DEX_FIELD_PORTAL_RADIUS : PORTAL_RADIUS;
     return {
       id: `portal-${activeMarket}-to-${destination}`,
       activeMarket,
@@ -92,8 +97,9 @@ export function createPortalRoutes(
       destinationPath: marketPath(destination),
       bearing: road.bearing,
       direction: road.direction,
-      x: road.direction.x * PORTAL_RADIUS,
-      z: road.direction.z * PORTAL_RADIUS,
+      x: road.direction.x * radius,
+      z: road.direction.z * radius,
+      radius,
       isReturnPortal: destination === 'BTC',
     };
   });

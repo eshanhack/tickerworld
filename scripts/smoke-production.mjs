@@ -13,6 +13,9 @@ const MARKETS = [
   ['avax', 'AVAX'],
   ['wti', 'WTI'],
   ['test', 'TEST'],
+  ['pump', 'PUMP'],
+  ['ansem', 'ANSEM'],
+  ['shfl', 'SHFL'],
 ];
 const MARKET_SYMBOLS = new Set(MARKETS.map(([, symbol]) => symbol));
 const TRUST_ROUTES = [

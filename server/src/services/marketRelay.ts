@@ -12,6 +12,7 @@ const SOCKET_URL = 'wss://api.hyperliquid.xyz/ws';
 const PUBLISH_INTERVAL_MS = 400;
 const STALE_AFTER_MS = 8_000;
 const MAX_CANDLES = 30;
+const NON_HYPERLIQUID_SYMBOLS = new Set<AssetSymbol>(['TEST', 'PUMP', 'ANSEM', 'SHFL']);
 
 type StateListener = (state: RelayedMarketState, mids: readonly CompactMarketMid[]) => void;
 
@@ -92,13 +93,13 @@ function symbolForMarket(market: MarketSlug): AssetSymbol {
 function marketForSymbol(symbol: string): MarketSlug | null {
   if (symbol.toLowerCase() === 'xyz:cl') return 'wti';
   const upper = symbol.toUpperCase() as AssetSymbol;
-  return upper !== 'TEST' && (ASSET_SYMBOLS as readonly string[]).includes(upper)
+  return !NON_HYPERLIQUID_SYMBOLS.has(upper) && (ASSET_SYMBOLS as readonly string[]).includes(upper)
     ? upper.toLowerCase() as MarketSlug
     : null;
 }
 
 function coinForSymbol(symbol: AssetSymbol): string | null {
-  if (symbol === 'TEST') return null;
+  if (NON_HYPERLIQUID_SYMBOLS.has(symbol)) return null;
   return symbol === 'WTI' ? 'xyz:CL' : symbol;
 }
 

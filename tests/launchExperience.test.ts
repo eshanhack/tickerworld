@@ -29,6 +29,10 @@ describe('route-specific entry shell', () => {
         expect(model.kicker).toBe('WTI WORLD · LIVE');
         expect(model.description).toContain('CL crude-oil perpetual');
         expect(model.enterLabel).toBe('Enter WTI world');
+      } else if (model.symbol === 'PUMP' || model.symbol === 'ANSEM' || model.symbol === 'SHFL') {
+        expect(model.kicker).toBe(`${model.symbol} WORLD · LIVE DEX`);
+        expect(model.description).toContain('DEX chart');
+        expect(model.enterLabel).toBe(`Enter ${model.symbol} world`);
       } else {
         expect(model.kicker).toBe(`${model.symbol} WORLD · LIVE`);
         expect(model.description).toBe(`Walk inside ${model.symbol}’s live one-minute chart with other tiny animals.`);

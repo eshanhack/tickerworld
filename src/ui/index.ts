@@ -58,3 +58,14 @@ export {
   type NewsOverlayViewState,
 } from './NewsOverlayView';
 export { worldClockPresentation, type WorldClockPresentation } from './worldClock';
+export {
+  ParkourHudView,
+  createParkourRunResult,
+  formatParkourTime,
+  parkourDisplayName,
+  rankParkourResults,
+  type ParkourHudViewOptions,
+  type ParkourRunHudState,
+  type ParkourRunResultInput,
+  type ParkourRunResult,
+} from './ParkourHudView';

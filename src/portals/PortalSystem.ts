@@ -46,6 +46,9 @@ const DESTINATION_COLORS: Readonly<Record<AssetSymbol, number>> = {
   AVAX: 0xd9857d,
   WTI: 0x7f8f88,
   TEST: 0xd68bd8,
+  PUMP: 0xe990b7,
+  ANSEM: 0x746b83,
+  SHFL: 0x75a9d6,
 };
 
 interface PortalVisual {

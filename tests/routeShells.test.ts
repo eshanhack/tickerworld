@@ -23,6 +23,7 @@ describe('static market entry shells', () => {
     expect(MARKET_SHELLS.map(([slug]) => slug)).toEqual([
       'btc', 'eth', 'sol', 'xrp', 'doge', 'bnb', 'link', 'avax',
       'wti', 'test',
+      'pump', 'ansem', 'shfl',
     ]);
   });
 

@@ -9,6 +9,9 @@ export const ASSET_SYMBOLS = [
   'AVAX',
   'WTI',
   'TEST',
+  'PUMP',
+  'ANSEM',
+  'SHFL',
 ] as const;
 
 export const MARKET_SLUGS = [
@@ -22,6 +25,9 @@ export const MARKET_SLUGS = [
   'avax',
   'wti',
   'test',
+  'pump',
+  'ansem',
+  'shfl',
 ] as const;
 
 export const ANIMAL_KINDS = [
@@ -85,7 +91,14 @@ export const CLIENT_MESSAGES = {
   identityRefresh: 'identity-refresh',
   emote: 'emote',
   partyInviteRequest: 'party-invite-request',
+  parkourRespawn: 'parkour-respawn',
 } as const;
+
+export const PARKOUR_CHECKPOINT_IDS = [
+  'parkour-start',
+  'parkour-checkpoint-a',
+  'parkour-checkpoint-b',
+] as const;
 
 export const SERVER_MESSAGES = {
   correction: 'correction',

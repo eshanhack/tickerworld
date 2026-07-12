@@ -22,6 +22,18 @@ describe('MarketCelebrationGate', () => {
     expect(gate.evaluate('ETH', 'down', 0.0008, 12.01)?.tier).toBe('large');
   });
 
+  it('emits one up celebration per accepted gate event, not one per trade tick', () => {
+    const gate = new MarketCelebrationGate();
+    const accepted = [
+      gate.evaluate('BTC', 'up', 0.0004, 1),
+      gate.evaluate('BTC', 'up', 0.00041, 1.4),
+      gate.evaluate('BTC', 'up', 0.00043, 1.8),
+      gate.evaluate('BTC', 'up', 0.00044, 2.2),
+    ].filter(Boolean);
+    expect(accepted).toHaveLength(1);
+    expect(accepted[0]).toMatchObject({ direction: 'up', tier: 'large' });
+  });
+
   it('rearms after calm movement and allows a later celebration', () => {
     const gate = new MarketCelebrationGate();
     expect(gate.evaluate('SOL', 'up', 0.0004, 3)).not.toBeNull();

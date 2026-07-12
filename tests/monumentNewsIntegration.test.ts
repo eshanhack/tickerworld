@@ -3,7 +3,6 @@ import { describe, expect, it, vi } from 'vitest';
 import { createEmptyHorizonChanges } from '../src/markets';
 import {
   MONUMENT_CHART_HEIGHT,
-  MONUMENT_CHART_WIDTH,
   Monument,
 } from '../src/monuments/Monument';
 import {
@@ -250,8 +249,8 @@ describe('grand monument news integration', () => {
     expect(frontOrigin).toBe(target);
     const chart = monument.root.getObjectByName('BTC-chart') as Group;
     const localOrigin = chart.worldToLocal(frontOrigin.clone());
-    expect(localOrigin.x).toBeCloseTo(MONUMENT_CHART_WIDTH * 0.5 + 0.42, 6);
-    expect(localOrigin.y).toBeGreaterThanOrEqual(MONUMENT_CHART_HEIGHT + 4);
+    expect(localOrigin.x).toBeCloseTo(0, 6);
+    expect(localOrigin.y).toBeGreaterThanOrEqual(MONUMENT_CHART_HEIGHT + 1.2);
 
     camera.position.set(28, 10, 0);
     camera.lookAt(0, 9.5, 0);

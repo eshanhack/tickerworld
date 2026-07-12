@@ -42,6 +42,7 @@ import {
   type CorrectionMessage,
   type MarketSlug,
   type NetPlayerState,
+  type ParkourCheckpointId,
   type RuntimeCapabilities,
 } from '../shared/src/index.js';
 import {
@@ -59,13 +60,21 @@ import { SocialSystem, socialInteractionLocksMovement } from './social/SocialSys
 import {
   chooseQualityTier,
   Hud,
+  ParkourHudView,
+  createParkourRunResult,
   parseStoredQualityTier,
   qualityProfile,
   UiInteractionLock,
   type QualityTier,
   type UiInteractionOwner,
 } from './ui';
-import { OilWorldEffects, ParkourParkSystem, WorldGuard, WorldSystem } from './world';
+import {
+  OilWorldEffects,
+  ParkourParkSystem,
+  WorldGuard,
+  WorldSystem,
+  type ParkourEvent,
+} from './world';
 
 const COMPASS_KEY = 'tickerworld:v1:compass';
 const QUALITY_KEY = 'tickerworld:v1:quality';
@@ -127,6 +136,7 @@ export class Game {
   private readonly fireworks: FireworkPool;
   private readonly oilEffects: OilWorldEffects;
   private readonly parkour: ParkourParkSystem;
+  private parkourHud?: ParkourHudView;
   private readonly celebrationGate = new MarketCelebrationGate();
   private readonly worldGuard = new WorldGuard();
   private readonly uiInteractionLock = new UiInteractionLock();
@@ -169,6 +179,7 @@ export class Game {
   private newsSoundCreatedAtCutoff = Number.NEGATIVE_INFINITY;
   private contextLost = false;
   private guestAppearance: GuestAppearance;
+  private activeDisplayUsername: string | null;
   private appearanceSyncKey: string | null = null;
   private runtimeCapabilities: RuntimeCapabilities = OFFLINE_RUNTIME_CAPABILITIES;
   private latestRelayMids: readonly CompactMarketMid[] = [];
@@ -178,6 +189,7 @@ export class Game {
     this.container = container;
     this.container.innerHTML = '';
     this.guestAppearance = readGuestAppearance();
+    this.activeDisplayUsername = this.guestAppearance.username;
     this.activeMarket = options.activeMarket ?? 'BTC';
     this.routeHistory = options.routeHistory;
     document.title = `${this.activeMarket} World · Tickerworld`;
@@ -268,19 +280,17 @@ export class Game {
       heightAt: (x, z) => this.world.heightAt(x, z),
       fontUrl: nunitoFontUrl,
       reducedMotion: this.reducedMotion,
-      onEvent: (event) => {
-        if (!this.entered) return;
-        if (event.type === 'start') this.hud?.showToast('Parkour started — reach the glowing finish!');
-        else if (event.type === 'checkpoint') this.hud?.showToast('Checkpoint reached ✦');
-        else if (event.type === 'finish') this.hud?.showToast(`Parkour clear · ${event.elapsedSeconds.toFixed(1)}s!`);
-        else if (event.type === 'respawn') this.hud?.showToast('Back to checkpoint');
-        else this.hud?.showToast('Parkour reset — return to START.');
-      },
+      onEvent: (event) => this.onParkourEvent(event),
       onRespawnRequested: (point) => {
-        // Server movement is terrain-authoritative, so only disconnected/solo
-        // sessions use an instant checkpoint. Online players keep their valid
-        // position and can run back along the low return side of the course.
-        if (this.roomClient?.state.connection === 'online') return false;
+        const connection = this.roomClient?.state.connection ?? 'offline';
+        if (connection === 'online') {
+          const checkpointId = point.checkpointId as ParkourCheckpointId;
+          if (!this.roomClient.requestParkourRespawn(checkpointId)) return false;
+        } else if (connection !== 'offline') {
+          // Do not create a client-only teleport while an authoritative room
+          // may recover and disagree with it.
+          return false;
+        }
         this.player.setPosition(point.x, point.y, point.z);
         this.player.setHeadingYaw(point.yaw);
         return true;
@@ -435,6 +445,9 @@ export class Game {
     }
     this.hud.setCompassEnabled(this.compassEnabled);
     this.hud.setReducedMotion(this.reducedMotion);
+    this.parkourHud = new ParkourHudView(this.hud.mountLayer('tickerworld-parkour-layer'), {
+      onQuit: () => this.parkour.quitRun(),
+    });
     this.portalSystem = new PortalSystem({
       parent: this.scene,
       activeMarket: this.activeMarket,
@@ -863,6 +876,7 @@ export class Game {
 
   private updateGuestAppearance(appearance: GuestAppearance): true {
     this.guestAppearance = writeGuestAppearance(appearance);
+    this.activeDisplayUsername = this.guestAppearance.username;
     this.player.setAnimal(this.guestAppearance.animal, this.guestAppearance.skin);
     this.hud?.setSelectedAppearance(this.guestAppearance.animal, this.guestAppearance.skin);
     this.hud?.setDisplayUsername(this.guestAppearance.username);
@@ -899,8 +913,10 @@ export class Game {
       this.hud?.setSelectedAppearance(identity.animal, skin);
       this.hud?.setDisplayUsername(identity.username ?? null);
       this.remoteAvatars?.setLocalUsername(identity.username ?? null);
+      this.activeDisplayUsername = identity.username ?? null;
     } else {
       this.guestAppearance = readGuestAppearance();
+      this.activeDisplayUsername = this.guestAppearance.username;
       this.player.setAnimal(this.guestAppearance.animal, this.guestAppearance.skin);
       this.hud?.setSelectedAppearance(this.guestAppearance.animal, this.guestAppearance.skin);
       this.hud?.setDisplayUsername(this.guestAppearance.username);
@@ -1118,6 +1134,40 @@ export class Game {
     this.audio.playJump(event.type);
   }
 
+  private onParkourEvent(event: ParkourEvent): void {
+    if (!this.entered) return;
+    if (event.type === 'start') {
+      this.hud?.showToast('Parkour started — the clock is running!');
+      return;
+    }
+    if (event.type === 'checkpoint') {
+      this.hud?.showToast(event.checkpointId.endsWith('-b') ? 'Final checkpoint reached ✦' : 'Checkpoint reached ✦');
+      return;
+    }
+    if (event.type === 'finish') {
+      const result = createParkourRunResult({
+        username: this.activeDisplayUsername,
+        animal: this.player.animal,
+        actorId: this.roomClient.identity.actorId,
+        elapsedSeconds: event.elapsedSeconds,
+        market: this.activeMarket,
+        completedAt: Date.now(),
+      });
+      this.parkourHud?.addResult(result);
+      this.hud?.showToast(`${result.displayName} cleared parkour in ${event.elapsedSeconds.toFixed(1)}s!`);
+      return;
+    }
+    if (event.type === 'respawn') {
+      this.hud?.showToast(event.checkpointId === 'parkour-start' ? 'Back to START' : 'Back to checkpoint');
+      return;
+    }
+    if (event.type === 'quit') {
+      this.hud?.showToast('Parkour run ended. You stayed right where you were.');
+      return;
+    }
+    this.hud?.showToast('Parkour reset — multiplayer kept your position authoritative.');
+  }
+
   private onMarketState(state: AssetState): void {
     const previous = this.latestStates.get(state.symbol);
     this.latestStates.set(state.symbol, state);
@@ -1279,6 +1329,15 @@ export class Game {
     if (horizonPanel) horizonPanel.visible = chartFocused && !LAUNCH_CAPTURE_MODE;
     this.hud.setChartFocused(chartFocused);
     this.hud.setCompass(0, null);
+    const parkour = this.parkour.getDebugStats();
+    this.parkourHud?.setRunState({
+      active: parkour.active,
+      elapsedSeconds: parkour.elapsedSeconds,
+      checkpointIndex: parkour.checkpointId === 'parkour-checkpoint-b'
+        ? 2
+        : parkour.checkpointId === 'parkour-checkpoint-a' ? 1 : 0,
+      checkpointTotal: 2,
+    });
   }
 
   private updateNewsOverlay(): void {
@@ -1510,6 +1569,7 @@ export class Game {
     this.emotes?.dispose();
     this.remoteAvatars?.dispose();
     this.audio.dispose();
+    this.parkourHud?.dispose();
     this.hud.dispose();
     this.monuments.dispose();
     this.fireworks.points.removeFromParent();

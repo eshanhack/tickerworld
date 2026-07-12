@@ -184,7 +184,10 @@ function directedSign(
 export function createRoadSignDescriptors(
   monuments: readonly WayfindingCoordinate[] = GRAND_MONUMENTS,
 ): readonly RoadSignDescriptor[] {
-  return createCanonicalRoadDescriptors(monuments).flatMap((road) => {
+  const legacyMonuments = monuments.filter(({ symbol }) => (
+    symbol !== 'PUMP' && symbol !== 'ANSEM' && symbol !== 'SHFL'
+  ));
+  return createCanonicalRoadDescriptors(legacyMonuments).flatMap((road) => {
     const returnDirection = { x: -road.direction.x, z: -road.direction.z };
     const returnTangent = { x: -road.tangent.x, z: -road.tangent.z };
     return [
@@ -221,7 +224,10 @@ export function createMarketRoadSignDescriptors(
   activeMarket: AssetSymbol,
   monuments: readonly WayfindingCoordinate[] = GRAND_MONUMENTS,
 ): readonly RoadSignDescriptor[] {
-  return createCanonicalRoadDescriptors(monuments).map((road) => {
+  const legacyMonuments = monuments.filter(({ symbol }) => (
+    symbol !== 'PUMP' && symbol !== 'ANSEM' && symbol !== 'SHFL'
+  ));
+  return createCanonicalRoadDescriptors(legacyMonuments).map((road) => {
     if (activeMarket !== 'BTC' && road.market.symbol === activeMarket) {
       return directedSign(
         road,

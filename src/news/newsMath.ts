@@ -105,6 +105,9 @@ function parseNewsItem(value: unknown): NewsItem | undefined {
     || value.scope === 'AVAX'
     || value.scope === 'WTI'
     || value.scope === 'TEST'
+    || value.scope === 'PUMP'
+    || value.scope === 'ANSEM'
+    || value.scope === 'SHFL'
     ? value.scope
     : 'global';
   if (

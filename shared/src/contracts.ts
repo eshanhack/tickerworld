@@ -4,6 +4,7 @@ import type {
   ENTITLEMENT_SKUS,
   MARKET_SLUGS,
   MODERATION_REASONS,
+  PARKOUR_CHECKPOINT_IDS,
   PREMIUM_SKINS,
 } from './constants.js';
 
@@ -14,6 +15,7 @@ export type PremiumSkinId = (typeof PREMIUM_SKINS)[number];
 export type SkinId = 'base' | PremiumSkinId;
 export type ModerationReason = (typeof MODERATION_REASONS)[number];
 export type EntitlementSku = (typeof ENTITLEMENT_SKUS)[number];
+export type ParkourCheckpointId = (typeof PARKOUR_CHECKPOINT_IDS)[number];
 export type RoomConnectionState =
   | 'connecting'
   | 'online'
@@ -65,6 +67,11 @@ export interface MoveSnapshot {
   verticalSpeed: number;
   grounded: boolean;
   gait: 'idle' | 'walk' | 'run' | 'air' | 'glide';
+}
+
+export interface ParkourRespawnMessage {
+  protocolVersion: number;
+  checkpointId: ParkourCheckpointId;
 }
 
 export interface NetPlayerState {
@@ -198,7 +205,7 @@ export interface CorrectionMessage {
   x: number;
   y: number;
   z: number;
-  reason: 'invalid' | 'speed' | 'bounds' | 'terrain';
+  reason: 'invalid' | 'speed' | 'bounds' | 'terrain' | 'parkour';
   hard: boolean;
 }
 

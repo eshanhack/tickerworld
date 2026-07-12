@@ -29,6 +29,8 @@ import {
   type RoomConnectionState,
   type RoomPopulation,
   type PartyJoinResult,
+  type ParkourCheckpointId,
+  type ParkourRespawnMessage,
   type SkinId,
   isMarketSlug,
   isProtocolVersionAccepted,
@@ -506,6 +508,13 @@ export class RoomClientSystem implements GameSystem {
     if (!this.room || this.connection !== 'online') return false;
     const message: ChatSendMessage = { protocolVersion: PROTOCOL_VERSION, text };
     this.room.send(CLIENT_MESSAGES.chat, message);
+    return true;
+  }
+
+  requestParkourRespawn(checkpointId: ParkourCheckpointId): boolean {
+    if (!this.room || this.connection !== 'online') return false;
+    const message: ParkourRespawnMessage = { protocolVersion: PROTOCOL_VERSION, checkpointId };
+    this.room.send(CLIENT_MESSAGES.parkourRespawn, message);
     return true;
   }
 

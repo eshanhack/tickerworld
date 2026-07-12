@@ -461,9 +461,13 @@ export class Monument {
       ? this.livePriceMarker.position.y
       : CHART_HEIGHT * 0.5;
     target.set(
-      LIVE_MARKER_X,
-      Math.max(liveY + 5, CHART_HEIGHT + 4),
-      0.35,
+      // Centre the show over the price plaque instead of firing from the far
+      // right live-marker edge, where portals and HUD could hide it.
+      0,
+      // Start just over the plaque so the first bloom is visible from the
+      // default ground camera; particle velocity carries later blooms upward.
+      Math.max(liveY + 2.2, CHART_HEIGHT + 1.25),
+      1.5,
     );
     return this.chartGroup.localToWorld(target);
   }

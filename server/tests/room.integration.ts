@@ -194,6 +194,22 @@ describe.sequential('Colyseus market rooms', () => {
     );
     expect(remote).toMatchObject({ x: move.x, z: move.z, gait: 'walk' });
 
+    const authoritative = [...(testServer.getRoomById(first.roomId).state as any).players.values()]
+      .find((player: any) => player.actorId === firstIdentity.actorId);
+    authoritative.x = 40;
+    authoritative.z = 2;
+    const checkpointCorrection = first.waitForMessage(SERVER_MESSAGES.correction);
+    first.send(CLIENT_MESSAGES.parkourRespawn, {
+      protocolVersion: PROTOCOL_VERSION,
+      checkpointId: 'parkour-checkpoint-a',
+    });
+    await expect(checkpointCorrection).resolves.toMatchObject({
+      x: 47,
+      z: 2.2,
+      reason: 'parkour',
+      hard: true,
+    });
+
     first.send(CLIENT_MESSAGES.appearance, {
       protocolVersion: PROTOCOL_VERSION,
       animal: 'fox',

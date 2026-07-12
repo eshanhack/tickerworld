@@ -15,15 +15,15 @@ import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeom
 import { Text } from 'troika-three-text';
 import type { GameSystem, SurfaceKind } from '../types';
 
-export const PARKOUR_PARK_CENTER = Object.freeze({ x: 46.5, z: 1.8 });
+export const PARKOUR_PARK_CENTER = Object.freeze({ x: 51.2, z: 1.8 });
 export const PARKOUR_PARK_BOUNDS = Object.freeze({
   left: 28,
-  right: 65,
+  right: 74.3,
   bottom: -1.8,
-  top: 5.2,
+  top: 5.4,
 });
 export const PARKOUR_MAX_STEP_UP = 0.5;
-export const PARKOUR_FAIL_DELAY_SECONDS = 0.7;
+export const PARKOUR_FAIL_DELAY_SECONDS = 0.12;
 export const PARKOUR_COURSE_IDS = [
   'parkour-start',
   'parkour-ramp-up',
@@ -31,12 +31,19 @@ export const PARKOUR_COURSE_IDS = [
   'parkour-stone-1',
   'parkour-stone-2',
   'parkour-stone-3',
-  'parkour-checkpoint',
-  'parkour-balance-beam',
+  'parkour-checkpoint-a',
+  'parkour-balance-beam-a',
+  'parkour-mid-platform',
+  'parkour-ring-step',
+  'parkour-ramp-high',
   'parkour-high-platform',
+  'parkour-balance-beam-b',
+  'parkour-checkpoint-b',
   'parkour-ramp-down',
   'parkour-finish',
 ] as const;
+export const PARKOUR_CHECKPOINT_IDS = ['parkour-checkpoint-a', 'parkour-checkpoint-b'] as const;
+export const PARKOUR_FINISH_CHECKPOINT_ID = 'parkour-checkpoint-b';
 
 export type ParkourSurfaceShape = 'rect' | 'circle' | 'ramp';
 export type ParkourSurfaceRole = 'start' | 'checkpoint' | 'finish';
@@ -70,9 +77,20 @@ export interface ParkourArchDescriptor {
   readonly label?: string;
 }
 
+export interface ParkourHoopDescriptor {
+  readonly id: string;
+  readonly x: number;
+  readonly z: number;
+  readonly yaw: number;
+  readonly radius: number;
+  readonly heightOffset: number;
+  readonly baseSurfaceId: string;
+}
+
 export interface ParkourParkLayout {
   readonly surfaces: readonly ParkourSurfaceDescriptor[];
   readonly arches: readonly ParkourArchDescriptor[];
+  readonly hoops: readonly ParkourHoopDescriptor[];
   readonly courseIds: readonly string[];
 }
 
@@ -91,7 +109,7 @@ export interface ParkourRespawnPoint {
   readonly checkpointId: string;
 }
 
-export type ParkourEventType = 'start' | 'checkpoint' | 'finish' | 'respawn' | 'reset';
+export type ParkourEventType = 'start' | 'checkpoint' | 'finish' | 'respawn' | 'reset' | 'quit';
 
 export interface ParkourEvent {
   readonly type: ParkourEventType;
@@ -120,6 +138,7 @@ export interface ParkourParkSystemOptions {
 export interface ParkourParkDebugStats {
   readonly surfaces: number;
   readonly arches: number;
+  readonly hoops: number;
   readonly active: boolean;
   readonly checkpointId: string;
   readonly elapsedSeconds: number;
@@ -213,16 +232,21 @@ function surface(
 export function createParkourParkLayout(): ParkourParkLayout {
   const surfaces: ParkourSurfaceDescriptor[] = [
     surface('parkour-start', 'rect', 30, 2, 4, 4, 0.18, 'teal', { role: 'start' }),
-    surface('parkour-ramp-up', 'ramp', 33, 2, 4.8, 3, 0.18, 'sage', { endElevation: 0.75 }),
-    surface('parkour-low-platform', 'rect', 36, 2, 3.2, 3.4, 0.75, 'lavender'),
-    surface('parkour-stone-1', 'circle', 39.5, 0.8, 2.2, 2.2, 1, 'rose', { radius: 1.1 }),
-    surface('parkour-stone-2', 'circle', 42.3, 3.2, 2.1, 2.1, 1.3, 'gold', { radius: 1.05 }),
-    surface('parkour-stone-3', 'circle', 45.3, 1.2, 2, 2, 1.6, 'teal', { radius: 1 }),
-    surface('parkour-checkpoint', 'rect', 48.5, 2.2, 3.5, 3.5, 1.85, 'rose', { role: 'checkpoint' }),
-    surface('parkour-balance-beam', 'rect', 52.2, 3.5, 4.8, 1, 1.95, 'gold'),
-    surface('parkour-high-platform', 'rect', 55.5, 3.5, 3.2, 3.2, 2.15, 'lavender'),
-    surface('parkour-ramp-down', 'ramp', 58.7, 1.8, 5, 2.4, 2.15, 'sage', { endElevation: 0.3 }),
-    surface('parkour-finish', 'rect', 63, 0.2, 4, 4, 0.18, 'teal', { role: 'finish' }),
+    surface('parkour-ramp-up', 'ramp', 33, 2, 4.8, 3, 0.18, 'sage', { endElevation: 0.72 }),
+    surface('parkour-low-platform', 'rect', 36, 2, 3.2, 3.4, 0.72, 'lavender'),
+    surface('parkour-stone-1', 'circle', 39, 0.8, 2.2, 2.2, 0.95, 'rose', { radius: 1.1 }),
+    surface('parkour-stone-2', 'circle', 41.6, 3.1, 2.1, 2.1, 1.2, 'gold', { radius: 1.05 }),
+    surface('parkour-stone-3', 'circle', 44.2, 1.1, 2, 2, 1.48, 'teal', { radius: 1 }),
+    surface('parkour-checkpoint-a', 'rect', 47, 2.2, 3.4, 3.4, 1.7, 'rose', { role: 'checkpoint' }),
+    surface('parkour-balance-beam-a', 'rect', 50, 3.4, 4.4, 1.05, 1.82, 'gold'),
+    surface('parkour-mid-platform', 'rect', 52.8, 3.4, 3.2, 3.2, 1.95, 'lavender'),
+    surface('parkour-ring-step', 'circle', 55.2, 1.2, 2.3, 2.3, 2.12, 'teal', { radius: 1.15 }),
+    surface('parkour-ramp-high', 'ramp', 57.9, 0.4, 4.4, 2.4, 2.12, 'sage', { endElevation: 2.62 }),
+    surface('parkour-high-platform', 'rect', 60.6, 0.4, 3.2, 3.2, 2.62, 'lavender'),
+    surface('parkour-balance-beam-b', 'rect', 63.5, 1.8, 4.6, 0.95, 2.72, 'gold'),
+    surface('parkour-checkpoint-b', 'rect', 66, 2.5, 3.4, 3.4, 2.55, 'rose', { role: 'checkpoint' }),
+    surface('parkour-ramp-down', 'ramp', 69, 2.5, 5, 2.4, 2.55, 'sage', { endElevation: 0.32 }),
+    surface('parkour-finish', 'rect', 72.3, 2.5, 4, 4, 0.18, 'teal', { role: 'finish' }),
   ];
   const arches: ParkourArchDescriptor[] = [
     {
@@ -237,18 +261,28 @@ export function createParkourParkLayout(): ParkourParkLayout {
     },
     {
       id: 'parkour-checkpoint-arch',
-      x: 48.5,
+      x: 47,
       z: 2.2,
       yaw: COURSE_YAW,
       openingWidth: 2.8,
       pillarHeight: 1.6,
-      baseSurfaceId: 'parkour-checkpoint',
-      label: 'CHECKPOINT',
+      baseSurfaceId: 'parkour-checkpoint-a',
+      label: 'CHECKPOINT  1 / 2',
+    },
+    {
+      id: 'parkour-checkpoint-b-arch',
+      x: 66,
+      z: 2.5,
+      yaw: COURSE_YAW,
+      openingWidth: 2.8,
+      pillarHeight: 1.7,
+      baseSurfaceId: 'parkour-checkpoint-b',
+      label: 'CHECKPOINT  2 / 2',
     },
     {
       id: 'parkour-finish-arch',
-      x: 63,
-      z: 0.2,
+      x: 72.3,
+      z: 2.5,
       yaw: COURSE_YAW,
       openingWidth: 3.2,
       pillarHeight: 1.8,
@@ -256,7 +290,34 @@ export function createParkourParkLayout(): ParkourParkLayout {
       label: '✦  FINISH  ✦',
     },
   ];
-  return { surfaces, arches, courseIds: [...PARKOUR_COURSE_IDS] };
+  const hoops: ParkourHoopDescriptor[] = [
+    {
+      id: 'parkour-midair-hoop-a',
+      x: 55.2,
+      z: 1.2,
+      yaw: COURSE_YAW,
+      radius: 1.18,
+      heightOffset: 1.38,
+      baseSurfaceId: 'parkour-ring-step',
+    },
+    {
+      id: 'parkour-midair-hoop-b',
+      x: 63.5,
+      z: 1.8,
+      yaw: COURSE_YAW,
+      radius: 1.12,
+      heightOffset: 1.42,
+      baseSurfaceId: 'parkour-balance-beam-b',
+    },
+  ];
+  return { surfaces, arches, hoops, courseIds: [...PARKOUR_COURSE_IDS] };
+}
+
+export function isInsideParkourPropExclusion(x: number, z: number, margin = 1.6): boolean {
+  return x >= PARKOUR_PARK_BOUNDS.left - margin
+    && x <= PARKOUR_PARK_BOUNDS.right + margin
+    && z >= PARKOUR_PARK_BOUNDS.bottom - margin
+    && z <= PARKOUR_PARK_BOUNDS.top + margin;
 }
 
 export function parkourLandingRadius(descriptor: ParkourSurfaceDescriptor): number {
@@ -368,7 +429,9 @@ export class ParkourParkSystem implements GameSystem {
   private elapsedSeconds = 0;
   private bestSeconds: number | null = null;
   private checkpointId = 'parkour-start';
+  private checkpointProgress = 0;
   private lastRole: ParkourSurfaceRole | null = null;
+  private startSuppressedUntilExit = false;
   private failElapsed = 0;
   private respawnCooldown = 0;
 
@@ -383,6 +446,7 @@ export class ParkourParkSystem implements GameSystem {
     for (const resolved of this.surfaces) this.surfaceById.set(resolved.descriptor.id, resolved);
     this.buildSurfaces();
     this.buildArches(options.fontUrl);
+    this.buildHoops();
     this.buildFinishMagic();
     options.parent.add(this.root);
   }
@@ -405,9 +469,28 @@ export class ParkourParkSystem implements GameSystem {
     this.active = false;
     this.elapsedSeconds = 0;
     this.checkpointId = 'parkour-start';
+    this.checkpointProgress = 0;
+    this.lastRole = null;
+    this.startSuppressedUntilExit = false;
+    this.failElapsed = 0;
+    this.respawnCooldown = 0;
+  }
+
+  /** Cancels timing in-place. It deliberately never asks Game to teleport. */
+  public quitRun(): boolean {
+    if (!this.active || this.disposed) return false;
+    this.active = false;
+    this.elapsedSeconds = 0;
+    this.checkpointId = 'parkour-start';
+    this.checkpointProgress = 0;
+    // Suppress START by footprint, not grounded contact: jumping vertically
+    // after Quit must not silently create a new run on landing.
+    this.startSuppressedUntilExit = this.sampleGround(this.probe.x, this.probe.z)?.role === 'start';
     this.lastRole = null;
     this.failElapsed = 0;
     this.respawnCooldown = 0;
+    this.emit('quit');
+    return true;
   }
 
   public setVisible(visible: boolean): void {
@@ -435,18 +518,34 @@ export class ParkourParkSystem implements GameSystem {
       && Math.abs(this.probe.y - sample.height) <= 0.62,
     );
     const role = standing ? sample?.role ?? null : null;
+    const insideStartFootprint = sample?.role === 'start';
+    if (this.startSuppressedUntilExit && !insideStartFootprint) {
+      this.startSuppressedUntilExit = false;
+    }
 
-    if (role === 'start' && this.lastRole !== 'start') {
+    if (role === 'start' && !this.startSuppressedUntilExit && this.lastRole !== 'start') {
       this.active = true;
       this.elapsedSeconds = 0;
       this.checkpointId = 'parkour-start';
+      this.checkpointProgress = 0;
       this.emit('start');
-    } else if (role === 'checkpoint' && this.active && this.checkpointId !== sample?.surfaceId) {
-      this.checkpointId = sample?.surfaceId ?? 'parkour-checkpoint';
+    } else if (role === 'checkpoint'
+      && this.active
+      && sample?.surfaceId === 'parkour-checkpoint-a'
+      && this.checkpointProgress === 0) {
+      this.checkpointId = 'parkour-checkpoint-a';
+      this.checkpointProgress = 1;
+      this.emit('checkpoint');
+    } else if (role === 'checkpoint'
+      && this.active
+      && sample?.surfaceId === 'parkour-checkpoint-b'
+      && this.checkpointProgress === 1) {
+      this.checkpointId = 'parkour-checkpoint-b';
+      this.checkpointProgress = 2;
       this.emit('checkpoint');
     } else if (role === 'finish'
       && this.active
-      && this.checkpointId === 'parkour-checkpoint'
+      && this.checkpointProgress === 2
       && this.lastRole !== 'finish') {
       this.active = false;
       this.bestSeconds = this.bestSeconds === null
@@ -456,15 +555,10 @@ export class ParkourParkSystem implements GameSystem {
     }
     this.lastRole = role;
 
-    const insideFailureArea = this.probe.x >= PARKOUR_PARK_BOUNDS.left - 2.5
-      && this.probe.x <= PARKOUR_PARK_BOUNDS.right + 2.5
-      && this.probe.z >= PARKOUR_PARK_BOUNDS.bottom - 2.5
-      && this.probe.z <= PARKOUR_PARK_BOUNDS.top + 2.5;
     if (this.active
       && this.respawnCooldown <= 0
       && this.probe.grounded
-      && !sample
-      && insideFailureArea) {
+      && !sample) {
       this.failElapsed += delta;
       if (this.failElapsed >= PARKOUR_FAIL_DELAY_SECONDS) this.requestRespawn();
     } else {
@@ -549,6 +643,7 @@ export class ParkourParkSystem implements GameSystem {
     return {
       surfaces: this.surfaces.length,
       arches: this.layout.arches.length,
+      hoops: this.layout.hoops.length,
       active: this.active,
       checkpointId: this.checkpointId,
       elapsedSeconds: this.elapsedSeconds,
@@ -631,6 +726,7 @@ export class ParkourParkSystem implements GameSystem {
     } else {
       this.active = false;
       this.checkpointId = 'parkour-start';
+      this.checkpointProgress = 0;
       this.emit('reset');
     }
   }
@@ -818,6 +914,25 @@ export class ParkourParkSystem implements GameSystem {
         radius,
       });
     }
+  }
+
+  private buildHoops(): void {
+    this.layout.hoops.forEach((descriptor, index) => {
+      const base = this.surfaceById.get(descriptor.baseSurfaceId);
+      if (!base) return;
+      const hoop = new Mesh(this.unitRing, this.materialFor('cream'));
+      hoop.name = descriptor.id;
+      hoop.rotation.y = Math.PI * 0.5 + descriptor.yaw;
+      hoop.scale.setScalar(descriptor.radius);
+      hoop.position.set(
+        descriptor.x,
+        this.surfaceHeight(base, descriptor.x, descriptor.z) + descriptor.heightOffset,
+        descriptor.z,
+      );
+      hoop.castShadow = true;
+      this.root.add(hoop);
+      this.markerRings.push({ mesh: hoop, baseScale: descriptor.radius, phase: 2.7 + index * 1.3 });
+    });
   }
 
   private animate(elapsed: number): void {

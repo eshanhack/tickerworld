@@ -30,6 +30,9 @@ const COLORS = {
   wti: 0x66746e,
   wtiBand: 0xe0b96c,
   test: 0xd58ddd,
+  pump: 0xe58eaf,
+  ansem: 0x756b82,
+  shfl: 0x78add4,
 } as const;
 
 function material(color: number, emissiveIntensity = 0.04): MeshStandardMaterial {
@@ -244,6 +247,49 @@ function buildTest(group: Group, simplified: boolean): void {
   addRaisedBar(group, cream, 0.55, simplified ? 2.5 : 3.0, 0.5, 4.02, -0.54);
 }
 
+function buildPump(group: Group, simplified: boolean): void {
+  const cream = material(COLORS.cream, 0.12);
+  addCoin(group, material(COLORS.pump, 0.12), simplified ? 2.7 : MEDALLION_RADIUS);
+  addRaisedBar(group, cream, 0.5, simplified ? 3.0 : 3.7, -0.65, MEDALLION_CENTER.y);
+  addMesh(
+    group,
+    new TorusGeometry(simplified ? 0.92 : 1.12, 0.32, 8, 24, Math.PI * 1.4),
+    cream,
+    [0.02, 5.05, MEDALLION_CENTER.z + 0.35],
+    [0, 0, -0.72],
+  );
+}
+
+function buildAnsem(group: Group, simplified: boolean): void {
+  const ink = material(COLORS.ansem, 0.1);
+  const cream = material(COLORS.cream, 0.1);
+  addMesh(group, new OctahedronGeometry(simplified ? 2.35 : 2.7, 1), ink,
+    [0, MEDALLION_CENTER.y, MEDALLION_CENTER.z], [0, Math.PI * 0.25, 0], [1, 1, 0.45]);
+  addRaisedBar(group, cream, 0.48, simplified ? 3.3 : 4.0, -0.75, 4.45, -0.42);
+  addRaisedBar(group, cream, 0.48, simplified ? 3.3 : 4.0, 0.75, 4.45, 0.42);
+  addRaisedBar(group, cream, 1.65, 0.34, 0, 4.25);
+  if (!simplified) {
+    addMesh(group, new ConeGeometry(0.55, 1.5, 12), cream, [-1.5, 5.9, -1.25], [0, 0, -0.65]);
+    addMesh(group, new ConeGeometry(0.55, 1.5, 12), cream, [1.5, 5.9, -1.25], [0, 0, 0.65]);
+  }
+}
+
+function buildShfl(group: Group, simplified: boolean): void {
+  const blue = material(COLORS.shfl, 0.11);
+  const cream = material(COLORS.cream, 0.1);
+  const cards = simplified ? 2 : 3;
+  for (let index = 0; index < cards; index += 1) {
+    const offset = (index - (cards - 1) * 0.5) * 0.72;
+    addMesh(
+      group,
+      new RoundedBoxGeometry(2.45, 3.65, 0.32, 3, 0.16),
+      index === cards - 1 ? cream : blue,
+      [offset, MEDALLION_CENTER.y + Math.abs(offset) * 0.12, MEDALLION_CENTER.z + index * 0.18],
+      [0, 0, offset * 0.18],
+    );
+  }
+}
+
 export function buildMedallion(symbol: AssetSymbol, kind: MonumentKind): Group {
   const group = new Group();
   group.name = `${symbol.toLowerCase()}-${kind}-medallion`;
@@ -274,6 +320,9 @@ export function buildMedallion(symbol: AssetSymbol, kind: MonumentKind): Group {
     case 'AVAX': buildAvax(group, simplified); break;
     case 'WTI': buildWti(group, simplified); break;
     case 'TEST': buildTest(group, simplified); break;
+    case 'PUMP': buildPump(group, simplified); break;
+    case 'ANSEM': buildAnsem(group, simplified); break;
+    case 'SHFL': buildShfl(group, simplified); break;
   }
 
   return group;

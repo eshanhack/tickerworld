@@ -57,7 +57,13 @@ describe('shared multiplayer contracts', () => {
       const routes = createPortalRoutes(market);
       expect(routes).toHaveLength(MARKET_SLUGS.length - 1);
       expect(new Set(routes.map((route) => route.to)).size).toBe(MARKET_SLUGS.length - 1);
-      expect(routes.every((route) => Math.abs(Math.hypot(route.x, route.z) - 24) < 0.000001)).toBe(true);
+      expect(routes.every((route) => {
+        const expectedRadius = route.to === 'pump' || route.to === 'ansem' || route.to === 'shfl'
+          || (market !== 'btc' && (market === 'pump' || market === 'ansem' || market === 'shfl') && route.to === 'btc')
+          ? 47
+          : 24;
+        return Math.abs(Math.hypot(route.x, route.z) - expectedRadius) < 0.000001;
+      })).toBe(true);
     }
   });
 

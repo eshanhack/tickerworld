@@ -36,7 +36,7 @@ describe('fixed portal routes', () => {
       expect(routes.map(({ slotMarket, bearing }) => ({ slotMarket, bearing }))).toEqual(
         btcRoutes.map(({ slotMarket, bearing }) => ({ slotMarket, bearing })),
       );
-      expect(routes.every(({ x, z }) => Math.abs(Math.hypot(x, z) - PORTAL_RADIUS) < 1e-8)).toBe(true);
+      expect(routes.every(({ x, z, radius }) => Math.abs(Math.hypot(x, z) - radius) < 1e-8)).toBe(true);
     }
   });
 

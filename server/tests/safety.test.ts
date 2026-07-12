@@ -167,7 +167,7 @@ describe('launch safety controls', () => {
   it('reserves a room for every other market even when BTC is hot', () => {
     const admissions = new AdmissionControl({
       maxProcessConnections: 400,
-      maxRooms: 18,
+      maxRooms: 24,
       maxMarketShards: 8,
       maxConcurrentConnectionsPerIp: 20,
       actorJoinsPerMinute: 12,
@@ -178,8 +178,11 @@ describe('launch safety controls', () => {
       admissions.registerRoom(`${market}-0`, market);
     }
     admissions.registerRoom('eth-1', 'eth');
-    expect(admissions.snapshot().rooms).toBe(18);
-    expect(() => admissions.registerRoom('sol-1', 'sol')).toThrowError('process_capacity');
+    admissions.registerRoom('sol-1', 'sol');
+    admissions.registerRoom('xrp-1', 'xrp');
+    admissions.registerRoom('doge-1', 'doge');
+    expect(admissions.snapshot().rooms).toBe(24);
+    expect(() => admissions.registerRoom('bnb-1', 'bnb')).toThrowError('process_capacity');
   });
 
   it('coalesces population broadcasts to at most two per second', () => {
@@ -218,7 +221,7 @@ describe('launch safety controls', () => {
     expect(config.databaseSsl).toBe('verify-full');
     expect(config.limits).toMatchObject({
       maxProcessConnections: 400,
-      maxRooms: 18,
+      maxRooms: 24,
       maxMarketShards: 8,
     });
     expect(() => loadConfig({
