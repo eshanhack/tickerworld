@@ -704,6 +704,29 @@ describe('AudioEngine lifecycle', () => {
     vi.useRealTimers();
   });
 
+  it('plays a bounded low thunder rumble through the FX channel with a cooldown', async () => {
+    vi.useFakeTimers();
+    const fake = makeFakeContext();
+    const engine = new AudioEngine({ contextFactory: () => fake.context, storage: null, random: () => 0.5 });
+    await engine.unlock();
+    const baselineOscillators = fake.oscillators.length;
+    const baselineBuffers = fake.bufferSources.length;
+
+    engine.playThunder(0.8);
+    expect(fake.oscillators.length - baselineOscillators).toBe(1);
+    expect(fake.bufferSources.length - baselineBuffers).toBe(2);
+    engine.playThunder(0.8);
+    expect(fake.oscillators.length - baselineOscillators).toBe(1);
+    expect(fake.bufferSources.length - baselineBuffers).toBe(2);
+
+    (fake.context as unknown as { currentTime: number }).currentTime = 4;
+    engine.toggleSfxMuted(true);
+    engine.playThunder(1);
+    expect(fake.oscillators.length - baselineOscillators).toBe(1);
+    engine.dispose();
+    vi.useRealTimers();
+  });
+
   it('reserves alert voices so footsteps and ordinary effects cannot suppress a siren', async () => {
     vi.useFakeTimers();
     const fake = makeFakeContext();

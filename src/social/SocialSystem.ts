@@ -19,6 +19,13 @@ export interface SocialTransport {
   report(targetActorId: string, reason: ModerationReason, note?: string): boolean;
 }
 
+export type SocialInteractionOwner = 'chat' | 'player';
+
+/** Ambient chat stays visible while roaming; player actions remain modal. */
+export function socialInteractionLocksMovement(owner: SocialInteractionOwner): boolean {
+  return owner === 'player';
+}
+
 export interface SocialSystemOptions {
   readonly root: HTMLElement;
   readonly transport: SocialTransport;
@@ -27,7 +34,7 @@ export interface SocialSystemOptions {
   readonly now?: () => number;
   readonly onInputFocusChange?: (focused: boolean) => void;
   /** Returns false when a higher-priority modal (portal/context) owns the UI. */
-  readonly onInteractionChange?: (owner: 'chat' | 'player', active: boolean) => boolean | void;
+  readonly onInteractionChange?: (owner: SocialInteractionOwner, active: boolean) => boolean | void;
   readonly onSpeech?: (message: ChatMessage) => void;
   readonly onBlocksChanged?: (blocked: ReadonlySet<string>) => void;
   readonly persistBlock?: (actorId: string, blocked: boolean) => void | Promise<void>;
@@ -102,10 +109,10 @@ export class SocialSystem implements GameSystem {
     this.gate = new ChatRateGate(3, 2_000, this.now());
     this.root.classList.add('tickerworld-social');
     this.root.innerHTML = `
-      <button class="social-chat-toggle" type="button" aria-label="Open room chat" data-social-toggle>
+      <button class="social-chat-toggle" type="button" aria-label="Hide room chat" aria-controls="tickerworld-room-chat" aria-expanded="true" data-social-toggle>
         <span aria-hidden="true">✦</span><strong>Chat</strong>
       </button>
-      <section class="social-chat-panel is-hidden" aria-label="Room chat" data-social-panel>
+      <section class="social-chat-panel" id="tickerworld-room-chat" aria-label="Room chat" data-social-panel>
         <header><div><strong>Nearby voices</strong><small data-social-status>SOLO MODE</small></div><button type="button" aria-label="Close chat" data-social-close>×</button></header>
         <div class="social-chat-log" role="log" aria-live="polite" aria-relevant="additions" data-social-log></div>
         <form class="social-chat-form" data-social-form>
@@ -161,6 +168,10 @@ export class SocialSystem implements GameSystem {
 
   get blockedActors(): ReadonlySet<string> {
     return this.blockStore.snapshot;
+  }
+
+  get chatOpen(): boolean {
+    return !this.panel.classList.contains('is-hidden');
   }
 
   acceptChat(message: ChatMessage): void {
@@ -264,7 +275,6 @@ export class SocialSystem implements GameSystem {
     this.root.classList.toggle('is-hidden', !visible);
     if (!visible) {
       this.input.blur();
-      this.closeChat();
       this.closePlayerCard();
     }
   }
@@ -300,19 +310,20 @@ export class SocialSystem implements GameSystem {
   }
 
   private readonly toggleChat = (): void => {
-    const opening = this.panel.classList.contains('is-hidden');
+    const opening = !this.chatOpen;
     if (!opening) {
       this.closeChat();
       return;
     }
     this.closePlayerCard();
     if (this.options.onInteractionChange?.('chat', true) === false) return;
-    this.panel.classList.remove('is-hidden');
+    this.setChatOpen(true);
     this.input.focus();
   };
 
   private readonly closeChat = (): void => {
-    this.panel.classList.add('is-hidden');
+    if (!this.chatOpen) return;
+    this.setChatOpen(false);
     this.input.blur();
     this.options.onInteractionChange?.('chat', false);
   };
@@ -358,7 +369,7 @@ export class SocialSystem implements GameSystem {
       event.preventDefault();
       this.closePlayerCard();
       if (this.options.onInteractionChange?.('chat', true) === false) return;
-      this.panel.classList.remove('is-hidden');
+      this.setChatOpen(true);
       this.input.focus();
     }
   };
@@ -369,6 +380,12 @@ export class SocialSystem implements GameSystem {
     this.reportNote.value = '';
     this.options.onInteractionChange?.('player', false);
   };
+
+  private setChatOpen(open: boolean): void {
+    this.panel.classList.toggle('is-hidden', !open);
+    this.chatButton.setAttribute('aria-expanded', String(open));
+    this.chatButton.setAttribute('aria-label', open ? 'Hide room chat' : 'Open room chat');
+  }
 
   private readonly blockSelectedPlayer = (): void => {
     const player = this.selectedPlayer;

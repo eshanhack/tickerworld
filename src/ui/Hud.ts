@@ -1,4 +1,4 @@
-import type { AnimalKind, EmoteKind } from '../../shared/src/index.js';
+import type { AnimalKind, EmoteKind, SkinId } from '../../shared/src/index.js';
 import type { AssetSymbol, FeedMode } from '../types';
 import { formatPrice } from '../monuments';
 import {
@@ -20,12 +20,15 @@ import {
 import { OverlayCoordinator, type OverlayOwner } from './OverlayCoordinator';
 import type { UiInteractionOwner } from './UiInteractionLock';
 import { WardrobeView } from './WardrobeView';
+import { worldClockPresentation } from './worldClock';
 
 export type UiEmoteKind = EmoteKind;
 
 export interface HudOptions {
   readonly activeMarket: AssetSymbol;
   readonly initialAnimal: AnimalKind;
+  readonly initialSkin?: SkinId;
+  readonly initialUsername?: string | null;
 }
 
 export interface HudCallbacks {
@@ -41,7 +44,8 @@ export interface HudCallbacks {
   onVirtualInput: (x: number, forward: number, sprint: boolean) => void;
   onJump: () => void;
   onGlideChange: (held: boolean) => void;
-  onAnimalSelect?: (animal: AnimalKind) => boolean | void;
+  onAppearanceSelect?: (animal: AnimalKind, skin: SkinId) => boolean | void;
+  onDisplayUsernameChange?: (username: string | null) => boolean | void;
   onEmoteRequest?: (kind: UiEmoteKind) => boolean | void;
   onUiInteractionChange?: (owner: UiInteractionOwner, active: boolean) => void;
   onLargeOverlayOpen?: (owner: UiInteractionOwner) => void;
@@ -74,7 +78,7 @@ function onboardingCopy(snapshot: OnboardingSnapshot): {
 } {
   switch (snapshot.currentStep) {
     case 'identity':
-      return { title: 'Choose your creature', body: 'All eight launch animals are free.', cta: 'Open wardrobe' };
+      return { title: 'Choose your look', body: 'Sixteen creatures and color charms are ready.', cta: 'Open wardrobe' };
     case 'move-jump': {
       const moved = snapshot.completedActions.has('move');
       const jumped = snapshot.completedActions.has('jump');
@@ -114,6 +118,11 @@ export class Hud {
   private readonly nearbySymbol: HTMLElement;
   private readonly nearbyPrice: HTMLElement;
   private readonly nearbyMode: HTMLElement;
+  private readonly worldClock: HTMLElement;
+  private readonly worldClockIcon: HTMLElement;
+  private readonly worldClockTime: HTMLElement;
+  private readonly worldClockLabel: HTMLElement;
+  private worldClockRenderKey = '';
   private readonly compass: HTMLElement;
   private readonly compassArrow: HTMLElement;
   private readonly compassLabel: HTMLElement;
@@ -190,13 +199,18 @@ export class Hud {
         <div class="market-mode connecting" data-nearby-mode>CONNECTING</div>
       </section>
 
+      <section class="world-clock" aria-label="World time, daylight" data-world-clock>
+        <span class="world-clock-icon" aria-hidden="true" data-world-clock-icon>☀</span>
+        <div><strong data-world-clock-time>12:00</strong><small data-world-clock-label>DAYLIGHT</small></div>
+      </section>
+
       <button class="compass is-hidden" type="button" aria-label="Toggle monument compass" data-compass>
         <span class="compass-arrow" data-compass-arrow>&uarr;</span><span data-compass-label>ETH</span>
       </button>
 
       <section class="onboarding-hint is-hidden" aria-live="polite" data-onboarding>
         <div class="onboarding-orb" aria-hidden="true">&#10022;</div>
-        <div><small data-onboarding-progress>1 / 5</small><strong data-onboarding-title>Choose your creature</strong><p data-onboarding-body>All eight launch animals are free.</p></div>
+        <div><small data-onboarding-progress>1 / 5</small><strong data-onboarding-title>Choose your look</strong><p data-onboarding-body>Sixteen creatures and color charms are ready.</p></div>
         <button type="button" data-onboarding-cta>Open wardrobe</button>
       </section>
 
@@ -221,7 +235,7 @@ export class Hud {
           <div class="audio-channel"><button class="channel-mute" type="button" aria-label="Mute music" data-music-mute><span>&#9834;</span><strong>Music</strong></button><label aria-label="Music volume"><input type="range" min="0" max="1" step="0.01" value="1" data-music-volume /></label></div>
           <div class="audio-channel"><button class="channel-mute" type="button" aria-label="Mute sound effects" data-sfx-mute><span>&#10022;</span><strong>FX</strong></button><label aria-label="Sound effects volume"><input type="range" min="0" max="1" step="0.01" value="1" data-sfx-volume /></label></div>
         </div>
-        <button type="button" class="compass-setting wardrobe-setting" data-settings-wardrobe><span>Creature wardrobe</span><strong>8 FREE</strong></button>
+        <button type="button" class="compass-setting wardrobe-setting" data-settings-wardrobe><span>Creature wardrobe</span><strong>16 LOOKS</strong></button>
         <button type="button" class="compass-setting" data-compass-setting><span>Monument whisper</span><strong>ON</strong></button>
         <button type="button" class="compass-setting motion-setting" data-motion-setting><span>Gentle motion</span><strong>OFF</strong></button>
         <p>Live prices use Hyperliquid perpetual market data. If the feed drops, genuine values pause while Tickerworld reconnects. For ambience, not financial advice.</p>
@@ -246,6 +260,10 @@ export class Hud {
     this.nearbySymbol = this.required('[data-nearby-symbol]');
     this.nearbyPrice = this.required('[data-nearby-price]');
     this.nearbyMode = this.required('[data-nearby-mode]');
+    this.worldClock = this.required('[data-world-clock]');
+    this.worldClockIcon = this.required('[data-world-clock-icon]');
+    this.worldClockTime = this.required('[data-world-clock-time]');
+    this.worldClockLabel = this.required('[data-world-clock-label]');
     this.compass = this.required('[data-compass]');
     this.compassArrow = this.required('[data-compass-arrow]');
     this.compassLabel = this.required('[data-compass-label]');
@@ -279,12 +297,20 @@ export class Hud {
       onInteractionChange: (active) => this.callbacks.onNewsInteractionChange?.(active),
     });
     this.wardrobe = new WardrobeView(this.root, {
-      selected: options.initialAnimal,
+      selectedAnimal: options.initialAnimal,
+      selectedSkin: options.initialSkin ?? 'base',
+      username: options.initialUsername ?? null,
       onClose: () => this.setOwnedOverlay('wardrobe', false),
-      onSelect: (animal) => {
-        if (this.callbacks.onAnimalSelect?.(animal) === false) return;
+      onSelect: (animal, skin) => {
+        if (this.callbacks.onAppearanceSelect?.(animal, skin) === false) return false;
         this.wardrobeButton.textContent = animal.slice(0, 3).toUpperCase();
         this.recordOnboardingAction('identity');
+        return true;
+      },
+      onUsernameChange: (username) => {
+        if (this.callbacks.onDisplayUsernameChange?.(username) === false) return false;
+        this.recordOnboardingAction('identity');
+        return true;
       },
     });
 
@@ -350,6 +376,22 @@ export class Hud {
     window.setTimeout(() => this.enterOverlay.remove(), 900);
   }
 
+  public setWorldTime(minutesSinceMidnight: number, nightFactor: number, raining: boolean): void {
+    const presentation = worldClockPresentation(minutesSinceMidnight, nightFactor, raining);
+    const renderKey = `${presentation.time}:${presentation.label}`;
+    if (renderKey === this.worldClockRenderKey) return;
+    this.worldClockRenderKey = renderKey;
+    this.worldClockTime.textContent = presentation.time;
+    this.worldClockIcon.textContent = presentation.icon;
+    this.worldClockLabel.textContent = presentation.label;
+    this.worldClock.dataset.phase = presentation.night ? 'night' : 'day';
+    this.worldClock.dataset.weather = presentation.raining ? 'rain' : 'clear';
+    this.worldClock.setAttribute(
+      'aria-label',
+      `World time ${presentation.time}, ${presentation.label.toLocaleLowerCase()}`,
+    );
+  }
+
   public recordOnboardingAction(action: OnboardingAction): void {
     const wasComplete = this.onboarding.snapshot.completed;
     const changed = this.onboarding.record(action);
@@ -358,9 +400,13 @@ export class Hud {
     }
   }
 
-  public setSelectedAnimal(animal: AnimalKind): void {
-    this.wardrobe.setSelected(animal);
+  public setSelectedAppearance(animal: AnimalKind, skin: SkinId): void {
+    this.wardrobe.setSelected(animal, skin);
     this.wardrobeButton.textContent = animal.slice(0, 3).toUpperCase();
+  }
+
+  public setDisplayUsername(username: string | null): void {
+    this.wardrobe.setUsername(username);
   }
 
   public setChartFocused(focused: boolean): void {

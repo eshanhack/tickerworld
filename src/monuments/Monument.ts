@@ -1,9 +1,7 @@
 import {
-  AdditiveBlending,
   BoxGeometry,
   BufferGeometry,
   Camera,
-  CircleGeometry,
   Color,
   ConeGeometry,
   CylinderGeometry,
@@ -17,6 +15,7 @@ import {
   MeshStandardMaterial,
   Object3D,
   Points,
+  PointLight,
   SphereGeometry,
   TorusGeometry,
   Vector3,
@@ -131,7 +130,7 @@ const PRESENTATION_FACING_RESPONSE = 7.5;
 
 interface LampBulb {
   readonly mesh: Mesh<SphereGeometry, MeshStandardMaterial>;
-  readonly aura: Mesh<CircleGeometry, MeshBasicMaterial>;
+  readonly light: PointLight;
   readonly phase: number;
 }
 
@@ -403,8 +402,8 @@ export class Monument {
     this.nightFactor = Math.min(1, Math.max(0, factor));
     for (const lamp of this.lamps) {
       lamp.mesh.material.emissiveIntensity = 0.25 + this.nightFactor * 2.5;
-      lamp.aura.visible = this.nightFactor > 0.025;
-      lamp.aura.material.opacity = this.nightFactor * this.nightFactor * 0.34;
+      lamp.light.visible = this.nightFactor > 0.025;
+      lamp.light.intensity = this.nightFactor * this.nightFactor * 32;
     }
   }
 
@@ -607,8 +606,7 @@ export class Monument {
     for (const lamp of this.lamps) {
       const shimmer = 1 + Math.sin(elapsedSeconds * 1.7 + lamp.phase) * 0.025 * this.nightFactor;
       lamp.mesh.scale.setScalar(shimmer);
-      const auraBreath = 1 + Math.sin(elapsedSeconds * 0.78 + lamp.phase) * 0.055;
-      lamp.aura.scale.setScalar(auraBreath);
+      lamp.light.intensity = this.nightFactor * this.nightFactor * 32 * shimmer;
     }
 
     if (camera) {
@@ -882,16 +880,6 @@ export class Monument {
       emissiveIntensity: 0.25,
       roughness: 0.38,
     });
-    const auraGeometry = new CircleGeometry(2.35, 24);
-    const auraMaterial = new MeshBasicMaterial({
-      color: COLORS.lamp,
-      transparent: true,
-      opacity: 0,
-      depthWrite: false,
-      toneMapped: false,
-      blending: AdditiveBlending,
-    });
-
     const lampPositions: ReadonlyArray<readonly [number, number]> = [
       [-6.4, -4.5],
       [6.4, -4.5],
@@ -910,14 +898,12 @@ export class Monument {
       shade.name = `${this.symbol}-lamp-shade-${index + 1}`;
       shade.position.set(x, 4.38, z);
       shade.castShadow = true;
-      const aura = new Mesh(auraGeometry, auraMaterial);
-      aura.name = `${this.symbol}-lamp-aura-${index + 1}`;
-      aura.rotation.x = -Math.PI * 0.5;
-      aura.position.set(x, (sampleLocalStoneGround(x, z)?.height ?? 0.31) + 0.025, z);
-      aura.visible = false;
-      aura.renderOrder = 1;
-      this.root.add(pole, aura, bulb, shade);
-      this.lamps.push({ mesh: bulb, aura, phase: index * 1.7 });
+      const light = new PointLight(COLORS.lamp, 0, 13, 2);
+      light.name = `${this.symbol}-lamp-light-${index + 1}`;
+      light.position.copy(bulb.position);
+      light.visible = false;
+      this.root.add(pole, bulb, shade, light);
+      this.lamps.push({ mesh: bulb, light, phase: index * 1.7 });
     });
   }
 

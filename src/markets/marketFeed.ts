@@ -301,7 +301,9 @@ export class HyperliquidMarketFeed implements MarketFeed {
   private reconnectTimer: number | undefined;
   private reconnectAttempt = 0;
   private syncGeneration = 0;
+  private connectPending = false;
   private lastSocketActivity = 0;
+  private socketDebug = 'idle';
   private paused = false;
   private disposed = false;
   private started = false;
@@ -369,6 +371,11 @@ export class HyperliquidMarketFeed implements MarketFeed {
     return () => this.listeners.delete(listener);
   }
 
+  /** Concise connection lifecycle for `?debug=1`; never contains payloads or credentials. */
+  getDebugStatus(): string {
+    return `${this.socketDebug}${this.connectPending ? '/sync' : ''} · gen ${this.syncGeneration} · retry ${this.reconnectAttempt}`;
+  }
+
   /** Switches the only full browser fallback chart; compact mids remain global. */
   async setActiveMarket(symbol: AssetSymbol): Promise<void> {
     if (this.disposed || symbol === this.activeSymbol) return;
@@ -421,7 +428,7 @@ export class HyperliquidMarketFeed implements MarketFeed {
       this.setAllModes('reconnecting');
       return;
     }
-    if (wasRelayed || !this.socket) void this.resyncAndConnect(false);
+    if (wasRelayed || (!this.socket && !this.connectPending)) void this.resyncAndConnect(false);
   }
 
   /** Applies one server-coalesced active chart and compact portal mids. */
@@ -541,6 +548,7 @@ export class HyperliquidMarketFeed implements MarketFeed {
   private async resyncAndConnect(initial: boolean): Promise<void> {
     if (this.paused || this.disposed || FORCE_SIMULATION || this.relayActive || !this.directFallbackAllowed) return;
     const generation = ++this.syncGeneration;
+    this.connectPending = true;
     this.clearReconnect();
     this.pendingTrades.clear();
     this.setAllModes(initial ? 'connecting' : 'reconnecting');
@@ -585,6 +593,8 @@ export class HyperliquidMarketFeed implements MarketFeed {
       if (generation !== this.syncGeneration || this.paused || this.disposed) return;
       this.setAllModes('reconnecting');
       this.scheduleReconnect();
+    } finally {
+      if (generation === this.syncGeneration) this.connectPending = false;
     }
   }
 
@@ -648,12 +658,14 @@ export class HyperliquidMarketFeed implements MarketFeed {
     ) return;
 
     try {
+      this.socketDebug = 'opening';
       const socket = new WebSocket(SOCKET_URL);
       this.socket = socket;
       this.lastSocketActivity = Date.now();
       socket.addEventListener('open', () => {
         if (this.socket !== socket || generation !== this.syncGeneration) return;
         this.lastSocketActivity = Date.now();
+        this.socketDebug = 'open';
         for (const subscription of buildHyperliquidSubscriptions(this.activeSymbol)) {
           socket.send(JSON.stringify({ method: 'subscribe', subscription }));
         }
@@ -663,9 +675,16 @@ export class HyperliquidMarketFeed implements MarketFeed {
       socket.addEventListener('message', (event) => {
         if (this.socket === socket) this.handleMessage(String(event.data));
       });
-      socket.addEventListener('close', () => this.handleDisconnect(socket));
-      socket.addEventListener('error', () => socket.close());
+      socket.addEventListener('close', (event) => {
+        this.socketDebug = `closed ${event.code}${event.reason ? ` ${event.reason.slice(0, 32)}` : ''}`;
+        this.handleDisconnect(socket);
+      });
+      socket.addEventListener('error', () => {
+        this.socketDebug = 'error';
+        socket.close();
+      });
     } catch {
+      this.socketDebug = 'construct failed';
       this.closeSocket();
       this.handleDisconnect(undefined);
     }

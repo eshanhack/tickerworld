@@ -52,6 +52,18 @@ export interface PortalArrivalSpawn {
   readonly returnPortal: PortalRoute;
 }
 
+export function formatPortalPopulation(
+  population: number | null,
+  connectionMode: PortalConnectionMode,
+): string {
+  if (connectionMode === 'offline') return 'OFFLINE';
+  if (connectionMode === 'connecting') return 'CONNECTING';
+  if (population === null || !Number.isFinite(population) || population < 0) return '— PEOPLE';
+  const people = Math.floor(population);
+  if (people === 1) return '1 PERSON';
+  return `${people.toLocaleString('en-US')} PEOPLE`;
+}
+
 function asSlotMarket(symbol: AssetSymbol): Exclude<AssetSymbol, 'BTC'> {
   if (symbol === 'BTC') throw new Error('BTC does not own a radial portal slot.');
   return symbol;
@@ -91,21 +103,14 @@ export function createPortalLabelModel(
 ): PortalLabelModel {
   const connectionMode = live.connectionMode ?? (live.population === null ? 'offline' : 'online');
   const priceText = formatPrice(live.price);
-  const safePopulation = live.population === null
-    ? null
-    : Math.max(0, Math.floor(Number.isFinite(live.population) ? live.population : 0));
-  const populationText = connectionMode === 'offline'
-    ? 'OFFLINE'
-    : connectionMode === 'connecting' || safePopulation === null
-      ? 'CONNECTING'
-      : `${safePopulation.toLocaleString('en-US')} ONLINE`;
+  const populationText = formatPortalPopulation(live.population, connectionMode);
   return {
     destination: route.destination,
     title: route.destination,
     priceText,
     populationText,
     connectionMode,
-    text: `${route.destination}\n${priceText} · ${populationText}`,
+    text: `${route.destination}\n${populationText}`,
   };
 }
 

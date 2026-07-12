@@ -34,6 +34,8 @@ export {
 } from './EmoteVisualSystem';
 export {
   SocialSystem,
+  socialInteractionLocksMovement,
+  type SocialInteractionOwner,
   type SocialSystemOptions,
   type SocialTransport,
 } from './SocialSystem';

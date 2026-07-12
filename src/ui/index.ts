@@ -34,6 +34,9 @@ export {
 export {
   WardrobeView,
   baseWardrobeEntries,
+  colorWardrobeEntries,
+  freeWardrobeEntries,
+  normalizeWardrobeUsername,
   type WardrobeEntry,
   type WardrobeViewOptions,
 } from './WardrobeView';
@@ -54,3 +57,4 @@ export {
   type NewsOverlayViewOptions,
   type NewsOverlayViewState,
 } from './NewsOverlayView';
+export { worldClockPresentation, type WorldClockPresentation } from './worldClock';

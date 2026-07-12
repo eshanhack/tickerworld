@@ -102,6 +102,34 @@ describe('persistence, auth, and economy invariants', () => {
     await expect(auth.authenticate(verified.token, 2_003)).rejects.toMatchObject({ status: 401 });
   });
 
+  it('allows every matching free skin while rejecting cross-species profile pairs atomically', async () => {
+    await db.insertInto('accounts').values({
+      id: 'account_free_looks',
+      wallet_address: '11111111111111111111111111111111',
+      actor_id: 'player_freelooks123456',
+      username: null,
+      username_normalized: null,
+      selected_animal: 'fox',
+      selected_skin: 'base',
+      last_market: 'btc',
+      created_at: 1,
+      updated_at: 1,
+    }).execute();
+    const auth = new AuthService(db, new Ed25519WalletSignatureVerifier());
+
+    await expect(auth.updateProfile('account_free_looks', {
+      animal: 'cat', skin: 'sunrise-fox',
+    }, 2)).rejects.toMatchObject({ code: 'invalid_appearance' });
+    expect(await auth.updateProfile('account_free_looks', {
+      animal: 'cat', skin: 'tide-cat',
+    }, 3)).toMatchObject({ selectedAnimal: 'cat', selectedSkin: 'tide-cat' });
+    await expect(auth.updateProfile('account_free_looks', {
+      animal: 'rabbit',
+    }, 4)).rejects.toMatchObject({ code: 'invalid_appearance' });
+    expect(await auth.profileForAccount('account_free_looks'))
+      .toMatchObject({ selectedAnimal: 'cat', selectedSkin: 'tide-cat' });
+  });
+
   it('grants a matching confirmed payment exactly once', async () => {
     const now = 10_000;
     await db.insertInto('accounts').values({

@@ -26,6 +26,16 @@ import {
 const WALLET_PATTERN = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 const CHALLENGE_LIFETIME_MS = 5 * 60_000;
 const SESSION_LIFETIME_MS = 30 * 24 * 60 * 60_000;
+const FREE_SKIN_ANIMAL: Readonly<Record<Exclude<SkinId, 'base'>, AnimalKind>> = {
+  'sunrise-fox': 'fox',
+  'amethyst-rabbit': 'rabbit',
+  'aurora-axolotl': 'axolotl',
+  'tide-cat': 'cat',
+  'golden-duck': 'duck',
+  'honey-bear': 'bear',
+  'bluebell-penguin': 'penguin',
+  'alpine-frog': 'frog',
+};
 
 export interface SignatureVerificationRequest {
   walletAddress: string;
@@ -372,15 +382,6 @@ export class AuthService {
         .where('status', '=', 'available')
         .orderBy('created_at', 'asc')
         .executeTakeFirst();
-      if (!credit) {
-        // Compatibility for entitlements granted before username credits existed.
-        const entitlement = await transaction.selectFrom('entitlements')
-          .select('id')
-          .where('account_id', '=', accountId)
-          .where('sku', '=', 'username-claim')
-          .executeTakeFirst();
-        if (!entitlement) throw new UnauthorizedError('Username credit is required');
-      }
       const updated = await transaction.updateTable('accounts')
         .set({ username, username_normalized: canonical, updated_at: now })
         .where('id', '=', accountId)
@@ -422,15 +423,19 @@ export class AuthService {
     }
     if (input.skin !== undefined) {
       if (!isSkinId(input.skin)) throw new InputError('invalid_skin', 'Unknown skin');
-      if (input.skin !== 'base') {
-        const owned = await this.db.selectFrom('entitlements')
-          .select('id')
-          .where('account_id', '=', accountId)
-          .where('sku', '=', input.skin)
-          .executeTakeFirst();
-        if (!owned) throw new UnauthorizedError('Skin entitlement is required');
-      }
       updates.selected_skin = input.skin;
+    }
+    if (input.animal !== undefined || input.skin !== undefined) {
+      const current = await this.db.selectFrom('accounts')
+        .select(['selected_animal', 'selected_skin'])
+        .where('id', '=', accountId)
+        .executeTakeFirst();
+      if (!current) throw new UnauthorizedError('Account is unavailable');
+      const animal = (updates.selected_animal ?? current.selected_animal) as AnimalKind;
+      const skin = (updates.selected_skin ?? current.selected_skin) as SkinId;
+      if (skin !== 'base' && FREE_SKIN_ANIMAL[skin] !== animal) {
+        throw new InputError('invalid_appearance', 'Skin does not match the selected animal');
+      }
     }
     await this.db.updateTable('accounts').set(updates).where('id', '=', accountId).execute();
     return this.profileForAccount(accountId);

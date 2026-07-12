@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { FireworkPool } from '../src/monuments';
 
 describe('FireworkPool', () => {
-  it('uses one pooled bloom for a large move and three staggered blooms for exceptional moves', () => {
+  it('uses exactly one pooled bloom for both large and exceptional moves', () => {
     const pool = new FireworkPool({ capacity: 96, random: () => 0.25 });
 
     expect(pool.launch({ x: 2, y: 12, z: -1 }, 'up', 'large')).toBe(true);
@@ -14,9 +14,9 @@ describe('FireworkPool', () => {
     });
 
     expect(pool.launch({ x: 2, y: 12, z: -1 }, 'down', 'exceptional')).toBe(true);
-    expect(pool.getDebugStats()).toMatchObject({ emittedBursts: 2, pendingBursts: 2 });
+    expect(pool.getDebugStats()).toMatchObject({ emittedBursts: 2, pendingBursts: 0 });
     for (let index = 0; index < 5; index += 1) pool.update(0.1);
-    expect(pool.getDebugStats()).toMatchObject({ emittedBursts: 4, pendingBursts: 0 });
+    expect(pool.getDebugStats()).toMatchObject({ emittedBursts: 2, pendingBursts: 0 });
     expect(pool.getDebugStats().activeParticles).toBeLessThanOrEqual(pool.capacity);
 
     pool.dispose();

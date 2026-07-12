@@ -1,11 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ASSET_SYMBOLS } from '../src/types';
+import { PREMIUM_SKINS } from '../shared/src/index.js';
 import {
   baseWardrobeEntries,
+  colorWardrobeEntries,
   chooseQualityTier,
   entryFeedStatusLabel,
   entryRoomStatusLabel,
   entryShellForMarket,
+  freeWardrobeEntries,
+  normalizeWardrobeUsername,
   OnboardingJourney,
   OverlayCoordinator,
   parseStoredQualityTier,
@@ -108,13 +112,27 @@ describe('launch overlay discipline', () => {
   });
 });
 
-describe('free base wardrobe', () => {
-  it('contains all eight base creatures without premium products', () => {
+describe('free launch wardrobe', () => {
+  it('contains eight base creatures and all eight color looks without commerce metadata', () => {
     const entries = baseWardrobeEntries();
     expect(entries.map(({ animal }) => animal)).toEqual([
       'fox', 'penguin', 'frog', 'duck', 'bear', 'rabbit', 'cat', 'axolotl',
     ]);
-    expect(entries.every((entry) => Object.keys(entry).sort().join(',') === 'animal,label,sigil')).toBe(true);
+    expect(entries.every(({ skin }) => skin === 'base')).toBe(true);
+    const colors = colorWardrobeEntries();
+    expect(colors.map(({ skin }) => skin).sort()).toEqual([...PREMIUM_SKINS].sort());
+    expect(new Set(colors.map(({ animal }) => animal)).size).toBe(8);
+    expect(freeWardrobeEntries()).toHaveLength(16);
+    expect(freeWardrobeEntries().every((entry) => (
+      !('price' in entry) && !('entitlement' in entry) && !('owned' in entry)
+    ))).toBe(true);
+  });
+
+  it('normalizes a valid browser display name and rejects invalid characters or length', () => {
+    expect(normalizeWardrobeUsername('  Magic_Fox  ')).toBe('Magic_Fox');
+    expect(normalizeWardrobeUsername('ab')).toBeNull();
+    expect(normalizeWardrobeUsername('two words')).toBeNull();
+    expect(normalizeWardrobeUsername('ticker-world')).toBeNull();
   });
 });
 

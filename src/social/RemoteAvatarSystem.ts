@@ -9,7 +9,7 @@ import {
   type SkinId,
 } from '../../shared/src/index.js';
 import type { GameSystem } from '../types';
-import { PREMIUM_SKIN_CATALOG } from '../economy/catalog';
+import { resolveAnimalAppearance } from '../player/animalAppearance';
 import {
   clipSpeech,
   interpolateRemotePose,
@@ -82,6 +82,7 @@ interface RemoteSlot {
   actorId: string;
   animal: AnimalKind;
   skin: SkinId;
+  premium: boolean;
   username: string | null;
   readonly samples: TimedRemoteState[];
   readonly nameplate: Text;
@@ -244,6 +245,7 @@ export class RemoteAvatarSystem implements GameSystem {
   private readonly legHindLeft: PartPool;
   private readonly legHindRight: PartPool;
   private readonly tail: PartPool;
+  private readonly crest: PartPool;
   private readonly allPools: readonly PartPool[];
   private readonly raycaster = new THREE.Raycaster();
   private readonly pointer = new THREE.Vector2();
@@ -286,9 +288,11 @@ export class RemoteAvatarSystem implements GameSystem {
     this.legHindLeft = createPool(legGeometry, this.material, this.capacity, 'remote-hind-left-leg-pool');
     this.legHindRight = createPool(legGeometry, this.material, this.capacity, 'remote-hind-right-leg-pool');
     this.tail = createPool(tailGeometry, this.material, this.capacity, 'remote-tail-pool');
+    this.crest = createPool(earGeometry, this.material, this.capacity, 'remote-crest-pool');
     this.allPools = [
       this.body, this.head, this.earLeft, this.earRight,
-      this.legFrontLeft, this.legFrontRight, this.legHindLeft, this.legHindRight, this.tail,
+      this.legFrontLeft, this.legFrontRight, this.legHindLeft, this.legHindRight,
+      this.tail, this.crest,
     ];
     for (const pool of this.allPools) this.root.add(pool.mesh);
 
@@ -303,6 +307,7 @@ export class RemoteAvatarSystem implements GameSystem {
         actorId: '',
         animal: 'fox',
         skin: 'base',
+        premium: false,
         username: null,
         samples: [],
         nameplate,
@@ -507,12 +512,11 @@ export class RemoteAvatarSystem implements GameSystem {
 
   private applyAppearance(slot: RemoteSlot): void {
     const profile = ANIMAL_PROFILES[slot.animal];
-    const premium = slot.skin === 'base'
-      ? undefined
-      : PREMIUM_SKIN_CATALOG.find((skin) => skin.id === slot.skin);
-    const bodyColor = new THREE.Color(premium?.colors[0] ?? profile.body);
-    const creamColor = new THREE.Color(premium?.colors[1] ?? profile.cream);
-    const tailColor = new THREE.Color(premium?.colors[2] ?? premium?.colors[0] ?? profile.body);
+    const appearance = resolveAnimalAppearance(slot.animal, slot.skin);
+    slot.premium = appearance.premium;
+    const bodyColor = new THREE.Color(appearance.palette.primary ?? profile.body);
+    const creamColor = new THREE.Color(appearance.palette.secondary ?? profile.cream);
+    const tailColor = new THREE.Color(appearance.palette.highlight ?? appearance.palette.primary);
     this.body.mesh.setColorAt(slot.index, bodyColor);
     this.head.mesh.setColorAt(slot.index, bodyColor);
     this.earLeft.mesh.setColorAt(slot.index, bodyColor);
@@ -522,6 +526,7 @@ export class RemoteAvatarSystem implements GameSystem {
     this.legHindLeft.mesh.setColorAt(slot.index, creamColor);
     this.legHindRight.mesh.setColorAt(slot.index, creamColor);
     this.tail.mesh.setColorAt(slot.index, tailColor);
+    this.crest.mesh.setColorAt(slot.index, tailColor);
     for (const pool of this.allPools) {
       if (pool.mesh.instanceColor) pool.mesh.instanceColor.needsUpdate = true;
     }
@@ -551,6 +556,12 @@ export class RemoteAvatarSystem implements GameSystem {
     this.writePart(this.legHindLeft.mesh, slot.index, [-0.34, 0.48, 0.45], [opposite * 0.5, 0, 0], [0.2, 0.45, 0.2]);
     this.writePart(this.legHindRight.mesh, slot.index, [0.34, 0.48 + legLift, 0.45], [swing * 0.5, 0, 0], [0.2, 0.45, 0.2]);
     this.writePart(this.tail.mesh, slot.index, [0, 1.05 + bob, 0.78], [0.72, 0, 0], profile.tailScale);
+    if (slot.premium) {
+      this.writePart(this.crest.mesh, slot.index, [0, 1.96 + bob, -0.6], [0, 0, Math.PI], [0.15, 0.18, 0.15]);
+    } else {
+      this.localMatrix.compose(this.position.set(0, -1_000, 0), this.localQuaternion.identity(), HIDDEN_SCALE);
+      this.crest.mesh.setMatrixAt(slot.index, this.localMatrix);
+    }
 
     const labelY = pose.y + profile.height + 0.28;
     slot.nameplate.position.set(pose.x, labelY, pose.z);

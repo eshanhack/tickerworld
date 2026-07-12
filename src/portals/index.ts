@@ -15,6 +15,7 @@ export {
   PORTAL_RADIUS,
   createPortalLabelModel,
   createPortalRoutes,
+  formatPortalPopulation,
   portalArrivalSpawn,
 } from './portalLayout';
 export type {

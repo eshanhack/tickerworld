@@ -1,9 +1,17 @@
-import { ANIMAL_KINDS, type AnimalKind } from '../../shared/src/index.js';
+import {
+  ANIMAL_KINDS,
+  normalizeUsername,
+  type AnimalKind,
+  type SkinId,
+} from '../../shared/src/index.js';
 
 export interface WardrobeEntry {
   readonly animal: AnimalKind;
+  readonly skin: SkinId;
   readonly label: string;
   readonly sigil: string;
+  readonly primary: string;
+  readonly secondary: string;
 }
 
 const LABELS: Readonly<Record<AnimalKind, string>> = {
@@ -17,40 +25,75 @@ const LABELS: Readonly<Record<AnimalKind, string>> = {
   axolotl: 'Axolotl',
 };
 
-const SIGILS: Readonly<Record<AnimalKind, string>> = {
-  fox: 'FX',
-  penguin: 'PG',
-  frog: 'FR',
-  duck: 'DK',
-  bear: 'BR',
-  rabbit: 'RB',
-  cat: 'CT',
-  axolotl: 'AX',
+const BASE_LOOKS: Readonly<Record<AnimalKind, Omit<WardrobeEntry, 'animal' | 'skin' | 'label'>>> = {
+  fox: { sigil: 'FX', primary: '#c9795c', secondary: '#ffe7c0' },
+  penguin: { sigil: 'PG', primary: '#526a78', secondary: '#fff1cf' },
+  frog: { sigil: 'FR', primary: '#79ad79', secondary: '#e7efbd' },
+  duck: { sigil: 'DK', primary: '#e2b95f', secondary: '#ffedb1' },
+  bear: { sigil: 'BR', primary: '#9b765e', secondary: '#e9cfa9' },
+  rabbit: { sigil: 'RB', primary: '#c0a5c8', secondary: '#f5e5ed' },
+  cat: { sigil: 'CT', primary: '#b88671', secondary: '#f4d7bd' },
+  axolotl: { sigil: 'AX', primary: '#d99aa8', secondary: '#f5ced5' },
 };
+
+const COLOR_LOOKS: readonly WardrobeEntry[] = [
+  { animal: 'fox', skin: 'sunrise-fox', label: 'Sunrise Fox', sigil: 'SUN', primary: '#e9865f', secondary: '#ffe9bd' },
+  { animal: 'penguin', skin: 'bluebell-penguin', label: 'Bluebell Penguin', sigil: 'BLU', primary: '#647ea4', secondary: '#e7e9f1' },
+  { animal: 'frog', skin: 'alpine-frog', label: 'Alpine Frog', sigil: 'ALP', primary: '#6fa78b', secondary: '#dcebc4' },
+  { animal: 'duck', skin: 'golden-duck', label: 'Golden Duck', sigil: 'GLD', primary: '#e9be4f', secondary: '#ffedaa' },
+  { animal: 'bear', skin: 'honey-bear', label: 'Honey Bear', sigil: 'HNY', primary: '#b98854', secondary: '#f0d4a3' },
+  { animal: 'rabbit', skin: 'amethyst-rabbit', label: 'Amethyst Rabbit', sigil: 'AME', primary: '#9c83be', secondary: '#eadff4' },
+  { animal: 'cat', skin: 'tide-cat', label: 'Tide Cat', sigil: 'TIDE', primary: '#6d9da8', secondary: '#dce9df' },
+  { animal: 'axolotl', skin: 'aurora-axolotl', label: 'Aurora Axolotl', sigil: 'AUR', primary: '#8ecbc4', secondary: '#e5f0d6' },
+] as const;
 
 export function baseWardrobeEntries(): readonly WardrobeEntry[] {
   return ANIMAL_KINDS.map((animal) => ({
     animal,
+    skin: 'base',
     label: LABELS[animal],
-    sigil: SIGILS[animal],
+    ...BASE_LOOKS[animal],
   }));
 }
 
+export function colorWardrobeEntries(): readonly WardrobeEntry[] {
+  return COLOR_LOOKS;
+}
+
+export function freeWardrobeEntries(): readonly WardrobeEntry[] {
+  return [...baseWardrobeEntries(), ...colorWardrobeEntries()];
+}
+
+export function normalizeWardrobeUsername(value: string): string | null {
+  return normalizeUsername(value);
+}
+
 export interface WardrobeViewOptions {
-  readonly selected: AnimalKind;
-  readonly onSelect: (animal: AnimalKind) => void;
+  readonly selectedAnimal: AnimalKind;
+  readonly selectedSkin: SkinId;
+  readonly username: string | null;
+  readonly onSelect: (animal: AnimalKind, skin: SkinId) => boolean | void;
+  readonly onUsernameChange: (username: string | null) => boolean | void;
   readonly onClose: () => void;
+}
+
+function appearanceKey(animal: AnimalKind, skin: SkinId): string {
+  return `${animal}:${skin}`;
 }
 
 export class WardrobeView {
   public readonly element: HTMLElement;
   private readonly options: WardrobeViewOptions;
-  private readonly buttons = new Map<AnimalKind, HTMLButtonElement>();
-  private selected: AnimalKind;
+  private readonly buttons = new Map<string, HTMLButtonElement>();
+  private readonly nameInput: HTMLInputElement;
+  private readonly nameStatus: HTMLElement;
+  private selectedAnimal: AnimalKind;
+  private selectedSkin: SkinId;
 
   public constructor(parent: HTMLElement, options: WardrobeViewOptions) {
     this.options = options;
-    this.selected = options.selected;
+    this.selectedAnimal = options.selectedAnimal;
+    this.selectedSkin = options.selectedSkin;
     this.element = document.createElement('section');
     this.element.className = 'wardrobe-panel is-hidden';
     this.element.setAttribute('role', 'dialog');
@@ -69,29 +112,48 @@ export class WardrobeView {
     kicker.textContent = 'Your world form';
     const title = document.createElement('h2');
     title.id = 'wardrobe-title';
-    title.textContent = 'Choose your creature';
+    title.textContent = 'Make this wanderer yours';
     const copy = document.createElement('p');
-    copy.textContent = 'All eight launch creatures are free. Switch whenever the mood changes.';
-    const grid = document.createElement('div');
-    grid.className = 'wardrobe-grid';
+    copy.textContent = 'Choose any creature, color charm, and display name. Every look is ready to use.';
 
-    for (const entry of baseWardrobeEntries()) {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.dataset.animal = entry.animal;
-      button.className = `wardrobe-animal wardrobe-${entry.animal}`;
-      button.innerHTML = `<span aria-hidden="true">${entry.sigil}</span><strong>${entry.label}</strong><small>Free</small>`;
-      button.addEventListener('click', () => {
-        this.setSelected(entry.animal);
-        this.options.onSelect(entry.animal);
-      });
-      grid.append(button);
-      this.buttons.set(entry.animal, button);
-    }
+    const nameForm = document.createElement('form');
+    nameForm.className = 'wardrobe-name-form';
+    nameForm.noValidate = true;
+    const nameLabel = document.createElement('label');
+    nameLabel.htmlFor = 'wardrobe-display-name';
+    nameLabel.textContent = 'Display name';
+    this.nameInput = document.createElement('input');
+    this.nameInput.id = 'wardrobe-display-name';
+    this.nameInput.name = 'display-name';
+    this.nameInput.type = 'text';
+    this.nameInput.setAttribute('autocomplete', 'nickname');
+    this.nameInput.maxLength = 16;
+    this.nameInput.minLength = 3;
+    this.nameInput.pattern = '[A-Za-z0-9_]{3,16}';
+    this.nameInput.placeholder = 'Magic_Fox';
+    this.nameInput.spellcheck = false;
+    this.nameInput.value = options.username ?? '';
+    const saveName = document.createElement('button');
+    saveName.type = 'submit';
+    saveName.textContent = 'Save name';
+    const clearName = document.createElement('button');
+    clearName.type = 'button';
+    clearName.className = 'wardrobe-name-clear';
+    clearName.textContent = 'Clear';
+    clearName.addEventListener('click', this.clearUsername);
+    this.nameStatus = document.createElement('small');
+    this.nameStatus.className = 'wardrobe-name-status';
+    this.nameStatus.id = 'wardrobe-name-status';
+    this.nameStatus.textContent = '3\u201316 letters, numbers, or _. Names are unique in each room.';
+    this.nameInput.setAttribute('aria-describedby', this.nameStatus.id);
+    nameForm.addEventListener('submit', this.submitUsername);
+    nameForm.append(nameLabel, this.nameInput, saveName, clearName, this.nameStatus);
 
-    this.element.append(close, kicker, title, copy, grid);
+    const baseSection = this.createLookSection('Creatures', baseWardrobeEntries(), 'Classic');
+    const colorSection = this.createLookSection('Color charms', colorWardrobeEntries(), 'Charm');
+    this.element.append(close, kicker, title, copy, nameForm, baseSection, colorSection);
     parent.append(this.element);
-    this.setSelected(this.selected);
+    this.setSelected(this.selectedAnimal, this.selectedSkin);
   }
 
   public setOpen(open: boolean): void {
@@ -99,16 +161,87 @@ export class WardrobeView {
     this.element.setAttribute('aria-hidden', String(!open));
   }
 
-  public setSelected(animal: AnimalKind): void {
-    this.selected = animal;
-    for (const [kind, button] of this.buttons) {
-      const selected = kind === animal;
+  public setSelected(animal: AnimalKind, skin: SkinId): void {
+    this.selectedAnimal = animal;
+    this.selectedSkin = skin;
+    const selectedKey = appearanceKey(animal, skin);
+    for (const [key, button] of this.buttons) {
+      const selected = key === selectedKey;
       button.classList.toggle('is-selected', selected);
       button.setAttribute('aria-pressed', String(selected));
     }
   }
 
+  public setUsername(username: string | null): void {
+    this.nameInput.value = username ?? '';
+    this.nameInput.setAttribute('aria-invalid', 'false');
+  }
+
   public dispose(): void {
+    this.nameInput.form?.removeEventListener('submit', this.submitUsername);
     this.element.remove();
   }
+
+  private createLookSection(
+    headingText: string,
+    entries: readonly WardrobeEntry[],
+    badge: string,
+  ): HTMLElement {
+    const section = document.createElement('section');
+    section.className = 'wardrobe-look-section';
+    const heading = document.createElement('h3');
+    heading.textContent = headingText;
+    const grid = document.createElement('div');
+    grid.className = 'wardrobe-grid';
+    for (const entry of entries) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.dataset.animal = entry.animal;
+      button.dataset.skin = entry.skin;
+      button.className = `wardrobe-animal wardrobe-${entry.animal}`;
+      button.style.setProperty('--wardrobe-primary', entry.primary);
+      button.style.setProperty('--wardrobe-secondary', entry.secondary);
+      button.setAttribute('aria-label', `Use ${entry.label}`);
+      const sigil = document.createElement('span');
+      sigil.setAttribute('aria-hidden', 'true');
+      sigil.textContent = entry.sigil;
+      const label = document.createElement('strong');
+      label.textContent = entry.label;
+      const small = document.createElement('small');
+      small.textContent = badge;
+      button.append(sigil, label, small);
+      button.addEventListener('click', () => {
+        if (this.options.onSelect(entry.animal, entry.skin) === false) return;
+        this.setSelected(entry.animal, entry.skin);
+      });
+      grid.append(button);
+      this.buttons.set(appearanceKey(entry.animal, entry.skin), button);
+    }
+    section.append(heading, grid);
+    return section;
+  }
+
+  private readonly submitUsername = (event: SubmitEvent): void => {
+    event.preventDefault();
+    const requested = this.nameInput.value.trim();
+    const username = requested ? normalizeWardrobeUsername(requested) : null;
+    if (requested && !username) {
+      this.nameInput.setAttribute('aria-invalid', 'true');
+      this.nameStatus.textContent = 'Use 3\u201316 letters, numbers, or underscores only.';
+      return;
+    }
+    if (this.options.onUsernameChange(username) === false) return;
+    this.nameInput.value = username ?? '';
+    this.nameInput.setAttribute('aria-invalid', 'false');
+    this.nameStatus.textContent = username
+      ? `${username} is saved in this browser. If a room already uses it, choose another.`
+      : 'Display name cleared. You will appear as your creature.';
+  };
+
+  private readonly clearUsername = (): void => {
+    if (this.options.onUsernameChange(null) === false) return;
+    this.nameInput.value = '';
+    this.nameInput.setAttribute('aria-invalid', 'false');
+    this.nameStatus.textContent = 'Display name cleared. You will appear as your creature.';
+  };
 }

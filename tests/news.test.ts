@@ -147,7 +147,7 @@ describe('BrowserNewsFeed lifecycle', () => {
     feed.dispose();
   });
 
-  it('emits one silent demo immediately, then one notifiable item every two minutes', async () => {
+  it('emits one silent demo immediately, then one notifiable item every five minutes', async () => {
     const updates: NewsFeedUpdate[] = [];
     const feed = new BrowserNewsFeed({ forceSimulation: true });
     feed.subscribe((update) => updates.push(update));
@@ -156,17 +156,17 @@ describe('BrowserNewsFeed lifecycle', () => {
     expect(updates.at(-1)).toMatchObject({ mode: 'simulated', added: [] });
     expect(updates.at(-1)?.items).toHaveLength(1);
 
-    await vi.advanceTimersByTimeAsync(120_000);
+    await vi.advanceTimersByTimeAsync(300_000);
     expect(updates.at(-1)?.items).toHaveLength(2);
     expect(updates.at(-1)?.added).toHaveLength(1);
 
     feed.pause();
     const pausedCount = updates.length;
-    await vi.advanceTimersByTimeAsync(240_000);
+    await vi.advanceTimersByTimeAsync(600_000);
     expect(updates).toHaveLength(pausedCount);
 
     feed.resume();
-    await vi.advanceTimersByTimeAsync(120_000);
+    await vi.advanceTimersByTimeAsync(300_000);
     expect(updates.at(-1)?.added).toHaveLength(1);
     feed.dispose();
     expect(vi.getTimerCount()).toBe(0);
@@ -197,7 +197,7 @@ describe('BrowserNewsFeed lifecycle', () => {
     feed.dispose();
   });
 
-  it('never invents news for an unconfigured endpoint and silently adopts live backfill later', async () => {
+  it('shows clearly labelled demo news while unconfigured and silently adopts live backfill later', async () => {
     const replies = [
       response('unconfigured', []),
       response('live', [item('live-1', NOW + 1_000)], NOW + 1_000),
@@ -208,11 +208,38 @@ describe('BrowserNewsFeed lifecycle', () => {
     feed.subscribe((update) => updates.push(update));
 
     await feed.start();
-    expect(updates.at(-1)).toMatchObject({ mode: 'unconfigured', items: [], added: [] });
+    expect(updates.at(-1)).toMatchObject({
+      mode: 'simulated',
+      added: [],
+      items: [expect.objectContaining({ demo: true, source: 'simulation' })],
+    });
 
     await vi.advanceTimersByTimeAsync(1_000);
     expect(updates.at(-1)).toMatchObject({ mode: 'live', added: [] });
     expect(updates.at(-1)?.items.map((value) => value.id)).toEqual(['live-1']);
+    feed.dispose();
+  });
+
+  it('keeps a labelled demo visible when the player changes markets while X is unconfigured', async () => {
+    const fetcher = vi.fn(async () => response('unconfigured', []));
+    const feed = new BrowserNewsFeed({ fetcher, activeMarket: 'BTC' });
+
+    await feed.start();
+    expect(feed.getSnapshot()).toMatchObject({
+      mode: 'simulated',
+      items: [expect.objectContaining({ source: 'simulation', demo: true })],
+    });
+
+    feed.setActiveMarket('ETH');
+    for (let index = 0; index < 5; index += 1) await Promise.resolve();
+    expect(feed.getSnapshot()).toMatchObject({
+      mode: 'simulated',
+      items: [expect.objectContaining({ source: 'simulation', demo: true })],
+    });
+    expect(fetcher).toHaveBeenLastCalledWith(
+      '/api/news?scope=ETH',
+      expect.objectContaining({ method: 'GET' }),
+    );
     feed.dispose();
   });
 

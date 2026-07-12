@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three';
-import { WorldSystem } from '../src/world';
+import { stormWindowForCycle, WorldSystem } from '../src/world';
 
 describe('WorldSystem lamp ambience', () => {
-  it('adds only bounded nearby night auras and motes while retaining four real lights', () => {
+  it('uses only bounded real lights and motes without additive ground planes', () => {
     const scene = new THREE.Scene();
     const world = new WorldSystem(scene, {
       seed: 'lamp-ambience-test',
@@ -11,26 +11,21 @@ describe('WorldSystem lamp ambience', () => {
       loadBudgetPerUpdate: 25,
       unloadBudgetPerUpdate: 25,
     });
-    const aura = world.root.getObjectByName('LampGroundAuras') as THREE.InstancedMesh;
     const motes = world.root.getObjectByName('LampFireflyMotes') as THREE.Points;
-    expect(aura).toBeDefined();
+    expect(world.root.getObjectByName('LampGroundAuras')).toBeUndefined();
     expect(motes).toBeDefined();
 
     world.update({ x: 0, z: 0 }, 0);
-    expect(aura.count).toBe(0);
     expect(motes.geometry.drawRange.count).toBe(0);
-    expect(aura.visible).toBe(false);
     expect(motes.visible).toBe(false);
 
     world.update({ x: 0, z: 0 }, 300);
     const stats = world.getDebugStats();
-    expect(stats.activeLampAuras).toBeGreaterThan(0);
-    expect(stats.activeLampAuras).toBeLessThanOrEqual(4);
-    expect(stats.activeLampMotes).toBe(stats.activeLampAuras * 6);
+    expect(stats.activeLampLights).toBeGreaterThan(0);
+    expect(stats.activeLampLights).toBeLessThanOrEqual(4);
+    expect(stats.activeLampMotes).toBe(stats.activeLampLights * 6);
     expect(stats.activeLampMotes).toBeLessThanOrEqual(24);
-    expect(aura.visible).toBe(true);
     expect(motes.visible).toBe(true);
-    expect((aura.material as THREE.MeshBasicMaterial).opacity).toBeGreaterThan(0);
     expect((motes.material as THREE.PointsMaterial).opacity).toBeGreaterThan(0);
     const motePositions = motes.geometry.getAttribute('position').array as Float32Array;
     expect(Array.from(motePositions.slice(0, stats.activeLampMotes * 3)).every(Number.isFinite)).toBe(true);
@@ -42,12 +37,13 @@ describe('WorldSystem lamp ambience', () => {
       }
     });
     expect(pooledLights).toHaveLength(4);
-    expect(pooledLights.filter((light) => light.visible)).toHaveLength(stats.activeLampAuras);
+    expect(pooledLights.filter((light) => light.visible)).toHaveLength(stats.activeLampLights);
+    expect(pooledLights.filter((light) => light.visible).every((light) => (
+      light.intensity > 20 && light.distance === 18 && light.decay === 2
+    ))).toBe(true);
 
-    const auraGeometryDispose = vi.spyOn(aura.geometry, 'dispose');
     const moteGeometryDispose = vi.spyOn(motes.geometry, 'dispose');
     world.dispose();
-    expect(auraGeometryDispose).toHaveBeenCalledOnce();
     expect(moteGeometryDispose).toHaveBeenCalledOnce();
     expect(scene.children).not.toContain(world.root);
   });
@@ -55,6 +51,7 @@ describe('WorldSystem lamp ambience', () => {
   it('composes a bounded drop flash after day/night and returns to the identical baseline', () => {
     const baselineScene = new THREE.Scene();
     const flashedScene = new THREE.Scene();
+    const risenScene = new THREE.Scene();
     const options = {
       seed: 'drop-flash-test',
       dayDurationSeconds: 600,
@@ -63,22 +60,37 @@ describe('WorldSystem lamp ambience', () => {
     } as const;
     const baseline = new WorldSystem(baselineScene, options);
     const flashed = new WorldSystem(flashedScene, options);
+    const risen = new WorldSystem(risenScene, options);
     const player = { x: 0, z: 0 };
 
     baseline.update(player, 120);
     flashed.update(player, 120);
+    risen.update(player, 120);
     flashed.triggerDropFlash('large');
+    risen.triggerRiseFlash('large');
     baseline.update(player, 120.055);
     flashed.update(player, 120.055);
+    risen.update(player, 120.055);
 
     expect(flashed.getDebugStats().dropFlashIntensity).toBeCloseTo(0.45, 2);
     expect(flashed.nightFactor).toBeCloseTo(baseline.nightFactor, 10);
+    expect(risen.getDebugStats().riseFlashIntensity).toBeCloseTo(0.45, 2);
+    expect(risen.getDebugStats().dropFlashIntensity).toBe(0);
+    expect(risen.nightFactor).toBeCloseTo(baseline.nightFactor, 10);
     expect((flashedScene.background as THREE.Color).equals(
       baselineScene.background as THREE.Color,
     )).toBe(false);
+    expect((risenScene.background as THREE.Color).equals(
+      baselineScene.background as THREE.Color,
+    )).toBe(false);
+    expect((risenScene.background as THREE.Color).equals(
+      flashedScene.background as THREE.Color,
+    )).toBe(false);
     const baselineSun = baseline.root.getObjectByName('WorldSun') as THREE.DirectionalLight;
     const flashedSun = flashed.root.getObjectByName('WorldSun') as THREE.DirectionalLight;
+    const risenSun = risen.root.getObjectByName('WorldSun') as THREE.DirectionalLight;
     expect(flashedSun.color.equals(baselineSun.color)).toBe(false);
+    expect(risenSun.color.equals(baselineSun.color)).toBe(false);
 
     const beforeUpgrade = flashed.getDebugStats().dropFlashIntensity;
     flashed.triggerDropFlash('exceptional');
@@ -87,6 +99,7 @@ describe('WorldSystem lamp ambience', () => {
 
     baseline.update(player, 121.3);
     flashed.update(player, 121.3);
+    risen.update(player, 121.3);
     expect(flashed.getDebugStats().dropFlashIntensity).toBe(0);
     expect((flashedScene.background as THREE.Color).equals(
       baselineScene.background as THREE.Color,
@@ -95,6 +108,8 @@ describe('WorldSystem lamp ambience', () => {
       (baselineScene.fog as THREE.Fog).color,
     )).toBe(true);
     expect(flashedSun.color.equals(baselineSun.color)).toBe(true);
+    expect(risenSun.color.equals(baselineSun.color)).toBe(true);
+    expect(risen.getDebugStats().riseFlashIntensity).toBe(0);
     expect(flashed.nightFactor).toBeCloseTo(baseline.nightFactor, 10);
 
     flashed.setReducedMotion(true);
@@ -109,5 +124,45 @@ describe('WorldSystem lamp ambience', () => {
 
     baseline.dispose();
     flashed.dispose();
+    risen.dispose();
+  });
+
+  it('renders deterministic, infrequent rain only at night and emits bounded thunder cues', () => {
+    const scene = new THREE.Scene();
+    const onThunder = vi.fn();
+    const world = new WorldSystem(scene, {
+      seed: 'tickerworld-v1',
+      dayDurationSeconds: 600,
+      loadBudgetPerUpdate: 25,
+      unloadBudgetPerUpdate: 25,
+      onThunder,
+    });
+    const storm = stormWindowForCycle('tickerworld-v1', 0, 600);
+    expect(storm).not.toBeNull();
+    expect(stormWindowForCycle('tickerworld-v1', 1, 600)).toBeNull();
+    expect(stormWindowForCycle('tickerworld-v1', 2, 600)).toBeNull();
+    const rain = world.root.getObjectByName('NightRain') as THREE.LineSegments;
+    expect(rain).toBeDefined();
+
+    world.update({ x: 0, z: 0 }, storm!.start - 0.1);
+    world.update({ x: 0, z: 0 }, storm!.start + 1);
+    expect(world.nightFactor).toBeGreaterThan(0.72);
+    expect(world.raining).toBe(true);
+    expect(world.getDebugStats().activeRainDrops).toBeGreaterThan(0);
+    expect(world.getDebugStats().activeRainDrops).toBeLessThanOrEqual(144);
+    expect(rain.visible).toBe(true);
+
+    const thunder = storm!.thunder[0]!;
+    world.update({ x: 0, z: 0 }, thunder.at - 0.01);
+    world.update({ x: 0, z: 0 }, thunder.at + 0.01);
+    expect(onThunder).toHaveBeenCalledTimes(1);
+    expect(onThunder.mock.calls[0]?.[0]).toBeGreaterThan(0.4);
+
+    world.update({ x: 0, z: 0 }, 600);
+    expect(world.nightFactor).toBe(0);
+    expect(world.raining).toBe(false);
+    expect(world.getDebugStats().activeRainDrops).toBe(0);
+    expect(rain.visible).toBe(false);
+    world.dispose();
   });
 });

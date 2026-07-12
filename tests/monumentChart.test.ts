@@ -1,9 +1,8 @@
 import {
-  CircleGeometry,
   Group,
   Mesh,
-  MeshBasicMaterial,
   PerspectiveCamera,
+  PointLight,
   Points,
   Vector3,
 } from 'three';
@@ -325,19 +324,19 @@ describe('monument chart math', () => {
       'btc-medallion-plinth',
       'BTC-bench-left',
       'BTC-lamp-pole-1',
-      'BTC-lamp-aura-1',
+      'BTC-lamp-light-1',
       'BTC-planter-1',
     ]) {
       expect(monument.root.getObjectByName(fixedName)?.parent).toBe(monument.root);
     }
-    const lampAura = monument.root.getObjectByName('BTC-lamp-aura-1') as Mesh<
-      CircleGeometry,
-      MeshBasicMaterial
-    >;
-    expect(lampAura.visible).toBe(false);
+    expect(monument.root.getObjectByName('BTC-lamp-aura-1')).toBeUndefined();
+    const lampLight = monument.root.getObjectByName('BTC-lamp-light-1') as PointLight;
+    expect(lampLight.visible).toBe(false);
     monument.setNightFactor(1);
-    expect(lampAura.visible).toBe(true);
-    expect(lampAura.material.opacity).toBeCloseTo(0.34, 5);
+    expect(lampLight.visible).toBe(true);
+    expect(lampLight.intensity).toBeCloseTo(32, 5);
+    expect(lampLight.distance).toBe(13);
+    expect(lampLight.decay).toBe(2);
 
     const camera = new PerspectiveCamera();
     const pivot = presentation.getWorldPosition(new Vector3());

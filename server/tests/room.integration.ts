@@ -169,6 +169,39 @@ describe.sequential('Colyseus market rooms', () => {
     );
     expect(remote).toMatchObject({ x: move.x, z: move.z, gait: 'walk' });
 
+    first.send(CLIENT_MESSAGES.appearance, {
+      protocolVersion: PROTOCOL_VERSION,
+      animal: 'fox',
+      skin: 'sunrise-fox',
+      username: 'MoonFox',
+    });
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect([...(second.state as any).players.values()].find(
+      (player: any) => player.actorId === firstIdentity.actorId,
+    )).toMatchObject({ animal: 'fox', skin: 'sunrise-fox', username: 'MoonFox' });
+
+    second.send(CLIENT_MESSAGES.appearance, {
+      protocolVersion: PROTOCOL_VERSION,
+      animal: 'rabbit',
+      skin: 'amethyst-rabbit',
+      username: 'moonfox',
+    });
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect([...(first.state as any).players.values()].find(
+      (player: any) => player.actorId === secondIdentity.actorId,
+    )).toMatchObject({ animal: 'rabbit', skin: 'amethyst-rabbit', username: '' });
+
+    first.send(CLIENT_MESSAGES.appearance, {
+      protocolVersion: PROTOCOL_VERSION,
+      animal: 'cat',
+      skin: 'tide-cat',
+      username: 'ab',
+    });
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect([...(second.state as any).players.values()].find(
+      (player: any) => player.actorId === firstIdentity.actorId,
+    )).toMatchObject({ animal: 'cat', skin: 'tide-cat', username: 'MoonFox' });
+
     const waitingForReportRejection = first.waitForMessage(SERVER_MESSAGES.reportRejected);
     first.send(CLIENT_MESSAGES.report, {
       protocolVersion: PROTOCOL_VERSION,

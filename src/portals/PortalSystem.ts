@@ -28,7 +28,7 @@ import { PortalOverlayView } from './PortalOverlayView';
 const RING_RADIUS = 2.05;
 const RING_TUBE = 0.18;
 const PORTAL_CENTER_Y = 2.22;
-const LABEL_Y = 4.72;
+const LABEL_Y = 5.05;
 
 const DESTINATION_COLORS: Readonly<Record<AssetSymbol, number>> = {
   BTC: 0xe7a869,
@@ -266,13 +266,13 @@ export class PortalSystem implements GameSystem {
   private createLabel(route: PortalRoute, side: 'front' | 'back'): Text {
     const label = new Text();
     label.name = `${route.id}-${side}-label`;
-    label.fontSize = 0.46;
+    label.fontSize = 0.5;
     label.color = PALETTE.cream;
     label.anchorX = 'center';
     label.anchorY = 'middle';
     label.textAlign = 'center';
-    label.maxWidth = 5.3;
-    label.lineHeight = 1.16;
+    label.maxWidth = 4.2;
+    label.lineHeight = 1.08;
     label.outlineWidth = '3%';
     label.outlineColor = PALETTE.ink;
     label.outlineOpacity = 0.62;

@@ -165,19 +165,16 @@ export class BrowserNewsFeed implements NewsFeed {
       if (this.paused || this.disposed || controller.signal.aborted) return;
 
       if (parsed.mode === 'unconfigured') {
-        this.leaveDemo();
-        this.publish('unconfigured', this.xItems(), [], parsed.checkedAt);
+        this.enterDemo();
       } else if (parsed.mode === 'unavailable') {
-        this.leaveDemo();
-        this.publish('unavailable', this.xItems(), [], parsed.checkedAt);
+        this.enterDemo();
       } else {
         this.leaveDemo();
         this.acceptLiveItems(parsed.items, parsed.checkedAt);
       }
     } catch (error) {
       if (this.paused || this.disposed || controller.signal.aborted || isAbortError(error)) return;
-      this.leaveDemo();
-      this.publish('unavailable', this.xItems(), [], this.now());
+      this.enterDemo();
     } finally {
       if (this.requestController === controller) this.requestController = undefined;
     }
@@ -211,7 +208,15 @@ export class BrowserNewsFeed implements NewsFeed {
   }
 
   private enterDemo(): void {
-    if (this.demoActive || this.paused || this.disposed) return;
+    if (this.paused || this.disposed) return;
+    if (this.demoActive) {
+      const retained = this.snapshot.items.filter((item) => item.source === 'simulation');
+      const items = retained.length > 0
+        ? retained
+        : [createDemoNewsItem(this.demoSequence++, this.now())];
+      if (this.snapshot.mode !== 'simulated') this.publish('simulated', items, [], this.now());
+      return;
+    }
     this.demoActive = true;
     const item = createDemoNewsItem(this.demoSequence, this.now());
     this.demoSequence += 1;

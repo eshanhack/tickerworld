@@ -1,4 +1,4 @@
-import { Group, InstancedMesh, MeshStandardMaterial, PerspectiveCamera, Vector3 } from 'three';
+import { Group, InstancedMesh, Matrix4, MeshStandardMaterial, PerspectiveCamera, Vector3 } from 'three';
 import { describe, expect, it } from 'vitest';
 import type { NetPlayerState } from '../shared/src/index.js';
 import {
@@ -9,7 +9,12 @@ import {
   socialLabelOpacity,
 } from '../src/social';
 
-function remote(actorId: string, x: number, updatedAt = 1): NetPlayerState {
+function remote(
+  actorId: string,
+  x: number,
+  updatedAt = 1,
+  skin: NetPlayerState['skin'] = 'base',
+): NetPlayerState {
   return {
     actorId,
     x,
@@ -21,7 +26,7 @@ function remote(actorId: string, x: number, updatedAt = 1): NetPlayerState {
     grounded: true,
     gait: 'walk',
     animal: 'fox',
-    skin: 'base',
+    skin,
     username: null,
     updatedAt,
   };
@@ -74,7 +79,7 @@ describe('pooled remote avatar renderer', () => {
     });
 
     const pools = system.root.children.filter((child): child is InstancedMesh => child instanceof InstancedMesh);
-    expect(pools).toHaveLength(9);
+    expect(pools).toHaveLength(10);
     expect(pools.every((pool) => pool.instanceColor !== null)).toBe(true);
     expect(pools.every((pool) => pool.material instanceof MeshStandardMaterial
       && pool.material.vertexColors === false)).toBe(true);
@@ -86,11 +91,23 @@ describe('pooled remote avatar renderer', () => {
       active: 2,
       rendered: 2,
       capacity: 2,
-      drawCalls: 9,
+      drawCalls: 10,
       geometries: 4,
       materials: 1,
       labels: 4,
     });
+
+    system.setPlayers([
+      remote('near', 2, 2, 'sunrise-fox'),
+      remote('middle', 12, 2),
+    ], now);
+    now += 200;
+    system.update(1 / 60);
+    const crest = pools.find((pool) => pool.name === 'remote-crest-pool');
+    const crestMatrix = new Matrix4();
+    crest?.getMatrixAt(0, crestMatrix);
+    expect(crest).toBeDefined();
+    expect(Math.abs(crestMatrix.determinant())).toBeGreaterThan(0.0001);
 
     system.setBlockedActors(new Set(['near']));
     expect(system.getDebugStats().active).toBe(1);

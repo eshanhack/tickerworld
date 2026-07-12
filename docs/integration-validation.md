@@ -59,5 +59,5 @@ stable HMAC secrets, Solana mainnet RPC/genesis, treasury, SOL/USD authority,
 admin wallets, and moderation ownership have all passed `/readyz` and the
 server-first smoke sequence.
 
-Live X news separately requires `X_BEARER_TOKEN`; without it, the browser now
-shows no fictional replacement. Explicit simulation remains QA-only.
+Live X news separately requires `X_BEARER_TOKEN`; without it, the browser shows
+the clearly marked five-minute fictional news demo. Price and player simulation remain QA-only.

@@ -206,6 +206,8 @@ export interface AppearanceMessage {
   protocolVersion: number;
   animal: AnimalKind;
   skin: SkinId;
+  /** Free launch identity; servers still normalize, reserve, and de-duplicate it. */
+  username?: string | null;
 }
 
 export interface ChatSendMessage {

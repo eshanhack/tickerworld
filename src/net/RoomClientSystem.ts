@@ -466,9 +466,14 @@ export class RoomClientSystem implements GameSystem {
     return true;
   }
 
-  setAppearance(animal: AnimalKind, skin: SkinId = 'base'): boolean {
+  setAppearance(animal: AnimalKind, skin: SkinId = 'base', username?: string | null): boolean {
     if (!this.room || this.connection !== 'online') return false;
-    const message: AppearanceMessage = { protocolVersion: PROTOCOL_VERSION, animal, skin };
+    const message: AppearanceMessage = {
+      protocolVersion: PROTOCOL_VERSION,
+      animal,
+      skin,
+      ...(username !== undefined ? { username } : {}),
+    };
     this.room.send(CLIENT_MESSAGES.appearance, message);
     return true;
   }
@@ -627,6 +632,8 @@ export class RoomClientSystem implements GameSystem {
         this.commitAccountSession(acceptedSession, {
           actorId: identity.actorId,
           animal: identity.animal,
+          skin: identity.skin,
+          username: identity.username,
         });
       });
       room.onMessage<IdentityRejection>(SERVER_MESSAGES.identityRejected, (rejection) => {
@@ -660,8 +667,14 @@ export class RoomClientSystem implements GameSystem {
       });
       room.onReconnect(() => {
         if (!isCurrentRoom()) return;
+        // WebSocket messages are ordered. Restore the credential-owned baseline
+        // before publishing `online`, so Game's saved anonymous appearance is
+        // sent afterwards and remains the final room presentation.
+        this.sendIdentityRefresh(
+          this.pendingIdentityRefresh?.session ?? this.accountSession,
+          true,
+        );
         this.setConnection('online', null);
-        this.sendIdentityRefresh(this.pendingIdentityRefresh?.session ?? this.accountSession);
       });
       room.onError((_code, message) => {
         if (isCurrentRoom() && message) this.lastError = message;
@@ -729,9 +742,13 @@ export class RoomClientSystem implements GameSystem {
     this.emit();
   }
 
-  private sendIdentityRefresh(session: AccountRoomSession | null): boolean {
+  private sendIdentityRefresh(
+    session: AccountRoomSession | null,
+    allowReconnecting = false,
+  ): boolean {
     const room = this.room;
-    if (!room || this.connection !== 'online') return false;
+    if (!room || (this.connection !== 'online'
+      && !(allowReconnecting && this.connection === 'reconnecting'))) return false;
     const message = createIdentityRefreshMessage(session, this.anonymousIdentity);
     if (!message) return false;
     room.send(CLIENT_MESSAGES.identityRefresh, message);
@@ -821,6 +838,8 @@ export class RoomClientSystem implements GameSystem {
       return {
         actorId: session.profile.actorId,
         animal: session.profile.selectedAnimal,
+        skin: session.profile.selectedSkin,
+        username: session.profile.username,
       };
     }
     return this.anonymousIdentity ?? this.fallbackIdentity;

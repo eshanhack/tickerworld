@@ -34,6 +34,8 @@ class FakeRoom {
   readonly sent: Array<{ type: string; payload: unknown }> = [];
   readonly leave = vi.fn(async () => undefined);
   private readonly messages = new Map<string, (payload: any) => void>();
+  private dropListener: (() => void) | null = null;
+  private reconnectListener: (() => void) | null = null;
   readonly removeAllListeners = vi.fn(() => this.messages.clear());
 
   constructor(actorId: string, animal: 'fox' | 'rabbit' = 'fox') {
@@ -45,12 +47,20 @@ class FakeRoom {
     this.messages.set(type, listener);
     return () => undefined;
   }
-  onDrop(_listener: () => void): () => void { return () => undefined; }
-  onReconnect(_listener: () => void): () => void { return () => undefined; }
+  onDrop(listener: () => void): () => void {
+    this.dropListener = listener;
+    return () => { this.dropListener = null; };
+  }
+  onReconnect(listener: () => void): () => void {
+    this.reconnectListener = listener;
+    return () => { this.reconnectListener = null; };
+  }
   onError(_listener: () => void): () => void { return () => undefined; }
   onLeave(_listener: () => void): () => void { return () => undefined; }
   send(type: string, payload: unknown): void { this.sent.push({ type, payload }); }
   emit(type: string, payload: unknown): void { this.messages.get(type)?.(payload); }
+  drop(): void { this.dropListener?.(); }
+  reconnect(): void { this.reconnectListener?.(); }
 }
 
 const anonymous = {
@@ -107,6 +117,61 @@ async function flushMicrotasks(): Promise<void> {
 describe('RoomClientSystem identity transitions', () => {
   afterEach(() => vi.useRealTimers());
 
+  it('sends the complete free appearance and explicit display-name clearing', async () => {
+    const room = new FakeRoom('anon-a');
+    const { system } = createSystem([room]);
+    expect(system.setAppearance('cat', 'tide-cat', 'Magic_Cat')).toBe(false);
+    await expect(system.connect('btc')).resolves.toBe(true);
+    expect(system.setAppearance('cat', 'tide-cat', 'Magic_Cat')).toBe(true);
+    expect(system.setAppearance('fox', 'sunrise-fox', null)).toBe(true);
+    expect(room.sent.slice(-2)).toEqual([
+      {
+        type: CLIENT_MESSAGES.appearance,
+        payload: {
+          protocolVersion: 2,
+          animal: 'cat',
+          skin: 'tide-cat',
+          username: 'Magic_Cat',
+        },
+      },
+      {
+        type: CLIENT_MESSAGES.appearance,
+        payload: {
+          protocolVersion: 2,
+          animal: 'fox',
+          skin: 'sunrise-fox',
+          username: null,
+        },
+      },
+    ]);
+    system.dispose();
+  });
+
+  it('restores anonymous credentials before reapplying the saved look after reconnect', async () => {
+    const room = new FakeRoom('anon-a');
+    const { system } = createSystem([room]);
+    await system.connect('btc');
+    let restoreAppearance = false;
+    system.subscribe((snapshot) => {
+      if (restoreAppearance && snapshot.connection === 'online') {
+        system.setAppearance('cat', 'tide-cat', 'Magic_Cat');
+      }
+    });
+
+    restoreAppearance = true;
+    room.drop();
+    room.reconnect();
+
+    expect(room.sent.slice(-2).map(({ type }) => type)).toEqual([
+      CLIENT_MESSAGES.identityRefresh,
+      CLIENT_MESSAGES.appearance,
+    ]);
+    expect(room.sent.at(-1)?.payload).toMatchObject({
+      animal: 'cat', skin: 'tide-cat', username: 'Magic_Cat',
+    });
+    system.dispose();
+  });
+
   it('awaits a same-actor refresh without leaving or teleporting', async () => {
     const room = new FakeRoom('anon-a');
     const { system, joinOrCreate, onIdentityChanged } = createSystem([room]);
@@ -129,6 +194,9 @@ describe('RoomClientSystem identity transitions', () => {
     await expect(transition).resolves.toBe(true);
     expect(system.identity).toMatchObject({ actorId: 'anon-a', animal: 'rabbit' });
     expect(onIdentityChanged).toHaveBeenCalledTimes(2);
+    expect(onIdentityChanged.mock.calls.at(-1)?.[0]).toMatchObject({
+      actorId: 'anon-a', animal: 'rabbit', skin: 'base', username: null,
+    });
 
     const refreshedProfile = { ...accountProfile('anon-a'), username: 'SameSeat' };
     const profileRefresh = system.setAccountSession('paid-session', refreshedProfile);
@@ -139,6 +207,9 @@ describe('RoomClientSystem identity transitions', () => {
       actorId: 'anon-a', username: 'SameSeat', animal: 'rabbit', skin: 'base', walletConnected: true,
     });
     await expect(profileRefresh).resolves.toBe(true);
+    expect(onIdentityChanged.mock.calls.at(-1)?.[0]).toMatchObject({
+      actorId: 'anon-a', animal: 'rabbit', skin: 'base', username: 'SameSeat',
+    });
 
     const logout = system.setAccountSession(null, null);
     await flushMicrotasks();

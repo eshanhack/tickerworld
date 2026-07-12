@@ -14,6 +14,7 @@ import {
   isMarketSlug,
   isModerationReason,
   isSkinId,
+  normalizeUsername,
   normalizeYaw,
   isProtocolVersionAccepted,
   EMOTE_KINDS,
@@ -83,7 +84,19 @@ const appearanceSchema = z.object({
   protocolVersion: z.number().int(),
   animal: z.string(),
   skin: z.string(),
+  username: z.string().max(32).nullable().optional(),
 });
+
+const FREE_SKIN_ANIMAL: Readonly<Record<string, string>> = {
+  'sunrise-fox': 'fox',
+  'amethyst-rabbit': 'rabbit',
+  'aurora-axolotl': 'axolotl',
+  'tide-cat': 'cat',
+  'golden-duck': 'duck',
+  'honey-bear': 'bear',
+  'bluebell-penguin': 'penguin',
+  'alpine-frog': 'frog',
+};
 
 const reportSchema = z.object({
   protocolVersion: z.number().int(),
@@ -417,17 +430,38 @@ export class MarketRoom extends Room<{ state: MarketRoomState; client: MarketCli
 
   private handleAppearance(
     client: MarketClient,
-    payload: { protocolVersion: number; animal: string; skin: string },
+    payload: { protocolVersion: number; animal: string; skin: string; username?: string | null },
   ): void {
     if (payload.protocolVersion !== PROTOCOL_VERSION
       || !isAnimalKind(payload.animal)
       || !isSkinId(payload.skin)) return;
-    // Every base animal is free at launch. Premium skins remain entitlement-only.
+    if (payload.skin !== 'base' && FREE_SKIN_ANIMAL[payload.skin] !== payload.animal) return;
     const data = this.clientData(client);
-    if (!data.accountId && payload.skin !== 'base') return;
-    if (payload.skin !== 'base' && !data.entitlements.has(payload.skin)) return;
     const player = this.state.players.get(client.sessionId);
     if (!player) return;
+
+    if (payload.username !== undefined) {
+      const username = payload.username === null ? null : normalizeUsername(payload.username);
+      if (payload.username === null || username !== null) {
+        const canonical = username?.toLocaleLowerCase('en-US') ?? null;
+        const reserved = canonical
+          ? getRoomServices().chatSafety.isReservedUsername(canonical)
+          : false;
+        let taken = false;
+        if (!reserved) {
+          this.state.players.forEach((candidate, sessionId) => {
+            if (sessionId === client.sessionId || !canonical) return;
+            if (candidate.username.toLocaleLowerCase('en-US') === canonical) taken = true;
+          });
+        }
+        // Name rejection is field-local: it never discards the independently
+        // valid creature/skin selection carried by the same message.
+        if (!reserved && !taken) {
+          player.username = username ?? '';
+          data.username = username;
+        }
+      }
+    }
     player.animal = payload.animal;
     player.skin = payload.skin;
     data.animal = payload.animal;

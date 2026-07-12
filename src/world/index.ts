@@ -17,10 +17,18 @@ export type {
   PropPlacement,
 } from './layout';
 export { createRandom, fbm2D, hashCoordinates, hashSeed, mix32, valueNoise2D } from './random';
+export { rainStateAt, stormWindowForCycle } from './weather';
+export type { RainState, StormWindow, ThunderMoment } from './weather';
 export { TerrainSampler } from './terrain';
 export type { MonumentCoordinate, PondDescriptor, TerrainSamplerOptions } from './terrain';
 export { WorldSystem } from './WorldSystem';
-export type { DropFlashTier, WorldDebugStats, WorldPosition, WorldSystemOptions } from './WorldSystem';
+export type {
+  DropFlashTier,
+  RiseFlashTier,
+  WorldDebugStats,
+  WorldPosition,
+  WorldSystemOptions,
+} from './WorldSystem';
 export { WayfindingSystem } from './WayfindingSystem';
 export type { WayfindingSystemOptions } from './WayfindingSystem';
 export {

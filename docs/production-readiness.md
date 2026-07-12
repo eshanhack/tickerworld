@@ -99,13 +99,13 @@ read-only and must pass before a public announcement.
 
 ### X news
 
-- Production without a paid bearer token must show no fictional item. Explicit
-  `?news=sim` remains QA-only.
+- Production without a live shared X cache may show the five-minute demo cadence only when every
+  item is visibly marked `FICTIONAL DEMO`; simulated prices and players remain QA-only.
 - Do not enable the token until ingestion uses a shared cache/stream rather than
   charging one upstream request path per browser/region. Configure X budget
   alerts, reset-header handling, backoff, and a remote `newsIngest` kill switch.
-- Smoke tests must prove `/api/news` never exposes `demo: true` or
-  `source: "simulation"` in production.
+- Smoke tests must prove `/api/news` itself never fabricates provider content; the client-only demo
+  remains labelled and cannot be confused with X attribution.
 
 ## Release sequence
 

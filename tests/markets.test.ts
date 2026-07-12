@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { AssetState, Candle } from '../src/types';
 import {
   HEARTBEAT_INTERVAL_MS,
@@ -185,6 +185,26 @@ describe('market candle helpers', () => {
     expect(computeReconnectDelay(0, () => 0)).toBe(1_000);
     expect(computeReconnectDelay(1, () => 0.5)).toBe(2_000);
     expect(computeReconnectDelay(20, () => 1)).toBe(30_000);
+  });
+
+  it('does not restart the direct fallback while its live snapshot is still connecting', () => {
+    const feed = new HyperliquidMarketFeed();
+    const reconnect = vi.fn();
+    const internals = feed as unknown as {
+      started: boolean;
+      connectPending: boolean;
+      resyncAndConnect(initial: boolean): Promise<void>;
+    };
+    internals.started = true;
+    internals.connectPending = true;
+    internals.resyncAndConnect = reconnect;
+    feed.setRelayAvailable(false, true);
+    expect(reconnect).not.toHaveBeenCalled();
+
+    internals.connectPending = false;
+    feed.setRelayAvailable(false, true);
+    expect(reconnect).toHaveBeenCalledWith(false);
+    feed.dispose();
   });
 
   it('starts live-mode assets empty and explicitly connecting', () => {

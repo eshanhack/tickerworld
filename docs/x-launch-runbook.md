@@ -58,7 +58,8 @@ Redis Presence/Driver and distributed safety/admission state are implemented.
   and portal without the veil dropping early.
 - At capacity or on a blackholed room service, a visitor reaches truthful solo mode within three
   seconds.
-- No normal production URL or query displays simulated prices, posts, or players.
+- No normal production URL or query displays simulated prices or players, and demo news is always
+  visibly marked `FICTIONAL DEMO` rather than presented as live reporting.
 - Anonymous network traces contain no Solana/wallet chunk.
 - `privacy@tickerworld.io` accepts and delivers a private test message before the policy is publicised.
 

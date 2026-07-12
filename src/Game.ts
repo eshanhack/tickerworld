@@ -18,7 +18,11 @@ import { FireworkPool, Monument, MonumentSystem } from './monuments';
 import {
   fetchRuntimeCapabilities,
   OFFLINE_RUNTIME_CAPABILITIES,
+  readGuestAppearance,
+  readGuestIdentity,
   RoomClientSystem,
+  writeGuestAppearance,
+  type GuestAppearance,
   type GuestIdentity,
   type RoomClientSnapshot,
 } from './net';
@@ -50,7 +54,7 @@ import { CanvasInteractionCoordinator } from './social/CanvasInteractionCoordina
 import { EmoteVisualSystem } from './social/EmoteVisualSystem';
 import { createEmoteNonce } from './social/emotes';
 import { RemoteAvatarSystem } from './social/RemoteAvatarSystem';
-import { SocialSystem } from './social/SocialSystem';
+import { SocialSystem, socialInteractionLocksMovement } from './social/SocialSystem';
 import {
   chooseQualityTier,
   Hud,
@@ -60,7 +64,7 @@ import {
   type QualityTier,
   type UiInteractionOwner,
 } from './ui';
-import { WayfindingSystem, WorldGuard, WorldSystem } from './world';
+import { WorldGuard, WorldSystem } from './world';
 
 const COMPASS_KEY = 'tickerworld:v1:compass';
 const QUALITY_KEY = 'tickerworld:v1:quality';
@@ -121,7 +125,6 @@ export class Game {
   private readonly audio = new AudioEngine();
   private readonly fireworks: FireworkPool;
   private readonly celebrationGate = new MarketCelebrationGate();
-  private readonly wayfinding: WayfindingSystem;
   private readonly worldGuard = new WorldGuard();
   private readonly uiInteractionLock = new UiInteractionLock();
   private readonly portalSystem: PortalSystem;
@@ -149,6 +152,7 @@ export class Game {
   private frameHandle = 0;
   private marketSwitchGeneration = 0;
   private elapsed = 0;
+  private worldElapsed = 0;
   private fps = 60;
   private fpsAccumulator = 0;
   private fpsFrames = 0;
@@ -161,7 +165,7 @@ export class Game {
   private activeNewsCount = 0;
   private newsSoundCreatedAtCutoff = Number.NEGATIVE_INFINITY;
   private contextLost = false;
-  private appearanceChosen = false;
+  private guestAppearance: GuestAppearance;
   private appearanceSyncKey: string | null = null;
   private runtimeCapabilities: RuntimeCapabilities = OFFLINE_RUNTIME_CAPABILITIES;
   private latestRelayMids: readonly CompactMarketMid[] = [];
@@ -170,6 +174,7 @@ export class Game {
   constructor(container: HTMLElement, options: GameOptions = {}) {
     this.container = container;
     this.container.innerHTML = '';
+    this.guestAppearance = readGuestAppearance();
     this.activeMarket = options.activeMarket ?? 'BTC';
     this.routeHistory = options.routeHistory;
     document.title = `${this.activeMarket} World · Tickerworld`;
@@ -236,12 +241,7 @@ export class Game {
       chunkSegments: launchQuality.chunkSegments,
       loadBudgetPerUpdate: this.qualityTier === 'low' ? 1 : 3,
       unloadBudgetPerUpdate: this.qualityTier === 'low' ? 2 : 4,
-    });
-    this.wayfinding = new WayfindingSystem({
-      parent: this.scene,
-      fontUrl: nunitoFontUrl,
-      heightAt: (x, z) => this.world.heightAt(x, z),
-      activeMarket: this.activeMarket,
+      onThunder: (intensity) => this.audio.playThunder(intensity),
     });
     this.fireworks = new FireworkPool({
       capacity: launchQuality.fireworkCapacity,
@@ -256,10 +256,12 @@ export class Game {
     });
     this.player.input.setEnabled(false);
     this.scene.add(this.player.group);
+    const guestIdentity = readGuestIdentity();
     this.roomClient = new RoomClientSystem({
       // QA seeds intentionally alter terrain. Keep them local so authoritative
       // movement validation never compares the player with tickerworld-v1.
       endpoint: MULTIPLAYER_ALLOWED ? undefined : '',
+      identity: guestIdentity,
       snapshot: () => {
         const playerState = this.player.snapshot;
         const locomotion = this.player.getMotionDebugSnapshot().locomotionState;
@@ -319,7 +321,7 @@ export class Game {
       const marketUi = this.activeMonument.root.getObjectByName(`${this.activeMarket}-market-ui`);
       if (marketUi) marketUi.visible = false;
     }
-    this.player.setAnimal(this.roomClient.identity.animal, 'base');
+    this.player.setAnimal(this.guestAppearance.animal, this.guestAppearance.skin);
 
     this.hud = new Hud(this.container, {
       onEnter: () => this.enter(),
@@ -331,14 +333,15 @@ export class Game {
       onSfxVolumeChange: (value) => this.audio.setSfxVolume(value),
       onNewsDismiss: (itemId) => this.monuments.dismissNewsOverlay(itemId),
       onNewsInteractionChange: (active) => this.setUiInteraction('news', active),
-      onAnimalSelect: (animal) => {
-        this.appearanceChosen = true;
-        this.player.setAnimal(animal, 'base');
-        if (this.roomClient.setAppearance(animal, 'base')) {
-          this.appearanceSyncKey = `${this.roomClient.state.market}:${this.roomClient.identity.actorId}:${animal}`;
-        }
-        return true;
-      },
+      onAppearanceSelect: (animal, skin) => this.updateGuestAppearance({
+        ...this.guestAppearance,
+        animal,
+        skin,
+      }),
+      onDisplayUsernameChange: (username) => this.updateGuestAppearance({
+        ...this.guestAppearance,
+        username,
+      }),
       onEmoteRequest: (kind) => {
         const networkNonce = this.roomClient.sendEmote(kind);
         const nonce = networkNonce ?? createEmoteNonce();
@@ -374,7 +377,9 @@ export class Game {
       onGlideChange: (held) => this.player.setGlideHeld(held),
     }, {
       activeMarket: this.activeMarket,
-      initialAnimal: this.roomClient.identity.animal,
+      initialAnimal: this.guestAppearance.animal,
+      initialSkin: this.guestAppearance.skin,
+      initialUsername: this.guestAppearance.username,
     });
 
     try {
@@ -400,7 +405,6 @@ export class Game {
     // Keep the entry camera focused on the active monument and character. The
     // travel ring arrives only after the player deliberately enters.
     this.portalSystem.setVisible(false);
-    if (LAUNCH_CAPTURE_MODE) this.wayfinding.setVisible(false);
 
     this.remoteAvatars = new RemoteAvatarSystem({
       parent: this.scene,
@@ -443,7 +447,10 @@ export class Game {
       onInputFocusChange: (focused) => {
         if (focused) this.player.input.clear();
       },
-      onInteractionChange: (owner, active) => this.setUiInteraction(owner, active),
+      onInteractionChange: (owner, active) => {
+        if (socialInteractionLocksMovement(owner)) return this.setUiInteraction(owner, active);
+        return !active || (!this.uiInteractionLock.has('context') && !this.uiInteractionLock.has('portal'));
+      },
       onSpeech: (message) => this.remoteAvatars?.showSpeech(message),
       onBlocksChanged: (blocked) => {
         this.remoteAvatars?.setBlockedActors(blocked);
@@ -571,7 +578,6 @@ export class Game {
           audio: this.audio,
           roomClient: this.roomClient,
           fireworks: this.fireworks,
-          wayfinding: this.wayfinding,
           triggerLargeUp: () => this.triggerDebugMarketEvent('up', 'large'),
           triggerExceptionalUp: () => this.triggerDebugMarketEvent('up', 'exceptional'),
           triggerLargeDown: () => this.triggerDebugMarketEvent('down', 'large'),
@@ -692,7 +698,6 @@ export class Game {
             : 'offline',
       );
       this.portalSystem.setActiveMarket(destination);
-      this.wayfinding.setActiveMarket(destination);
 
       this.placeAtSpawn(destination, previousMarket);
       this.refreshAudioSources();
@@ -797,14 +802,47 @@ export class Game {
     this.player.position.z = THREE.MathUtils.lerp(this.player.position.z, correction.z, 0.2);
   }
 
+  private updateGuestAppearance(appearance: GuestAppearance): true {
+    this.guestAppearance = writeGuestAppearance(appearance);
+    this.player.setAnimal(this.guestAppearance.animal, this.guestAppearance.skin);
+    this.hud?.setSelectedAppearance(this.guestAppearance.animal, this.guestAppearance.skin);
+    this.hud?.setDisplayUsername(this.guestAppearance.username);
+    const appearanceKey = this.guestAppearanceSyncKey(this.roomClient.state.market);
+    if (this.roomClient.setAppearance(
+      this.guestAppearance.animal,
+      this.guestAppearance.skin,
+      this.guestAppearance.username,
+    )) {
+      this.appearanceSyncKey = appearanceKey;
+    } else {
+      this.appearanceSyncKey = null;
+    }
+    return true;
+  }
+
+  private guestAppearanceSyncKey(market: MarketSlug): string {
+    return [
+      market,
+      this.roomClient.identity.actorId,
+      this.guestAppearance.animal,
+      this.guestAppearance.skin,
+      this.guestAppearance.username ?? '',
+    ].join(':');
+  }
+
   private onRoomIdentityChanged(identity: GuestIdentity): void {
     this.social?.setLocalActorId(identity.actorId);
     this.appearanceSyncKey = null;
-    if (!this.roomClient.sessionToken && !this.appearanceChosen) {
-      this.player.setAnimal(identity.animal, 'base');
-      this.hud?.setSelectedAnimal(identity.animal);
+    if (this.roomClient.sessionToken) {
+      const skin = identity.skin ?? 'base';
+      this.player.setAnimal(identity.animal, skin);
+      this.hud?.setSelectedAppearance(identity.animal, skin);
+      this.hud?.setDisplayUsername(identity.username ?? null);
     } else {
-      this.hud?.setSelectedAnimal(this.player.animal);
+      this.guestAppearance = readGuestAppearance();
+      this.player.setAnimal(this.guestAppearance.animal, this.guestAppearance.skin);
+      this.hud?.setSelectedAppearance(this.guestAppearance.animal, this.guestAppearance.skin);
+      this.hud?.setDisplayUsername(this.guestAppearance.username);
     }
     if (!this.entered) this.placeAtSpawn(this.activeMarket);
   }
@@ -848,12 +886,20 @@ export class Game {
     if (state.connection !== 'online') {
       this.appearanceSyncKey = null;
       this.latestRelayMids = [];
-    } else {
-      const appearanceKey = `${state.market}:${this.roomClient.identity.actorId}:${this.player.animal}`;
+    } else if (!this.roomClient.sessionToken) {
+      const appearanceKey = this.guestAppearanceSyncKey(state.market);
       if (appearanceKey !== this.appearanceSyncKey
-        && this.roomClient.setAppearance(this.player.animal, 'base')) {
+        && this.roomClient.setAppearance(
+          this.guestAppearance.animal,
+          this.guestAppearance.skin,
+          this.guestAppearance.username,
+        )) {
         this.appearanceSyncKey = appearanceKey;
       }
+    } else {
+      // Account identity refresh remains authoritative if that dormant flow is
+      // re-enabled; anonymous browser preferences must not overwrite it.
+      this.appearanceSyncKey = `account:${state.market}:${this.roomClient.identity.actorId}`;
     }
     this.remoteAvatars?.setPlayers(state.remotes);
     this.emotes?.setActors(state.remotes.map((player) => player.actorId));
@@ -898,6 +944,7 @@ export class Game {
     if (!this.visible || this.disposed || this.contextLost) return;
     const delta = Math.min(this.clock.getDelta(), 0.05);
     this.elapsed += delta;
+    if (this.entered) this.worldElapsed += delta;
 
     this.player.update(
       delta,
@@ -914,7 +961,7 @@ export class Game {
     }
     if (this.entered && this.player.isGliding) this.hud.recordOnboardingAction('glide');
     this.roomClient.update(delta);
-    this.world.update(this.player.position, this.elapsed);
+    this.world.update(this.player.position, this.worldElapsed);
     this.portalSystem.setPlayerProbe({
       x: this.player.position.x,
       z: this.player.position.z,
@@ -994,8 +1041,6 @@ export class Game {
             : 'offline',
       );
     }
-    this.onRoomClientState(this.roomClient.state);
-
     const previousOpen = previous?.candles.at(-1)?.openTime;
     const currentOpen = state.candles.at(-1)?.openTime;
     const isTradePresentation = state.updateKind === 'trade' || state.updateKind === 'simulation';
@@ -1051,6 +1096,7 @@ export class Game {
     });
     if (event.direction === 'up') {
       this.fireworks.launch(monument.getFireworkOrigin(this.tempPosition), 'up', event.tier);
+      this.world.triggerRiseFlash(event.tier);
       return;
     }
     this.world.triggerDropFlash(event.tier);
@@ -1107,6 +1153,11 @@ export class Game {
   }
 
   private updateHud(): void {
+    this.hud.setWorldTime(
+      this.world.minutesSinceMidnight,
+      this.world.nightFactor,
+      this.world.raining,
+    );
     const nearest = this.monuments.nearestTo(this.player.position, 78);
     if (nearest) {
       const state = this.market.getState(nearest.monument.symbol);
@@ -1213,7 +1264,7 @@ export class Game {
         `draws ${this.renderer.info.render.calls} · tris ${this.estimateTriangles()}`,
         `chunks ${world.loadedChunks}/${world.desiredChunks} · queued ${world.queuedLoads}`,
         `props ${world.propInstances} · portals ${this.portalSystem.getDebugStats().portals}`,
-        `market ${this.activeMarket} ${activeMarketState.mode} · tick ${activeMarketState.presentationTick} · candles ${activeMarketState.candles.length}`,
+        `market ${this.activeMarket} ${activeMarketState.mode} · tick ${activeMarketState.presentationTick} · candles ${activeMarketState.candles.length} · ${this.market.getDebugStatus()}`,
         `room ${this.roomClient.state.connection} · remotes ${this.roomClient.state.remotes.length}${this.roomClient.state.lastError ? ` · ${this.roomClient.state.lastError.slice(0, 72)}` : ''}`,
         `news ${this.newsMode} · posts ${this.activeNewsCount} · fireworks ${this.fireworks.getDebugStats().activeParticles}`,
         `audio ${audioState.status} · music ${Math.round(audioState.musicVolume * 100)}${audioState.musicMuted ? 'x' : ''} · fx ${Math.round(audioState.sfxVolume * 100)}${audioState.sfxMuted ? 'x' : ''}`,
@@ -1329,7 +1380,6 @@ export class Game {
     this.fireworks.points.removeFromParent();
     this.fireworks.dispose();
     this.portalSystem.dispose();
-    this.wayfinding.dispose();
     this.player.dispose();
     this.cameraRig.dispose();
     this.world.dispose();

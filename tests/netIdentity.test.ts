@@ -1,11 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import type { AccountProfile } from '../shared/src/index.js';
 import {
+  DEFAULT_GUEST_APPEARANCE,
+  DEFAULT_ANONYMOUS_ANIMAL,
   clearSignedGuestIdentity,
   classifyIdentityTransition,
   createIdentityRefreshMessage,
   createRoomJoinOptions,
+  readGuestAppearance,
   readSignedGuestIdentity,
+  readGuestIdentity,
+  writeGuestAppearance,
   writeSignedGuestIdentity,
 } from '../src/net';
 
@@ -30,6 +35,42 @@ const profile: AccountProfile = {
 };
 
 describe('signed room identity', () => {
+  it('starts as fox and preserves a complete browser appearance independently from room credentials', () => {
+    const session = new MemoryStorage();
+    const browser = new MemoryStorage();
+    expect(readGuestAppearance(browser)).toEqual(DEFAULT_GUEST_APPEARANCE);
+    expect(readGuestIdentity(session, browser).animal).toBe(DEFAULT_ANONYMOUS_ANIMAL);
+    expect(writeGuestAppearance({
+      animal: 'cat',
+      skin: 'tide-cat',
+      username: 'Magic_Cat',
+    }, browser)).toEqual({ animal: 'cat', skin: 'tide-cat', username: 'Magic_Cat' });
+    expect(readGuestAppearance(browser)).toEqual({
+      animal: 'cat', skin: 'tide-cat', username: 'Magic_Cat',
+    });
+    expect(readGuestIdentity(session, browser).animal).toBe('cat');
+
+    writeSignedGuestIdentity({
+      actorId: 'anon_12345678901234567890123456789012',
+      animal: 'frog',
+      token: 'signed-token-with-enough-entropy',
+      expiresAt: 50_000,
+    }, session);
+    expect(readGuestAppearance(browser)).toEqual({
+      animal: 'cat', skin: 'tide-cat', username: 'Magic_Cat',
+    });
+  });
+
+  it('safely degrades corrupt, cross-species, and invalid-name appearance data', () => {
+    const browser = new MemoryStorage();
+    browser.setItem('tickerworld:v2:guest-appearance', JSON.stringify({
+      animal: 'fox', skin: 'tide-cat', username: 'not valid',
+    }));
+    expect(readGuestAppearance(browser)).toEqual({ animal: 'fox', skin: 'base', username: null });
+    browser.setItem('tickerworld:v2:guest-appearance', '{broken');
+    expect(readGuestAppearance(browser)).toEqual(DEFAULT_GUEST_APPEARANCE);
+  });
+
   it('persists a signed anonymous token only for its live browser session', () => {
     const storage = new MemoryStorage();
     const identity = {

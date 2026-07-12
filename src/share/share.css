@@ -1,7 +1,7 @@
 .tickerworld-share { position: fixed; inset: 0; z-index: 64; pointer-events: none; font-family: Nunito, system-ui, sans-serif; color: #31373d; }
-.share-toggle { position: absolute; top: max(1rem, env(safe-area-inset-top)); right: max(1rem, env(safe-area-inset-right)); pointer-events: auto; display: flex; align-items: center; gap: .45rem; border: 1px solid rgba(255,241,207,.68); border-radius: 999px; padding: .58rem .82rem; color: #31373d; background: rgba(255,241,207,.88); box-shadow: 0 .45rem 1.4rem rgba(46,58,58,.14); backdrop-filter: blur(14px); cursor: pointer; }
+.share-toggle { position: absolute; top: calc(max(1rem, env(safe-area-inset-top)) + 3.7rem); right: max(1rem, env(safe-area-inset-right)); pointer-events: auto; display: flex; align-items: center; gap: .45rem; border: 1px solid rgba(255,241,207,.68); border-radius: 999px; padding: .58rem .82rem; color: #31373d; background: rgba(255,241,207,.88); box-shadow: 0 .45rem 1.4rem rgba(46,58,58,.14); backdrop-filter: blur(14px); cursor: pointer; }
 .share-toggle span { color: #5f9b91; font-size: 1.05rem; }
-.share-panel { position: absolute; top: max(4.4rem, calc(env(safe-area-inset-top) + 4rem)); right: max(1rem, env(safe-area-inset-right)); width: min(22rem, calc(100vw - 2rem)); pointer-events: auto; display: grid; gap: .55rem; padding: .85rem; border: 1px solid rgba(255,241,207,.72); border-radius: 1.35rem; background: rgba(255,245,221,.94); box-shadow: 0 1.1rem 3rem rgba(42,54,57,.24); backdrop-filter: blur(20px); }
+.share-panel { position: absolute; top: max(8rem, calc(env(safe-area-inset-top) + 7.7rem)); right: max(1rem, env(safe-area-inset-right)); width: min(22rem, calc(100vw - 2rem)); pointer-events: auto; display: grid; gap: .55rem; padding: .85rem; border: 1px solid rgba(255,241,207,.72); border-radius: 1.35rem; background: rgba(255,245,221,.94); box-shadow: 0 1.1rem 3rem rgba(42,54,57,.24); backdrop-filter: blur(20px); }
 .share-panel.is-hidden { display: none; }
 .share-panel header { display: flex; align-items: center; justify-content: space-between; padding: .15rem .15rem .45rem .35rem; }
 .share-panel header div { display: grid; gap: .05rem; }
@@ -15,5 +15,5 @@
 .share-panel > button div { display: grid; gap: .08rem; }
 .share-panel > button small { color: rgba(49,55,61,.7); font-size: .72rem; }
 .share-panel > p { min-height: 1.2rem; margin: .25rem .3rem .1rem; color: rgba(49,55,61,.72); font-size: .72rem; }
-@media (max-width: 720px) { .share-toggle { top: max(.75rem, env(safe-area-inset-top)); right: max(.75rem, env(safe-area-inset-right)); } .share-panel { top: auto; right: max(.75rem, env(safe-area-inset-right)); bottom: max(8.8rem, calc(env(safe-area-inset-bottom) + 8.2rem)); width: min(22rem, calc(100vw - 1.5rem)); } }
+@media (max-width: 720px) { .share-toggle { top: calc(max(.75rem, env(safe-area-inset-top)) + 3.55rem); right: max(.75rem, env(safe-area-inset-right)); } .share-panel { top: auto; right: max(.75rem, env(safe-area-inset-right)); bottom: max(8.8rem, calc(env(safe-area-inset-bottom) + 8.2rem)); width: min(22rem, calc(100vw - 1.5rem)); } }
 @media (prefers-reduced-motion: reduce) { .share-panel > button { transition: none; } }

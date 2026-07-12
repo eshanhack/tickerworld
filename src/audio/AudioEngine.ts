@@ -223,6 +223,7 @@ export class AudioEngine {
   private sfxVolumeValue: number;
   private sfxMutedValue: boolean;
   private lastNewsAlertAt = Number.NEGATIVE_INFINITY;
+  private lastThunderAt = Number.NEGATIVE_INFINITY;
   private statusValue: AudioEngineState['status'];
   private reasonValue: string | undefined;
   private cachedListenerPose: AudioListenerPose = {
@@ -630,6 +631,20 @@ export class AudioEngine {
     this.playGentleNote(this.sfxBus, now, 440, 0.42, peak * 0.74, -1.5);
     this.playGentleNote(this.sfxBus, now + 0.105, 587.33, 0.54, peak, 1);
     this.playGentleNote(this.sfxBus, now + 0.245, 739.99, 0.7, peak * 0.82, -0.5);
+  }
+
+  /** A rare, rounded night-storm rumble routed through the visible FX mix. */
+  public playThunder(intensity = 0.6): void {
+    if (!this.canPlaySfx() || !this.context || !this.sfxBus) return;
+    if (this.scheduledSources.size > MAX_SCHEDULED_SOURCES - MARKET_ALERT_RESERVED_VOICES - 3) return;
+    const now = this.context.currentTime;
+    if (now - this.lastThunderAt < 3) return;
+    this.lastThunderAt = now;
+    const amount = clampUnit(intensity);
+    const peak = 0.02 + amount * 0.026;
+    this.playNoiseBurst(this.sfxBus, now, 1.08, 'lowpass', 190, peak * 0.72);
+    this.playDampedResonator(this.sfxBus, now + 0.025, 54, 1.02, peak);
+    this.playNoiseBurst(this.sfxBus, now + 0.19, 0.72, 'lowpass', 360, peak * 0.38);
   }
 
   /** A separate soft cue for portal channel start, cancellation, and arrival. */

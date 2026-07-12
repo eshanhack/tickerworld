@@ -1,5 +1,5 @@
 import { ANIMAL_KINDS, type AnimalKind } from '@tickerworld/shared';
-import { randomInt, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { hmacSha256, safeEqual } from './crypto.js';
 
 export interface AnonymousIdentity {
@@ -25,7 +25,9 @@ export class AnonymousIdentityService {
     const payload: SignedPayload = {
       version: 1,
       actorId: `anon_${randomUUID().replaceAll('-', '')}`,
-      animal: ANIMAL_KINDS[randomInt(ANIMAL_KINDS.length)] ?? 'fox',
+      // The restored launch character is always the fox. Appearance remains
+      // freely changeable after join and is deliberately separate from auth.
+      animal: 'fox',
       expiresAt: now + this.lifetimeMs,
     };
     const encoded = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');

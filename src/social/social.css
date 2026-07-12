@@ -43,10 +43,10 @@
   overflow: hidden;
   border: 1px solid rgba(255, 241, 207, .65);
   border-radius: 22px;
-  background: rgba(46, 59, 61, .82);
-  box-shadow: 0 20px 55px rgba(31, 43, 48, .28);
+  background: rgba(46, 59, 61, .58);
+  box-shadow: 0 16px 44px rgba(31, 43, 48, .2);
   color: #fff1cf;
-  backdrop-filter: blur(18px) saturate(1.08);
+  backdrop-filter: blur(12px) saturate(1.04);
 }
 
 .social-chat-panel header {

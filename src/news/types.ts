@@ -4,7 +4,7 @@ export type NewsScope = SharedNewsScope;
 
 export const NEWS_ITEM_TTL_MS = 10 * 60_000;
 export const NEWS_POLL_INTERVAL_MS = 20_000;
-export const NEWS_DEMO_INTERVAL_MS = 2 * 60_000;
+export const NEWS_DEMO_INTERVAL_MS = 5 * 60_000;
 
 export type NewsSource = 'x' | 'simulation';
 export type NewsApiMode = 'live' | 'unconfigured' | 'unavailable';

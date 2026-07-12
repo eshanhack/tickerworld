@@ -19,8 +19,9 @@ import type {
   GrandMonumentCoordinate,
   PropPlacement,
 } from './layout';
-import { hashCoordinates } from './random';
+import { hashCoordinates, hashSeed } from './random';
 import { TerrainSampler } from './terrain';
+import { rainStateAt } from './weather';
 
 export interface WorldPosition {
   x: number;
@@ -38,6 +39,7 @@ export interface WorldSystemOptions {
   echoSuppressionRadius?: number;
   dayDurationSeconds?: number;
   reducedMotion?: boolean;
+  onThunder?: (intensity: number) => void;
   onEchoPlacementsChanged?: (placements: readonly EchoPlacementDescriptor[]) => void;
 }
 
@@ -50,12 +52,16 @@ export interface WorldDebugStats {
   activeEchoes: number;
   terrainDrawCalls: number;
   sharedPropDrawCalls: number;
-  activeLampAuras: number;
+  activeLampLights: number;
   activeLampMotes: number;
   dropFlashIntensity: number;
+  riseFlashIntensity: number;
+  rainIntensity: number;
+  activeRainDrops: number;
 }
 
 export type DropFlashTier = 'large' | 'exceptional';
+export type RiseFlashTier = DropFlashTier;
 
 interface QueuedChunk {
   x: number;
@@ -91,9 +97,16 @@ const LAMP_LIGHT_COUNT = 4;
 const LAMP_AMBIENCE_RADIUS = 34;
 const LAMP_MOTES_PER_LIGHT = 6;
 const LAMP_MOTE_CAPACITY = LAMP_LIGHT_COUNT * LAMP_MOTES_PER_LIGHT;
+const RAIN_DROP_CAPACITY = 144;
+const RAIN_RADIUS = 19;
+const RAIN_COLUMN_HEIGHT = 17;
 
 function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value));
+}
+
+function positiveModulo(value: number, divisor: number): number {
+  return ((value % divisor) + divisor) % divisor;
 }
 
 function smoothstep(edge0: number, edge1: number, value: number): number {
@@ -134,6 +147,7 @@ export class WorldSystem {
   private readonly onEchoPlacementsChanged?: (
     placements: readonly EchoPlacementDescriptor[],
   ) => void;
+  private readonly onThunder?: (intensity: number) => void;
   private readonly terrainRoot = new THREE.Group();
   private readonly propRoot = new THREE.Group();
   private readonly lightRoot = new THREE.Group();
@@ -152,11 +166,13 @@ export class WorldSystem {
   private readonly sunLight: THREE.DirectionalLight;
   private readonly lampLights: THREE.PointLight[] = [];
   private readonly lampPositions: THREE.Vector3[] = [];
-  private readonly lampAuraMesh: THREE.InstancedMesh<THREE.CircleGeometry, THREE.MeshBasicMaterial>;
-  private readonly lampAuraMaterial: THREE.MeshBasicMaterial;
   private readonly lampMotePoints: THREE.Points<THREE.BufferGeometry, THREE.PointsMaterial>;
   private readonly lampMoteMaterial: THREE.PointsMaterial;
   private readonly lampMotePositions: Float32Array;
+  private readonly rainLines: THREE.LineSegments<THREE.BufferGeometry, THREE.LineBasicMaterial>;
+  private readonly rainMaterial: THREE.LineBasicMaterial;
+  private readonly rainPositions: Float32Array;
+  private readonly weatherSeed: number;
   private readonly previousBackground: THREE.Scene['background'];
   private readonly previousFog: THREE.Scene['fog'];
   private readonly daySky = new THREE.Color(PALETTE.skyDay);
@@ -169,6 +185,11 @@ export class WorldSystem {
   private readonly dropHemisphere = new THREE.Color(0xe28688);
   private readonly dropGround = new THREE.Color(0x70464d);
   private readonly dropSun = new THREE.Color(0xff8e86);
+  private readonly riseSky = new THREE.Color(0x78b995);
+  private readonly riseFog = new THREE.Color(0x78aa8e);
+  private readonly riseHemisphere = new THREE.Color(0xa8dfb0);
+  private readonly riseGround = new THREE.Color(0x426451);
+  private readonly riseSun = new THREE.Color(0xcdf1b5);
   private readonly tempMatrix = new THREE.Matrix4();
   private readonly tempPosition = new THREE.Vector3();
   private readonly tempQuaternion = new THREE.Quaternion();
@@ -179,12 +200,18 @@ export class WorldSystem {
   private centerChunkZ = Number.NaN;
   private totalPropInstances = 0;
   private daylight = 1;
+  private minutesSinceMidnightValue = 12 * 60;
+  private rainingValue = false;
+  private rainIntensity = 0;
   private currentElapsedSeconds = 0;
-  private dropFlashStartedAt = Number.NEGATIVE_INFINITY;
-  private dropFlashDuration = 0;
-  private dropFlashPeak = 0;
-  private dropFlashStartIntensity = 0;
-  private dropFlashIntensity = 0;
+  private marketFlashDirection: 'up' | 'down' = 'down';
+  private marketFlashStartedAt = Number.NEGATIVE_INFINITY;
+  private marketFlashDuration = 0;
+  private marketFlashPeak = 0;
+  private marketFlashStartIntensity = 0;
+  private marketFlashIntensity = 0;
+  private previousWeatherElapsed: number | null = null;
+  private readonly firedThunder = new Set<string>();
   private reducedMotion: boolean;
   private disposed = false;
 
@@ -202,7 +229,9 @@ export class WorldSystem {
       ?? ECHO_GRAND_SUPPRESSION_RADIUS;
     this.dayDurationSeconds = Math.max(60, options.dayDurationSeconds ?? DAY_SECONDS);
     this.reducedMotion = options.reducedMotion ?? false;
+    this.onThunder = options.onThunder;
     this.onEchoPlacementsChanged = options.onEchoPlacementsChanged;
+    this.weatherSeed = hashSeed(this.seed);
     this.terrain = new TerrainSampler({
       seed: this.seed,
       chunkSize: this.chunkSize,
@@ -229,39 +258,6 @@ export class WorldSystem {
     }));
 
     this.pools = this.createPools();
-    const lampAuraGeometry = this.trackGeometry(new THREE.CircleGeometry(1, 24));
-    lampAuraGeometry.rotateX(-Math.PI * 0.5);
-    const auraColors = new Float32Array(lampAuraGeometry.getAttribute('position').count * 3);
-    const auraPosition = lampAuraGeometry.getAttribute('position');
-    for (let index = 0; index < auraPosition.count; index += 1) {
-      const radius = Math.hypot(auraPosition.getX(index), auraPosition.getZ(index));
-      const warmth = Math.max(0, 1 - radius);
-      const offset = index * 3;
-      auraColors[offset] = warmth;
-      auraColors[offset + 1] = warmth * 0.79;
-      auraColors[offset + 2] = warmth * 0.47;
-    }
-    lampAuraGeometry.setAttribute('color', new THREE.BufferAttribute(auraColors, 3));
-    this.lampAuraMaterial = this.trackMaterial(new THREE.MeshBasicMaterial({
-      color: 0xffffff,
-      vertexColors: true,
-      transparent: true,
-      opacity: 0,
-      depthWrite: false,
-      blending: THREE.AdditiveBlending,
-      toneMapped: false,
-    }));
-    this.lampAuraMesh = new THREE.InstancedMesh(
-      lampAuraGeometry,
-      this.lampAuraMaterial,
-      LAMP_LIGHT_COUNT,
-    );
-    this.lampAuraMesh.name = 'LampGroundAuras';
-    this.lampAuraMesh.count = 0;
-    this.lampAuraMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    this.lampAuraMesh.frustumCulled = false;
-    this.lampAuraMesh.renderOrder = 1;
-    this.propRoot.add(this.lampAuraMesh);
 
     const lampMoteGeometry = this.trackGeometry(new THREE.BufferGeometry());
     this.lampMotePositions = new Float32Array(LAMP_MOTE_CAPACITY * 3);
@@ -285,6 +281,26 @@ export class WorldSystem {
     this.lampMotePoints.visible = false;
     this.lampMotePoints.renderOrder = 2;
     this.propRoot.add(this.lampMotePoints);
+
+    const rainGeometry = this.trackGeometry(new THREE.BufferGeometry());
+    this.rainPositions = new Float32Array(RAIN_DROP_CAPACITY * 2 * 3);
+    const rainPositionAttribute = new THREE.BufferAttribute(this.rainPositions, 3);
+    rainPositionAttribute.setUsage(THREE.DynamicDrawUsage);
+    rainGeometry.setAttribute('position', rainPositionAttribute);
+    rainGeometry.setDrawRange(0, 0);
+    this.rainMaterial = this.trackMaterial(new THREE.LineBasicMaterial({
+      color: 0xb9d7dc,
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+      toneMapped: false,
+    }));
+    this.rainLines = new THREE.LineSegments(rainGeometry, this.rainMaterial);
+    this.rainLines.name = 'NightRain';
+    this.rainLines.frustumCulled = false;
+    this.rainLines.visible = false;
+    this.rainLines.renderOrder = 3;
+    this.propRoot.add(this.rainLines);
     this.previousBackground = scene.background;
     this.previousFog = scene.fog;
     this.skyColor.copy(this.daySky);
@@ -310,7 +326,7 @@ export class WorldSystem {
     this.lightRoot.add(this.hemisphereLight, this.sunLight, this.sunLight.target);
 
     for (let index = 0; index < LAMP_LIGHT_COUNT; index += 1) {
-      const light = new THREE.PointLight(PALETTE.cream, 0, 19, 2);
+      const light = new THREE.PointLight(0xffd487, 0, 18, 2);
       light.name = `PooledLampLight${index + 1}`;
       light.visible = false;
       this.lampLights.push(light);
@@ -336,6 +352,14 @@ export class WorldSystem {
     return 1 - this.daylight;
   }
 
+  get minutesSinceMidnight(): number {
+    return this.minutesSinceMidnightValue;
+  }
+
+  get raining(): boolean {
+    return this.rainingValue;
+  }
+
   getLoadedChunkDescriptors(): readonly ChunkDescriptor[] {
     return [...this.chunks.values()].map((record) => record.layout.descriptor);
   }
@@ -354,30 +378,43 @@ export class WorldSystem {
       activeEchoes: this.activeEchoes.length,
       terrainDrawCalls: this.chunks.size,
       sharedPropDrawCalls: propDrawCalls,
-      activeLampAuras: this.lampAuraMesh.count,
+      activeLampLights: this.lampLights.reduce((count, light) => count + Number(light.visible), 0),
       activeLampMotes: this.lampMotePoints.geometry.drawRange.count,
-      dropFlashIntensity: this.dropFlashIntensity,
+      dropFlashIntensity: this.marketFlashDirection === 'down' ? this.marketFlashIntensity : 0,
+      riseFlashIntensity: this.marketFlashDirection === 'up' ? this.marketFlashIntensity : 0,
+      rainIntensity: this.rainIntensity,
+      activeRainDrops: this.rainLines.geometry.drawRange.count / 2,
     };
   }
 
   /** Briefly composes a nearby major-drop warning over the current time of day. */
   triggerDropFlash(tier: DropFlashTier): void {
+    this.triggerMarketFlash('down', tier);
+  }
+
+  /** Briefly composes a nearby major-rise celebration over the current time of day. */
+  triggerRiseFlash(tier: RiseFlashTier): void {
+    this.triggerMarketFlash('up', tier);
+  }
+
+  private triggerMarketFlash(direction: 'up' | 'down', tier: DropFlashTier): void {
     if (this.disposed) return;
     const requestedPeak = tier === 'exceptional' ? 0.7 : 0.45;
     const requestedDuration = tier === 'exceptional' ? 1.2 : 0.9;
-    const active = this.currentElapsedSeconds - this.dropFlashStartedAt < this.dropFlashDuration;
+    const active = this.currentElapsedSeconds - this.marketFlashStartedAt < this.marketFlashDuration;
     if (active && this.reducedMotion) return;
-    const peak = active ? Math.max(this.dropFlashPeak, requestedPeak) : requestedPeak;
-    const duration = active ? Math.max(this.dropFlashDuration, requestedDuration) : requestedDuration;
-    this.dropFlashStartIntensity = active ? this.dropFlashIntensity : 0;
-    this.dropFlashPeak = this.reducedMotion ? Math.min(0.22, peak) : peak;
-    this.dropFlashDuration = duration;
-    this.dropFlashStartedAt = this.currentElapsedSeconds;
+    const peak = active ? Math.max(this.marketFlashPeak, requestedPeak) : requestedPeak;
+    const duration = active ? Math.max(this.marketFlashDuration, requestedDuration) : requestedDuration;
+    this.marketFlashDirection = direction;
+    this.marketFlashStartIntensity = active ? this.marketFlashIntensity : 0;
+    this.marketFlashPeak = this.reducedMotion ? Math.min(0.22, peak) : peak;
+    this.marketFlashDuration = duration;
+    this.marketFlashStartedAt = this.currentElapsedSeconds;
   }
 
   setReducedMotion(reducedMotion: boolean): void {
     this.reducedMotion = reducedMotion;
-    if (reducedMotion) this.dropFlashPeak = Math.min(this.dropFlashPeak, 0.22);
+    if (reducedMotion) this.marketFlashPeak = Math.min(this.marketFlashPeak, 0.22);
   }
 
   update(playerPosition: WorldPosition, elapsedSeconds: number): void {
@@ -400,6 +437,7 @@ export class WorldSystem {
     }
     this.updateDayNight(playerPosition, elapsedSeconds);
     this.updateLampLights(playerPosition, elapsedSeconds);
+    this.updateWeather(playerPosition, elapsedSeconds);
   }
 
   private createPools(): Record<PoolName, InstancePool> {
@@ -868,6 +906,7 @@ export class WorldSystem {
     const normalizedTime = (
       (elapsedSeconds % this.dayDurationSeconds) + this.dayDurationSeconds
     ) % this.dayDurationSeconds / this.dayDurationSeconds;
+    this.minutesSinceMidnightValue = (12 * 60 + normalizedTime * 24 * 60) % (24 * 60);
     const phase = normalizedTime * Math.PI * 2;
     const solarAltitude = Math.cos(phase);
     this.daylight = smoothstep(-0.24, 0.3, solarAltitude);
@@ -883,15 +922,22 @@ export class WorldSystem {
     this.sunLight.color.copy(this.duskSun).lerp(this.daySun, this.daylight);
     this.sunLight.intensity = 0.12 + this.daylight * 1.43;
 
-    const dropFlash = this.computeDropFlash(elapsedSeconds);
-    if (dropFlash > 0) {
-      this.skyColor.lerp(this.dropSky, dropFlash);
-      this.fog.color.copy(this.skyColor).lerp(this.dropFog, dropFlash * 0.64);
-      this.hemisphereLight.color.lerp(this.dropHemisphere, dropFlash * 0.8);
-      this.hemisphereLight.groundColor.lerp(this.dropGround, dropFlash * 0.48);
-      this.hemisphereLight.intensity += dropFlash * 0.12;
-      this.sunLight.color.lerp(this.dropSun, dropFlash * 0.78);
-      this.sunLight.intensity += dropFlash * 0.28;
+    const marketFlash = this.computeMarketFlash(elapsedSeconds);
+    if (marketFlash > 0) {
+      const rising = this.marketFlashDirection === 'up';
+      this.skyColor.lerp(rising ? this.riseSky : this.dropSky, marketFlash);
+      this.fog.color.copy(this.skyColor).lerp(rising ? this.riseFog : this.dropFog, marketFlash * 0.64);
+      this.hemisphereLight.color.lerp(
+        rising ? this.riseHemisphere : this.dropHemisphere,
+        marketFlash * 0.8,
+      );
+      this.hemisphereLight.groundColor.lerp(
+        rising ? this.riseGround : this.dropGround,
+        marketFlash * 0.48,
+      );
+      this.hemisphereLight.intensity += marketFlash * 0.12;
+      this.sunLight.color.lerp(rising ? this.riseSun : this.dropSun, marketFlash * 0.78);
+      this.sunLight.intensity += marketFlash * 0.28;
     }
 
     this.sunLight.position.set(
@@ -904,18 +950,18 @@ export class WorldSystem {
     this.lampGlobeMaterial.emissiveIntensity = 0.25 + (1 - this.daylight) * 2.15;
   }
 
-  private computeDropFlash(elapsedSeconds: number): number {
-    const age = elapsedSeconds - this.dropFlashStartedAt;
-    if (!Number.isFinite(age) || age < 0 || age >= this.dropFlashDuration) {
-      this.dropFlashIntensity = 0;
+  private computeMarketFlash(elapsedSeconds: number): number {
+    const age = elapsedSeconds - this.marketFlashStartedAt;
+    if (!Number.isFinite(age) || age < 0 || age >= this.marketFlashDuration) {
+      this.marketFlashIntensity = 0;
       return 0;
     }
     const attackSeconds = this.reducedMotion ? 0.12 : 0.055;
     const attack = smoothstep(0, attackSeconds, age);
-    this.dropFlashIntensity = age < attackSeconds
-      ? THREE.MathUtils.lerp(this.dropFlashStartIntensity, this.dropFlashPeak, attack)
-      : this.dropFlashPeak * (1 - smoothstep(attackSeconds, this.dropFlashDuration, age));
-    return this.dropFlashIntensity;
+    this.marketFlashIntensity = age < attackSeconds
+      ? THREE.MathUtils.lerp(this.marketFlashStartIntensity, this.marketFlashPeak, attack)
+      : this.marketFlashPeak * (1 - smoothstep(attackSeconds, this.marketFlashDuration, age));
+    return this.marketFlashIntensity;
   }
 
   private updateLampLights(player: WorldPosition, elapsedSeconds: number): void {
@@ -929,7 +975,6 @@ export class WorldSystem {
       .slice(0, this.lampLights.length);
     const nightStrength = 1 - this.daylight;
     const ambienceVisible = nightStrength >= 0.05;
-    let auraCount = 0;
     let moteCount = 0;
 
     for (let index = 0; index < this.lampLights.length; index += 1) {
@@ -946,19 +991,9 @@ export class WorldSystem {
       light.visible = true;
       light.position.copy(nearby.position);
       const shimmer = 1 + Math.sin(elapsedSeconds * 1.25 + index * 2.17) * 0.025;
-      light.intensity = nightStrength * 3.25 * shimmer;
-
-      this.tempPosition.set(
-        nearby.position.x,
-        this.heightAt(nearby.position.x, nearby.position.z) + 0.045,
-        nearby.position.z,
-      );
-      this.tempQuaternion.identity();
-      const auraScale = 4.6 + nightStrength * 0.85;
-      this.tempScale.set(auraScale, auraScale, auraScale);
-      this.tempMatrix.compose(this.tempPosition, this.tempQuaternion, this.tempScale);
-      this.lampAuraMesh.setMatrixAt(auraCount, this.tempMatrix);
-      auraCount += 1;
+      // These are real inverse-square lights. Terrain, benches, foliage, and
+      // characters receive the warmth instead of a flat additive ground disc.
+      light.intensity = nightStrength * 38 * shimmer;
 
       for (let moteIndex = 0; moteIndex < LAMP_MOTES_PER_LIGHT; moteIndex += 1) {
         const phase = elapsedSeconds * (0.32 + moteIndex * 0.027)
@@ -975,14 +1010,70 @@ export class WorldSystem {
       }
     }
 
-    this.lampAuraMesh.count = auraCount;
-    this.lampAuraMesh.instanceMatrix.needsUpdate = true;
-    this.lampAuraMesh.visible = auraCount > 0;
-    this.lampAuraMaterial.opacity = nightStrength * 0.2;
     this.lampMotePoints.geometry.setDrawRange(0, moteCount);
     this.lampMotePoints.geometry.getAttribute('position').needsUpdate = true;
     this.lampMotePoints.visible = moteCount > 0;
     this.lampMoteMaterial.opacity = nightStrength * 0.5;
+  }
+
+  private updateWeather(player: WorldPosition, elapsedSeconds: number): void {
+    const state = rainStateAt(this.seed, elapsedSeconds, this.dayDurationSeconds);
+    // Storm windows are entirely inside deep night, while this extra gate
+    // fails closed if the solar curve is retuned later.
+    this.rainIntensity = this.nightFactor >= 0.72 ? state.intensity : 0;
+    this.rainingValue = state.active && this.rainIntensity > 0.01;
+    const dropCapacity = this.reducedMotion ? 48 : RAIN_DROP_CAPACITY;
+    const dropCount = this.rainingValue
+      ? Math.max(12, Math.round(dropCapacity * this.rainIntensity))
+      : 0;
+    // The rain field follows the player and needs only one local ground plane.
+    // Sampling terrain for every streak at 60fps caused thousands of pond/LRU
+    // cache operations during storms without a visible improvement.
+    const rainGround = dropCount > 0 ? this.heightAt(player.x, player.z) + 0.18 : 0;
+
+    for (let index = 0; index < dropCount; index += 1) {
+      const angle = hashCoordinates(this.weatherSeed, index, 0, 13_337) * Math.PI * 2;
+      const radius = Math.sqrt(hashCoordinates(this.weatherSeed, index, 0, 14_351)) * RAIN_RADIUS;
+      const x = player.x + Math.cos(angle) * radius;
+      const z = player.z + Math.sin(angle) * radius;
+      const phase = hashCoordinates(this.weatherSeed, index, 0, 15_373) * RAIN_COLUMN_HEIGHT;
+      const fall = positiveModulo(phase - elapsedSeconds * (10.5 + this.rainIntensity * 3.5), RAIN_COLUMN_HEIGHT);
+      const ground = rainGround;
+      const y = ground + 0.8 + fall;
+      const streak = 0.62 + this.rainIntensity * 0.72;
+      const offset = index * 6;
+      this.rainPositions[offset] = x;
+      this.rainPositions[offset + 1] = y;
+      this.rainPositions[offset + 2] = z;
+      this.rainPositions[offset + 3] = x - 0.035;
+      this.rainPositions[offset + 4] = Math.max(ground, y - streak);
+      this.rainPositions[offset + 5] = z + 0.025;
+    }
+    this.rainLines.geometry.setDrawRange(0, dropCount * 2);
+    this.rainLines.geometry.getAttribute('position').needsUpdate = true;
+    this.rainLines.visible = dropCount > 0;
+    this.rainMaterial.opacity = Math.min(0.52, 0.16 + this.rainIntensity * 0.38);
+
+    const previous = this.previousWeatherElapsed;
+    if (previous !== null && elapsedSeconds >= previous && state.storm) {
+      for (let index = 0; index < state.storm.thunder.length; index += 1) {
+        const thunder = state.storm.thunder[index];
+        if (!thunder || thunder.at <= previous || thunder.at > elapsedSeconds) continue;
+        const key = `${state.storm.id}:${index}`;
+        if (this.firedThunder.has(key)) continue;
+        this.firedThunder.add(key);
+        this.onThunder?.(thunder.intensity);
+      }
+    }
+    this.previousWeatherElapsed = elapsedSeconds;
+    if (this.firedThunder.size > 12) {
+      if (!state.storm) {
+        this.firedThunder.clear();
+      } else {
+        const keepPrefix = `${state.storm.id}:`;
+        for (const key of this.firedThunder) if (!key.startsWith(keepPrefix)) this.firedThunder.delete(key);
+      }
+    }
   }
 
   dispose(): void {
@@ -1001,8 +1092,6 @@ export class WorldSystem {
     this.activeEchoes = [];
     this.onEchoPlacementsChanged?.([]);
     this.scene.remove(this.root);
-    this.lampAuraMesh.dispose();
-
     for (const geometry of this.sharedGeometries) {
       geometry.dispose();
     }
@@ -1011,6 +1100,7 @@ export class WorldSystem {
     }
     this.sharedGeometries.clear();
     this.sharedMaterials.clear();
+    this.firedThunder.clear();
     this.terrain.clearCache();
 
     if (this.scene.background === this.skyColor) {

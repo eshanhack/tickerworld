@@ -14,6 +14,7 @@ import {
   PortalSystem,
   createPortalLabelModel,
   createPortalRoutes,
+  formatPortalPopulation,
   portalArrivalSpawn,
 } from '../src/portals';
 
@@ -77,13 +78,19 @@ describe('fixed portal routes', () => {
       connectionMode: 'online',
     })).toMatchObject({
       priceText: '$1,234.5',
-      populationText: '1,204 ONLINE',
+      populationText: '1,204 PEOPLE',
+      text: `${route.destination}\n1,204 PEOPLE`,
     });
     expect(createPortalLabelModel(route, {
       price: null,
       population: null,
       connectionMode: 'offline',
     })).toMatchObject({ priceText: '$—', populationText: 'OFFLINE' });
+    expect(formatPortalPopulation(0, 'online')).toBe('0 PEOPLE');
+    expect(formatPortalPopulation(1, 'online')).toBe('1 PERSON');
+    expect(formatPortalPopulation(Number.NaN, 'online')).toBe('— PEOPLE');
+    expect(formatPortalPopulation(-4, 'online')).toBe('— PEOPLE');
+    expect(formatPortalPopulation(null, 'connecting')).toBe('CONNECTING');
   });
 });
 
@@ -136,7 +143,8 @@ describe('PortalSystem presentation', () => {
       if (object.name.endsWith('-ring') && object instanceof THREE.Mesh) ringGeometries.add(object.geometry);
     });
     expect(ringGeometries.size).toBe(1);
-    expect(texts.filter(({ text }) => text.includes('$42.25') && text.includes('18 ONLINE'))).toHaveLength(2);
+    expect(texts.filter(({ text }) => text === `${route.destination}\n18 PEOPLE`)).toHaveLength(2);
+    expect(texts.every(({ text }) => !text.includes('$42.25'))).toBe(true);
 
     system.setPlayerProbe({ x: route.x, z: route.z, grounded: true });
     for (let frame = 0; frame < 31; frame += 1) system.update(0.1, frame * 0.1);

@@ -62,6 +62,8 @@ only the ten-minute cache. Put the paid `X_BEARER_TOKEN` on that process with
 Vercel receives only `NEWS_CACHE_ORIGIN=https://multiplayer.tickerworld.io`; its `/api/news`
 function reads the shared cache and never contacts X or holds an X credential.
 
-Production hides news or reports it unavailable when the cache is not genuinely live. It never
-substitutes fictional headlines. `?news=sim`, `?data=sim`, and `?debug=1` work only in local or an
-explicitly opted-in preview build (`VITE_ENABLE_QA_MODE=1`), never in the default production build.
+When the live X cache is unavailable, the client shows an unmistakably labelled fictional demo
+headline and adds another every five minutes so the candle-pin experience remains visible. It never
+presents demo copy as live reporting. `?news=sim`, `?data=sim`, and `?debug=1` remain local or
+explicit-preview controls (`VITE_ENABLE_QA_MODE=1`); the production fallback does not simulate
+prices, players, attribution, or causality.

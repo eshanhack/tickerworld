@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { BlockStore, ChatRateGate, validateChatDraft } from '../src/social';
+import {
+  BlockStore,
+  ChatRateGate,
+  socialInteractionLocksMovement,
+  validateChatDraft,
+} from '../src/social';
 
 class MemoryStorage implements Storage {
   private readonly values = new Map<string, string>();
@@ -12,6 +17,11 @@ class MemoryStorage implements Storage {
 }
 
 describe('social policy', () => {
+  it('keeps ambient chat non-modal while player actions still lock movement', () => {
+    expect(socialInteractionLocksMovement('chat')).toBe(false);
+    expect(socialInteractionLocksMovement('player')).toBe(true);
+  });
+
   it('allows a three-message burst and refills one token every two seconds', () => {
     const gate = new ChatRateGate(3, 2_000, 0);
     expect([gate.tryTake(0), gate.tryTake(0), gate.tryTake(0), gate.tryTake(0)]).toEqual([true, true, true, false]);

@@ -46,18 +46,7 @@ interface FireworkParticle {
   maxLife: number;
 }
 
-interface PendingBurst {
-  active: boolean;
-  delay: number;
-  x: number;
-  y: number;
-  z: number;
-  direction: FireworkDirection;
-  strength: number;
-}
-
 const DEFAULT_CAPACITY = 160;
-const MAX_PENDING_BURSTS = 8;
 const UP_COLORS = [
   [0.28, 0.94, 0.47],
   [1, 0.58, 0.16],
@@ -78,8 +67,8 @@ function finitePosition(position: FireworkPosition): boolean {
 /**
  * One allocation-bounded particle pool for every chart firework. Launch
  * positions use the coordinate space of whichever object owns `points`.
- * Large moves emit one pastel bloom; exceptional moves queue two more staggered
- * blooms without allocating more geometry, materials, or WebGL draw calls.
+ * Every qualifying move emits exactly one pastel bloom. Exceptional moves use
+ * a slightly fuller single bloom without turning the sky into repeated noise.
  */
 export class FireworkPool {
   readonly points: Points<BufferGeometry, PointsMaterial>;
@@ -87,7 +76,6 @@ export class FireworkPool {
 
   private readonly random: () => number;
   private readonly particles: FireworkParticle[];
-  private readonly pendingBursts: PendingBurst[];
   private readonly positions: Float32Array;
   private readonly colors: Float32Array;
   private cursor = 0;
@@ -141,15 +129,6 @@ export class FireworkPool {
       life: 0,
       maxLife: 0,
     }));
-    this.pendingBursts = Array.from({ length: MAX_PENDING_BURSTS }, () => ({
-      active: false,
-      delay: 0,
-      x: 0,
-      y: 0,
-      z: 0,
-      direction: 'up' as const,
-      strength: 1,
-    }));
   }
 
   /** Launches a firework above a chart in the `points` parent coordinate space. */
@@ -161,39 +140,18 @@ export class FireworkPool {
     if (this.disposed || !finitePosition(position)) return false;
 
     const reduced = this.reducedMotion;
-    this.emitBurst(position.x, position.y, position.z, direction, reduced ? 0.48 : 1);
-    if (tier === 'exceptional' && !reduced) {
-      this.queueBurst(position, direction, 0.2, -1.45, 0.7, 0.92);
-      this.queueBurst(position, direction, 0.42, 1.5, 1.15, 1.08);
-    }
+    const strength = reduced ? 0.48 : tier === 'exceptional' ? 1.12 : 1;
+    this.emitBurst(position.x, position.y, position.z, direction, strength);
     return true;
   }
 
   setReducedMotion(reduced: boolean): void {
     this.reducedMotion = reduced;
-    if (reduced) {
-      for (const pending of this.pendingBursts) pending.active = false;
-    }
   }
 
   update(deltaSeconds: number): void {
     if (this.disposed) return;
     const delta = Math.min(0.1, Math.max(0, Number.isFinite(deltaSeconds) ? deltaSeconds : 0));
-
-    for (const pending of this.pendingBursts) {
-      if (!pending.active) continue;
-      pending.delay -= delta;
-      if (pending.delay <= 0) {
-        this.emitBurst(
-          pending.x,
-          pending.y,
-          pending.z,
-          pending.direction,
-          pending.strength,
-        );
-        pending.active = false;
-      }
-    }
 
     const drag = Math.exp(-0.7 * delta);
     let activeCount = 0;
@@ -235,7 +193,7 @@ export class FireworkPool {
     return {
       capacity: this.capacity,
       activeParticles: this.particles.reduce((count, particle) => count + Number(particle.active), 0),
-      pendingBursts: this.pendingBursts.reduce((count, burst) => count + Number(burst.active), 0),
+      pendingBursts: 0,
       emittedBursts: this.emittedBursts,
       reducedMotion: this.reducedMotion,
     };
@@ -245,31 +203,11 @@ export class FireworkPool {
     if (this.disposed) return;
     this.disposed = true;
     for (const particle of this.particles) particle.active = false;
-    for (const pending of this.pendingBursts) pending.active = false;
     this.points.geometry.setDrawRange(0, 0);
     this.points.visible = false;
     this.points.removeFromParent();
     this.points.geometry.dispose();
     this.points.material.dispose();
-  }
-
-  private queueBurst(
-    position: FireworkPosition,
-    direction: FireworkDirection,
-    delay: number,
-    offsetX: number,
-    offsetY: number,
-    strength: number,
-  ): void {
-    const pending = this.pendingBursts.find((candidate) => !candidate.active);
-    if (!pending) return;
-    pending.active = true;
-    pending.delay = delay;
-    pending.x = position.x + offsetX;
-    pending.y = position.y + offsetY;
-    pending.z = position.z + (this.random() - 0.5) * 1.4;
-    pending.direction = direction;
-    pending.strength = strength;
   }
 
   private emitBurst(
