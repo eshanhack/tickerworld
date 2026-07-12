@@ -115,6 +115,10 @@ async function smokeMarketRoutes() {
         ? 'A deliberately wild simulated market for testing sounds, fireworks, and live-chart events.'
         : symbol === 'WTI'
           ? 'Walk inside the live CL crude-oil perpetual chart with other tiny animals.'
+          : symbol === 'PUMP' || symbol === 'ANSEM'
+            ? `Walk inside ${symbol}'s live Solana DEX chart with other tiny animals.`
+            : symbol === 'SHFL'
+              ? "Walk inside SHFL's live Ethereum DEX chart with other tiny animals."
           : `Walk inside ${symbol}’s live one-minute chart with other tiny animals.`;
       const status = symbol === 'TEST' ? 'SIMULATED' : 'LIVE';
       const enterLabel = symbol === 'TEST' ? 'Enter TEST lab' : `Enter ${symbol} world`;
