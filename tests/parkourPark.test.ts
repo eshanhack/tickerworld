@@ -144,6 +144,30 @@ describe('nearby parkour park', () => {
     park.dispose();
   });
 
+  it('retains identical course geometry and collision while adopting the DEX neon palette', () => {
+    const park = new ParkourParkSystem({ parent: new THREE.Group(), heightAt: () => 0 });
+    const start = park.root.getObjectByName('parkour-start-solid') as THREE.Mesh<
+      THREE.BufferGeometry,
+      THREE.MeshStandardMaterial
+    >;
+    const geometry = start.geometry;
+    const ordinaryColor = start.material.color.getHex();
+    const sample = park.sampleGround(30, 2);
+    const blocked = park.resolveHorizontal(58, -1, 60.6, 0.4, 0);
+
+    park.setCyberpunkTheme(true);
+    expect(start.geometry).toBe(geometry);
+    expect(start.material.color.getHex()).not.toBe(ordinaryColor);
+    expect(start.material.emissiveIntensity).toBeGreaterThan(0.2);
+    expect(park.sampleGround(30, 2)).toEqual(sample);
+    expect(park.resolveHorizontal(58, -1, 60.6, 0.4, 0)).toEqual(blocked);
+
+    park.setCyberpunkTheme(false);
+    expect(start.material.color.getHex()).toBe(ordinaryColor);
+    expect(start.material.emissiveIntensity).toBeCloseTo(0.055);
+    park.dispose();
+  });
+
   it('resets ordinary-ground contact to START before any checkpoint', () => {
     const respawn = vi.fn((_point: ParkourRespawnPoint) => true);
     const events: string[] = [];

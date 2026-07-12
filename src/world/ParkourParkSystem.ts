@@ -197,6 +197,15 @@ const PALETTE_COLORS: Readonly<Record<ParkourPalette, number>> = {
   sage: 0x98bd8f,
 };
 
+const CYBERPUNK_PALETTE_COLORS: Readonly<Record<ParkourPalette, number>> = {
+  teal: 0x45e7dc,
+  rose: 0xff5ca8,
+  lavender: 0x9d7dff,
+  gold: 0xffc857,
+  cream: 0xc8f5ff,
+  sage: 0x55c8ff,
+};
+
 function surface(
   id: string,
   shape: ParkourSurfaceShape,
@@ -434,6 +443,7 @@ export class ParkourParkSystem implements GameSystem {
   private startSuppressedUntilExit = false;
   private failElapsed = 0;
   private respawnCooldown = 0;
+  private cyberpunkTheme = false;
 
   public constructor(options: ParkourParkSystemOptions) {
     this.heightAt = options.heightAt;
@@ -463,6 +473,20 @@ export class ParkourParkSystem implements GameSystem {
 
   public setReducedMotion(reducedMotion: boolean): void {
     this.reducedMotion = reducedMotion;
+  }
+
+  /** Rethemes the existing course without rebuilding any collision geometry. */
+  public setCyberpunkTheme(enabled: boolean): void {
+    if (this.cyberpunkTheme === enabled) return;
+    this.cyberpunkTheme = enabled;
+    for (const [palette, material] of this.paletteMaterials) {
+      const color = enabled ? CYBERPUNK_PALETTE_COLORS[palette] : PALETTE_COLORS[palette];
+      material.color.setHex(color);
+      material.emissive.setHex(color);
+      material.emissiveIntensity = enabled ? 0.28 : 0.055;
+      material.roughness = enabled ? 0.48 : 0.78;
+      material.metalness = enabled ? 0.16 : 0.01;
+    }
   }
 
   public resetRun(): void {
@@ -955,13 +979,15 @@ export class ParkourParkSystem implements GameSystem {
   private materialFor(palette: ParkourPalette): MeshStandardMaterial {
     const existing = this.paletteMaterials.get(palette);
     if (existing) return existing;
-    const color = PALETTE_COLORS[palette];
+    const color = this.cyberpunkTheme
+      ? CYBERPUNK_PALETTE_COLORS[palette]
+      : PALETTE_COLORS[palette];
     const material = this.trackMaterial(new MeshStandardMaterial({
       color,
       emissive: color,
-      emissiveIntensity: 0.055,
-      roughness: 0.78,
-      metalness: 0.01,
+      emissiveIntensity: this.cyberpunkTheme ? 0.28 : 0.055,
+      roughness: this.cyberpunkTheme ? 0.48 : 0.78,
+      metalness: this.cyberpunkTheme ? 0.16 : 0.01,
       flatShading: true,
     }));
     this.paletteMaterials.set(palette, material);

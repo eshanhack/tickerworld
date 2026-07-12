@@ -24,6 +24,10 @@ import { hashCoordinates, hashSeed } from './random';
 import { TerrainSampler } from './terrain';
 import { rainStateAt } from './weather';
 import { AmbientWorldDetails } from './AmbientWorldDetails';
+import {
+  getDexCyberpunkTheme,
+  type DexCyberpunkTheme,
+} from './dexCyberpunkTheme';
 
 export interface WorldPosition {
   x: number;
@@ -46,6 +50,7 @@ export interface VegetationInteractionEvent extends VegetationContact {
 }
 
 export interface WorldSystemOptions {
+  activeMarket?: AssetSymbol;
   seed?: string;
   chunkSize?: number;
   chunkSegments?: number;
@@ -192,7 +197,14 @@ function smoothstep(edge0: number, edge1: number, value: number): number {
   return amount * amount * (3 - 2 * amount);
 }
 
-function colorForSurface(surface: SurfaceKind): THREE.Color {
+function colorForSurface(surface: SurfaceKind, cyberTheme: DexCyberpunkTheme | null): THREE.Color {
+  if (cyberTheme) {
+    switch (surface) {
+      case 'sand': return new THREE.Color(cyberTheme.palette.street);
+      case 'stone': return new THREE.Color(cyberTheme.palette.ground).offsetHSL(0, -0.04, 0.09);
+      case 'grass': return new THREE.Color(cyberTheme.palette.ground);
+    }
+  }
   switch (surface) {
     case 'sand':
       return new THREE.Color(PALETTE.sand);
@@ -212,6 +224,8 @@ export class WorldSystem {
   readonly root = new THREE.Group();
 
   private readonly scene: THREE.Scene;
+  private activeMarket: AssetSymbol;
+  private cyberpunkTheme: DexCyberpunkTheme | null;
   private readonly seed: string;
   private readonly chunkSize: number;
   private readonly chunkSegments: number;
@@ -258,6 +272,9 @@ export class WorldSystem {
   private readonly cloudDay = new THREE.Color(0xfff2dc);
   private readonly cloudNight = new THREE.Color(0x91a2b6);
   private readonly cloudStorm = new THREE.Color(0x74869a);
+  private readonly cyberSkyTarget = new THREE.Color();
+  private readonly cyberHorizonTarget = new THREE.Color();
+  private readonly cyberFogTarget = new THREE.Color();
   private readonly weatherSeed: number;
   private readonly previousBackground: THREE.Scene['background'];
   private readonly previousFog: THREE.Scene['fog'];
@@ -328,6 +345,8 @@ export class WorldSystem {
 
   constructor(scene: THREE.Scene, options: WorldSystemOptions = {}) {
     this.scene = scene;
+    this.activeMarket = options.activeMarket ?? 'BTC';
+    this.cyberpunkTheme = getDexCyberpunkTheme(this.activeMarket);
     this.seed = options.seed ?? WORLD_SEED;
     this.chunkSize = options.chunkSize ?? CHUNK_SIZE;
     this.chunkSegments = options.chunkSegments ?? CHUNK_SEGMENTS;
@@ -362,8 +381,8 @@ export class WorldSystem {
     this.terrainMaterial = this.trackMaterial(new THREE.MeshStandardMaterial({
       vertexColors: true,
       flatShading: true,
-      roughness: 0.92,
-      metalness: 0,
+      roughness: this.cyberpunkTheme ? 0.62 : 0.92,
+      metalness: this.cyberpunkTheme ? 0.08 : 0,
     }));
     this.lampGlobeMaterial = this.trackMaterial(new THREE.MeshStandardMaterial({
       color: PALETTE.cream,
@@ -406,6 +425,7 @@ export class WorldSystem {
       heightAt: (x, z) => this.terrain.heightAt(x, z),
       surfaceAt: (x, z) => this.terrain.surfaceAt(x, z),
     });
+    this.ambientDetails.root.visible = this.cyberpunkTheme === null;
     this.propRoot.add(this.ambientDetails.root);
 
     const lampMoteGeometry = this.trackGeometry(new THREE.BufferGeometry());
@@ -453,7 +473,11 @@ export class WorldSystem {
     this.previousBackground = scene.background;
     this.previousFog = scene.fog;
     this.skyColor.copy(this.daySky);
-    this.fog = new THREE.Fog(this.skyColor, this.chunkSize * 1.55, this.chunkSize * 4.8);
+    this.fog = new THREE.Fog(
+      this.skyColor,
+      this.chunkSize * (this.cyberpunkTheme ? 1.18 : 1.55),
+      this.chunkSize * (this.cyberpunkTheme ? 3.7 : 4.8),
+    );
     scene.background = this.skyColor;
     scene.fog = this.fog;
 
@@ -490,7 +514,28 @@ export class WorldSystem {
   }
 
   surfaceAt(x: number, z: number): SurfaceKind {
+    if (this.cyberpunkTheme) return 'stone';
     return this.terrain.surfaceAt(x, z);
+  }
+
+  /** Switches only presentation; terrain heights, weather clock and chunk seed stay untouched. */
+  setActiveMarket(symbol: AssetSymbol): void {
+    if (this.disposed || symbol === this.activeMarket) return;
+    this.activeMarket = symbol;
+    this.cyberpunkTheme = getDexCyberpunkTheme(symbol);
+    this.ambientDetails.root.visible = this.cyberpunkTheme === null;
+    this.terrainMaterial.roughness = this.cyberpunkTheme ? 0.62 : 0.92;
+    this.terrainMaterial.metalness = this.cyberpunkTheme ? 0.08 : 0;
+    this.fog.near = this.chunkSize * (this.cyberpunkTheme ? 1.18 : 1.55);
+    this.fog.far = this.chunkSize * (this.cyberpunkTheme ? 3.7 : 4.8);
+    for (const record of this.chunks.values()) {
+      const chunkX = Math.round(record.terrain.position.x / this.chunkSize);
+      const chunkZ = Math.round(record.terrain.position.z / this.chunkSize);
+      const previous = record.terrain.geometry;
+      record.terrain.geometry = this.createTerrainGeometry(chunkX, chunkZ);
+      previous.dispose();
+    }
+    this.rebuildSharedInstances();
   }
 
   getActiveEchoPlacements(): readonly EchoPlacementDescriptor[] {
@@ -533,7 +578,9 @@ export class WorldSystem {
   }
 
   getDebugStats(): WorldDebugStats {
-    const ambient = this.ambientDetails.getDebugStats();
+    const ambient = this.cyberpunkTheme
+      ? { fireflies: 0, petals: 0, birds: 0, drawCalls: 0 }
+      : this.ambientDetails.getDebugStats();
     const propDrawCalls = Object.values(this.pools).reduce(
       (total, pool) => total + (pool.mesh.count > 0 ? 1 : 0),
       0,
@@ -677,12 +724,14 @@ export class WorldSystem {
     this.updateLampLights(playerPosition, elapsedSeconds);
     this.updateWeather(playerPosition, elapsedSeconds);
     this.updateClouds(elapsedSeconds);
-    this.ambientDetails.update({
-      elapsedSeconds,
-      daylight: this.daylight,
-      rainIntensity: this.rainIntensity,
-      reducedMotion: this.reducedMotion,
-    });
+    if (!this.cyberpunkTheme) {
+      this.ambientDetails.update({
+        elapsedSeconds,
+        daylight: this.daylight,
+        rainIntensity: this.rainIntensity,
+        reducedMotion: this.reducedMotion,
+      });
+    }
     this.updateVegetation(playerPosition, elapsedSeconds);
   }
 
@@ -791,6 +840,12 @@ export class WorldSystem {
     }
     this.cloudMesh.instanceMatrix.needsUpdate = true;
     this.cloudMaterial.color.copy(this.cloudNight).lerp(this.cloudDay, this.daylight);
+    if (this.cyberpunkTheme) {
+      this.cloudMaterial.color.lerp(
+        this.cyberHorizonTarget.setHex(this.cyberpunkTheme.palette.skyHorizon),
+        0.12,
+      );
+    }
     if (this.rainIntensity > 0) {
       this.cloudMaterial.color.lerp(this.cloudStorm, this.rainIntensity * 0.72);
     }
@@ -1047,7 +1102,10 @@ export class WorldSystem {
         positions[pointer + 1] = this.terrain.heightAt(worldX, worldZ);
         positions[pointer + 2] = localZ;
 
-        const color = colorForSurface(this.terrain.surfaceAt(worldX, worldZ));
+        const color = colorForSurface(
+          this.terrain.surfaceAt(worldX, worldZ),
+          this.cyberpunkTheme,
+        );
         const variation = hashCoordinates(
           this.terrain.seed,
           chunkX * this.chunkSegments + xIndex,
@@ -1143,11 +1201,13 @@ export class WorldSystem {
       if (record.layout.echo) {
         echoes.push(record.layout.echo);
       }
-      for (const pond of record.layout.ponds) {
-        write('ponds', pond.x, pond.waterLevel + 0.02, pond.z, pond.radius, pond.radius, pond.radius, 0);
-      }
-      for (const prop of record.layout.props) {
-        this.writePropInstances(prop, write);
+      if (!this.cyberpunkTheme) {
+        for (const pond of record.layout.ponds) {
+          write('ponds', pond.x, pond.waterLevel + 0.02, pond.z, pond.radius, pond.radius, pond.radius, 0);
+        }
+        for (const prop of record.layout.props) {
+          this.writePropInstances(prop, write);
+        }
       }
     }
 
@@ -1524,6 +1584,21 @@ export class WorldSystem {
     this.hemisphereLight.intensity = 0.32 + this.daylight * 0.76;
     this.sunLight.color.copy(this.duskSun).lerp(this.daySun, this.daylight);
     this.sunLight.intensity = 0.12 + this.daylight * 1.43;
+
+    if (this.cyberpunkTheme) {
+      const palette = this.cyberpunkTheme.palette;
+      this.cyberSkyTarget.setHex(palette.skyTop);
+      this.cyberHorizonTarget.setHex(palette.skyHorizon);
+      this.cyberSkyTarget.lerp(this.cyberHorizonTarget, 0.18 + this.daylight * 0.28);
+      this.skyColor.lerp(this.cyberSkyTarget, 0.84);
+      this.cyberFogTarget.setHex(palette.fog).lerp(this.skyColor, 0.18);
+      this.fog.color.lerp(this.cyberFogTarget, 0.78);
+      this.hemisphereLight.color.lerp(this.cyberHorizonTarget, 0.54);
+      this.hemisphereLight.groundColor.setHex(palette.ground).lerp(this.cyberFogTarget, 0.22);
+      this.hemisphereLight.intensity *= 0.88;
+      this.sunLight.color.lerp(this.cyberHorizonTarget, 0.22);
+      this.sunLight.intensity *= 0.68;
+    }
 
     // Capture the exact dynamic day/night baseline before any market layer.
     // The values are rebuilt every frame, so a five-second surge can cross

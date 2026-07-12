@@ -28,6 +28,30 @@ export type {
 } from './AmbientWorldDetails';
 export type { MonumentCoordinate, PondDescriptor, TerrainSamplerOptions } from './terrain';
 export { DEFAULT_DAY_DURATION_SECONDS, WorldSystem } from './WorldSystem';
+export {
+  CyberpunkDexDistrict,
+  createCyberpunkDexLayout,
+  isDexCyberpunkMarket,
+  isDexDistrictProtectedPoint,
+} from './CyberpunkDexDistrict';
+export type {
+  CyberpunkDexDistrictOptions,
+  CyberpunkDexDistrictStats,
+  CyberpunkDistrictEnvironment,
+} from './CyberpunkDexDistrict';
+export {
+  DEX_CYBERPUNK_SYMBOLS,
+  DEX_CYBERPUNK_THEMES,
+  dexCyberpunkGlowAt,
+  getDexCyberpunkTheme,
+  isDexCyberpunkSymbol,
+} from './dexCyberpunkTheme';
+export type {
+  DexCyberpunkGlowState,
+  DexCyberpunkPalette,
+  DexCyberpunkSymbol,
+  DexCyberpunkTheme,
+} from './dexCyberpunkTheme';
 export { OilWorldEffects } from './OilWorldEffects';
 export type { OilWorldEffectsOptions } from './OilWorldEffects';
 export {

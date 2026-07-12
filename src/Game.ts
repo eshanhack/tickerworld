@@ -80,10 +80,12 @@ import {
   type UiInteractionOwner,
 } from './ui';
 import {
+  CyberpunkDexDistrict,
   OilWorldEffects,
   ParkourParkSystem,
   WorldGuard,
   WorldSystem,
+  isDexCyberpunkSymbol,
   type ParkourEvent,
 } from './world';
 
@@ -147,6 +149,7 @@ export class Game {
   private readonly audio = new AudioEngine();
   private readonly fireworks: FireworkPool;
   private readonly oilEffects: OilWorldEffects;
+  private readonly dexDistrict: CyberpunkDexDistrict;
   private readonly parkour: ParkourParkSystem;
   private parkourHud?: ParkourHudView;
   private tradeDebugPanel?: TradeDebugPanel;
@@ -277,6 +280,7 @@ export class Game {
     });
     this.world = new WorldSystem(this.scene, {
       seed: WORLD_SEED,
+      activeMarket: this.activeMarket,
       reducedMotion: this.reducedMotion,
       monuments: GRAND_MONUMENTS,
       echoSuppressionRadius: Number.POSITIVE_INFINITY,
@@ -289,6 +293,14 @@ export class Game {
         kind: event.kind,
         intensity: Math.min(1, event.intensity * (0.55 + event.speed * 0.08)),
       }),
+    });
+    this.dexDistrict = new CyberpunkDexDistrict({
+      parent: this.scene,
+      seed: WORLD_SEED,
+      heightAt: (x, z) => this.world.heightAt(x, z),
+      fontUrl: nunitoFontUrl,
+      activeMarket: this.activeMarket,
+      reducedMotion: this.reducedMotion,
     });
     this.fireworks = new FireworkPool({
       capacity: launchQuality.fireworkCapacity,
@@ -324,6 +336,7 @@ export class Game {
         return true;
       },
     });
+    this.parkour.setCyberpunkTheme(isDexCyberpunkSymbol(this.activeMarket));
 
     const spawnZ = 21;
     this.player = new FoxPlayer({
@@ -453,6 +466,7 @@ export class Game {
         this.fireworks.setReducedMotion(enabled);
         this.world.setReducedMotion(enabled);
         this.oilEffects.setReducedMotion(enabled);
+        this.dexDistrict.setReducedMotion(enabled);
         this.parkour.setReducedMotion(enabled);
         this.emotes?.setReducedMotion(enabled);
         this.portalSystem?.setReducedMotion(enabled);
@@ -804,6 +818,9 @@ export class Game {
       for (const history of Object.values(this.tradeTierTimes)) history.length = 0;
       this.news.setActiveMarket(destination);
       if (this.disposed || switchGeneration !== this.marketSwitchGeneration) return false;
+      this.world.setActiveMarket(destination);
+      this.dexDistrict.setActiveMarket(destination);
+      this.parkour.setCyberpunkTheme(isDexCyberpunkSymbol(destination));
       this.monuments.clearBigOrders();
       this.world.clearTradeSurge();
       this.monuments.remove(this.activeMonument, true);
@@ -1136,6 +1153,11 @@ export class Game {
     if (this.entered && this.player.isGliding) this.hud.recordOnboardingAction('glide');
     this.roomClient.update(delta);
     this.world.update(this.player.position, this.worldElapsed);
+    this.dexDistrict.update(delta, this.worldElapsed, {
+      nightFactor: this.world.nightFactor,
+      rainIntensity: this.world.rainLevel,
+      playerPosition: this.player.position,
+    });
     this.oilEffects.update(delta, this.worldElapsed, this.player.position);
     this.audio.setRainIntensity(this.world.rainLevel);
     this.portalSystem.setPlayerProbe({
@@ -1541,6 +1563,7 @@ export class Game {
   private cameraObstacleAt(x: number, y: number, z: number): boolean {
     return this.worldGuard.collides(x, z)
       || this.monuments.collidesCamera(x, y, z)
+      || this.dexDistrict.collidesCamera(x, y, z)
       || this.parkour.collidesCamera(x, y, z);
   }
 
@@ -1551,11 +1574,18 @@ export class Game {
     proposedZ: number,
   ): { x: number; z: number } => {
     const guarded = this.worldGuard.resolve(previousX, previousZ, proposedX, proposedZ);
+    const district = this.dexDistrict.resolveHorizontal(
+      guarded.x,
+      guarded.z,
+      0.7,
+      previousX,
+      previousZ,
+    );
     return this.parkour.resolveHorizontal(
       previousX,
       previousZ,
-      guarded.x,
-      guarded.z,
+      district.x,
+      district.z,
       this.player.position.y,
     );
   };
@@ -1770,6 +1800,7 @@ export class Game {
     this.fireworks.points.removeFromParent();
     this.fireworks.dispose();
     this.oilEffects.dispose();
+    this.dexDistrict.dispose();
     this.parkour.dispose();
     this.portalSystem.dispose();
     this.player.dispose();
