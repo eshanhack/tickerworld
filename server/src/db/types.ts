@@ -124,6 +124,13 @@ export interface ModerationActionRow {
   created_at: number;
 }
 
+export interface ProviderBudgetRow {
+  provider: string;
+  day_utc: string;
+  request_count: number;
+  updated_at: number;
+}
+
 export interface DatabaseSchema {
   accounts: AccountRow;
   auth_challenges: AuthChallengeRow;
@@ -136,4 +143,5 @@ export interface DatabaseSchema {
   account_blocks: AccountBlockRow;
   moderation_reports: ModerationReportRow;
   moderation_actions: ModerationActionRow;
+  provider_budgets: ProviderBudgetRow;
 }

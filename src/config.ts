@@ -10,8 +10,12 @@ export function multiplayerAllowedForSeed(seed: string): boolean {
 
 export const WORLD_SEED = SEARCH_PARAMS.get('seed') ?? CANONICAL_WORLD_SEED;
 export const MULTIPLAYER_ALLOWED = multiplayerAllowedForSeed(WORLD_SEED);
-export const FORCE_SIMULATION = SEARCH_PARAMS.get('data') === 'sim';
-export const DEBUG_MODE = SEARCH_PARAMS.get('debug') === '1';
+/** Production simulation/debugging is fail-closed unless a preview build opts in. */
+export const QA_MODE_ALLOWED = !import.meta.env.PROD || import.meta.env.VITE_ENABLE_QA_MODE === '1';
+export const FORCE_SIMULATION = QA_MODE_ALLOWED && SEARCH_PARAMS.get('data') === 'sim';
+export const DEBUG_MODE = QA_MODE_ALLOWED && SEARCH_PARAMS.get('debug') === '1';
+/** Deterministic, UI-free staging used only to capture launch media locally/preview. */
+export const LAUNCH_CAPTURE_MODE = QA_MODE_ALLOWED && SEARCH_PARAMS.get('capture') === '1';
 
 export const CHUNK_SIZE = 48;
 export const CHUNK_SEGMENTS = 24;

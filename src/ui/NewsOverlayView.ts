@@ -181,6 +181,7 @@ export class NewsOverlayView {
   private readonly source: HTMLElement;
   private readonly body: HTMLElement;
   private readonly timestamp: HTMLTimeElement;
+  private readonly context: HTMLElement;
   private readonly permalink: HTMLElement;
   private readonly onDismiss: (itemId: string) => void;
   private readonly onInteractionChange?: (active: boolean) => void;
@@ -226,6 +227,8 @@ export class NewsOverlayView {
         <div class="news-overlay-scroll">
           <p class="news-overlay-body" id="news-overlay-body" data-news-body></p>
           <footer class="news-overlay-footer">
+            <span data-news-context></span>
+            <span aria-hidden="true">·</span>
             <time data-news-time></time>
             <span aria-hidden="true">·</span>
             <span data-news-permalink></span>
@@ -246,6 +249,7 @@ export class NewsOverlayView {
     this.source = this.required('[data-news-source]');
     this.body = this.required('[data-news-body]');
     this.timestamp = this.required<HTMLTimeElement>('[data-news-time]');
+    this.context = this.required('[data-news-context]');
     this.permalink = this.required('[data-news-permalink]');
     this.refreshMeasurements();
 
@@ -362,6 +366,9 @@ export class NewsOverlayView {
     this.body.replaceChildren(fragment);
 
     const date = new Date(item.createdAt);
+    this.context.textContent = item.scope === 'global'
+      ? 'GLOBAL · posted during this candle'
+      : `${item.scope} world`;
     this.timestamp.dateTime = date.toISOString();
     this.timestamp.textContent = date.toLocaleString([], {
       hour: '2-digit',

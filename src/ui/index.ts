@@ -1,4 +1,42 @@
-export { Hud, type HudCallbacks } from './Hud';
+export {
+  Hud,
+  type HudCallbacks,
+  type HudOptions,
+  type UiEmoteKind,
+} from './Hud';
+export {
+  entryFeedStatusLabel,
+  entryRoomStatusLabel,
+  entryShellForMarket,
+  type EntryRoomStatus,
+  type EntryShellModel,
+} from './EntryShellModel';
+export {
+  OnboardingJourney,
+  type OnboardingAction,
+  type OnboardingListener,
+  type OnboardingSnapshot,
+  type OnboardingStepId,
+} from './OnboardingJourney';
+export {
+  OverlayCoordinator,
+  type OverlayOwner,
+  type OverlayTransition,
+} from './OverlayCoordinator';
+export {
+  chooseQualityTier,
+  parseStoredQualityTier,
+  qualityProfile,
+  type QualityEnvironment,
+  type QualityProfile,
+  type QualityTier,
+} from './QualityTier';
+export {
+  WardrobeView,
+  baseWardrobeEntries,
+  type WardrobeEntry,
+  type WardrobeViewOptions,
+} from './WardrobeView';
 export {
   UiInteractionLock,
   type UiInteractionListener,

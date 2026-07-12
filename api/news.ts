@@ -233,6 +233,7 @@ export function normalizeXTimelineResponse(
       authorAvatarUrl: author.profile_image_url ?? null,
       permalink: `https://x.com/${encodeURIComponent(author.username)}/status/${encodeURIComponent(value.id)}`,
       demo: false,
+      scope: 'global',
     });
   }
   return pruneExpiredNewsItems(dedupeNewsItems(items), now);
@@ -316,26 +317,48 @@ export async function handleNewsRequest(
   request: Request,
   token: string | undefined = process.env.X_BEARER_TOKEN,
   checkedAt = Date.now(),
+  cacheOrigin: string | undefined = process.env.NEWS_CACHE_ORIGIN,
+  fetcher: ServerFetcher = fetch,
 ): Promise<Response> {
   if (request.method !== 'GET') {
     return rejectedRequest(405, 'GET');
   }
 
-  // This endpoint has no request variants. Reject cache-busting inputs before they can turn a
-  // public URL into an unbounded proxy for paid X API reads or exhaust the provider rate limit.
+  // Scope is the only bounded cache variant. Browsers never contact X: the single multiplayer
+  // process owns ingestion and this function reads its ten-minute cache.
   const requestUrl = new URL(request.url);
+  const scope = requestUrl.searchParams.get('scope');
+  const scopeValues = requestUrl.searchParams.getAll('scope');
   if (
-    requestUrl.search !== ''
+    [...requestUrl.searchParams.keys()].some((key) => key !== 'scope')
+    || scopeValues.length > 1
+    || (scope !== null && !/^(?:BTC|ETH|SOL|XRP|DOGE|BNB|LINK|AVAX)$/.test(scope))
     || request.headers.has('authorization')
     || request.headers.has('range')
   ) return rejectedRequest(400);
 
   const normalizedToken = token?.trim();
-  if (!normalizedToken) return jsonResponse('unconfigured', [], checkedAt);
+  const normalizedOrigin = cacheOrigin?.trim();
+  if (!normalizedOrigin) {
+    return jsonResponse(!normalizedToken ? 'unconfigured' : 'unavailable', [], checkedAt);
+  }
   try {
-    return jsonResponse('live', await fetchXNews(normalizedToken, checkedAt), checkedAt);
+    const upstream = new URL('/api/news', normalizedOrigin);
+    if (scope) upstream.searchParams.set('scope', scope);
+    const response = await fetcher(upstream, {
+      headers: { Accept: 'application/json' },
+      cache: 'no-store',
+      signal: AbortSignal.timeout(X_REQUEST_TIMEOUT_MS),
+    });
+    if (!response.ok) throw new Error('news_cache_unavailable');
+    const payload = await response.json() as unknown;
+    if (!isRecord(payload)
+      || (payload.mode !== 'live' && payload.mode !== 'unavailable' && payload.mode !== 'unconfigured')
+      || !Array.isArray(payload.items)
+      || typeof payload.checkedAt !== 'number') throw new Error('invalid_news_cache');
+    return jsonResponse(payload.mode, payload.items as NewsItem[], payload.checkedAt);
   } catch {
-    // Do not send provider errors or credentials to the browser.
+    // Do not expose provider/cache errors or credentials to the browser.
     return jsonResponse('unavailable', [], checkedAt);
   }
 }

@@ -26,7 +26,8 @@ export interface SocialSystemOptions {
   readonly blockStore?: BlockStore;
   readonly now?: () => number;
   readonly onInputFocusChange?: (focused: boolean) => void;
-  readonly onInteractionChange?: (owner: 'chat' | 'player', active: boolean) => void;
+  /** Returns false when a higher-priority modal (portal/context) owns the UI. */
+  readonly onInteractionChange?: (owner: 'chat' | 'player', active: boolean) => boolean | void;
   readonly onSpeech?: (message: ChatMessage) => void;
   readonly onBlocksChanged?: (blocked: ReadonlySet<string>) => void;
   readonly persistBlock?: (actorId: string, blocked: boolean) => void | Promise<void>;
@@ -42,6 +43,13 @@ function rejectionMessage(rejection: ChatRejection): string {
     case 'too_long': return `Messages can be up to ${CHAT_MAX_LENGTH} characters.`;
     case 'rate_limited': return 'Let the conversation breathe for a moment.';
     case 'profanity': return 'That message cannot be shared here.';
+    case 'links': return 'Links cannot be shared in room chat.';
+    case 'wallet_or_contract': return 'Wallet and contract addresses stay out of room chat.';
+    case 'seed_phrase': return 'Recovery phrases must never be shared.';
+    case 'invisible_spam': return 'That invisible or repeated text cannot be shared.';
+    case 'repeated_spam': return 'Please do not repeat the same message.';
+    case 'impersonation': return 'That message looks too much like an official notice.';
+    case 'disabled': return 'Room chat is temporarily unavailable.';
     case 'muted': return 'Chat is temporarily unavailable for this player.';
     case 'protocol_mismatch': return 'Chat is updating. Please reconnect in a moment.';
   }
@@ -225,12 +233,13 @@ export class SocialSystem implements GameSystem {
 
   openPlayerCard(player: NetPlayerState): void {
     if (this.disposed || player.actorId === this.localActorId || this.blockStore.has(player.actorId)) return;
+    this.closeChat();
+    if (this.options.onInteractionChange?.('player', true) === false) return;
     this.selectedPlayer = player;
     this.playerName.textContent = player.username ?? animalLabel(player.animal);
     this.playerMeta.textContent = `${animalLabel(player.animal)} · ${player.skin === 'base' ? 'wild palette' : player.skin.replaceAll('-', ' ')}`;
     this.blockButton.textContent = 'Block player';
     this.playerCard.classList.remove('is-hidden');
-    this.options.onInteractionChange?.('player', true);
   }
 
   mergeAccountBlocks(actorIds: readonly string[]): void {
@@ -292,10 +301,14 @@ export class SocialSystem implements GameSystem {
 
   private readonly toggleChat = (): void => {
     const opening = this.panel.classList.contains('is-hidden');
-    this.panel.classList.toggle('is-hidden', !opening);
-    this.options.onInteractionChange?.('chat', opening);
-    if (opening) this.input.focus();
-    else this.input.blur();
+    if (!opening) {
+      this.closeChat();
+      return;
+    }
+    this.closePlayerCard();
+    if (this.options.onInteractionChange?.('chat', true) === false) return;
+    this.panel.classList.remove('is-hidden');
+    this.input.focus();
   };
 
   private readonly closeChat = (): void => {
@@ -343,8 +356,9 @@ export class SocialSystem implements GameSystem {
     }
     if (!editing && (event.key === 'Enter' || event.key.toLowerCase() === 't')) {
       event.preventDefault();
+      this.closePlayerCard();
+      if (this.options.onInteractionChange?.('chat', true) === false) return;
       this.panel.classList.remove('is-hidden');
-      this.options.onInteractionChange?.('chat', true);
       this.input.focus();
     }
   };

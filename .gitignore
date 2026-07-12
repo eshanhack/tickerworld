@@ -10,6 +10,7 @@ server/.colyseus-cloud.json
 .env.*
 !.env.example
 server/data/
+data/
 server/**/*.sqlite
 server/**/*.sqlite-*
 server/dist/

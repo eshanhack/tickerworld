@@ -104,6 +104,13 @@ export type ChatRejectionCode =
   | 'too_long'
   | 'rate_limited'
   | 'profanity'
+  | 'links'
+  | 'wallet_or_contract'
+  | 'seed_phrase'
+  | 'invisible_spam'
+  | 'repeated_spam'
+  | 'impersonation'
+  | 'disabled'
   | 'muted'
   | 'protocol_mismatch';
 
@@ -147,7 +154,8 @@ export type IdentityRejectionCode =
   | 'protocol_mismatch'
   | 'invalid_identity'
   | 'actor_mismatch'
-  | 'moderated';
+  | 'moderated'
+  | 'disabled';
 
 export interface IdentityRefreshResult {
   actorId: string;
@@ -224,4 +232,6 @@ export interface JoinOptions {
   fromMarket?: MarketSlug;
   animal: AnimalKind;
   skin?: SkinId;
+  /** Signed 30-minute invitation. Clients redeem it before joinById and pass it again here. */
+  partyToken?: string;
 }

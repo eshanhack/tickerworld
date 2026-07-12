@@ -1,11 +1,24 @@
 import type { Application, NextFunction, Request, Response } from 'express';
 import express from 'express';
-import { ANIMAL_KINDS, MARKET_SLUGS, PREMIUM_SKINS, isActorId } from '@tickerworld/shared';
+import {
+  ANIMAL_KINDS,
+  MARKET_ROOM_MAX_CLIENTS,
+  MARKET_SLUGS,
+  PREMIUM_SKINS,
+  isActorId,
+  type RuntimeKillSwitches,
+} from '@tickerworld/shared';
 import { z } from 'zod';
 import { databaseIsReady } from './db/database.js';
 import type { ServerRuntime } from './runtime.js';
 import { hashIp } from './services/crypto.js';
-import { InputError, RateLimitError, ServiceError, UnauthorizedError } from './services/errors.js';
+import {
+  InputError,
+  RateLimitError,
+  ServiceError,
+  ServiceUnavailableError,
+  UnauthorizedError,
+} from './services/errors.js';
 
 const walletSchema = z.string().min(32).max(44);
 const actorSchema = z.string().refine(isActorId, { message: 'Invalid actor identity' });
@@ -55,6 +68,24 @@ const adminActionSchema = z.object({
   { message: 'Action target and temporary expiry do not match the action type' },
 );
 const reportResolutionSchema = z.object({ status: z.enum(['resolved', 'dismissed']) });
+const inviteCreateSchema = z.object({
+  market: z.enum(MARKET_SLUGS),
+  roomId: z.string().min(4).max(128),
+  anonymousToken: z.string().min(40).max(1_024).optional(),
+  sessionToken: z.string().min(20).max(1_024).optional(),
+}).refine((value) => Boolean(value.anonymousToken) !== Boolean(value.sessionToken), {
+  message: 'Supply exactly one signed identity',
+});
+const inviteRedeemSchema = z.object({ token: z.string().min(40).max(1_024) });
+const switchPatchSchema = z.object({
+  admissions: z.boolean().optional(),
+  chatSend: z.boolean().optional(),
+  newsIngest: z.boolean().optional(),
+  directMarketFallback: z.boolean().optional(),
+  publicWalletAuth: z.boolean().optional(),
+  purchases: z.boolean().optional(),
+  adminActions: z.boolean().optional(),
+}).refine((value) => Object.keys(value).length > 0, { message: 'At least one switch is required' });
 
 function bearerToken(request: Request): string | undefined {
   const authorization = request.header('authorization');
@@ -86,6 +117,12 @@ function enforceRateLimit(
   }
 }
 
+function requireFeature(runtime: ServerRuntime, key: keyof RuntimeKillSwitches): void {
+  if (!runtime.switches.enabled(key)) {
+    throw new ServiceUnavailableError(`${key}_disabled`, 'This feature is currently unavailable');
+  }
+}
+
 export function configureHttp(app: Application, runtime: ServerRuntime): void {
   app.disable('x-powered-by');
   app.use((request, response, next) => {
@@ -98,7 +135,7 @@ export function configureHttp(app: Application, runtime: ServerRuntime): void {
       response.setHeader('Access-Control-Allow-Origin', origin);
       response.setHeader('Vary', 'Origin');
       response.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
-      response.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+      response.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
     }
     if (request.method === 'OPTIONS') {
       response.sendStatus(204);
@@ -111,22 +148,34 @@ export function configureHttp(app: Application, runtime: ServerRuntime): void {
   app.get('/healthz', (_request, response) => {
     response.json({ status: 'ok', protocolVersion: 2 });
   });
+  app.get('/api/capabilities', (_request, response) => {
+    response.setHeader('Cache-Control', 'private, no-store');
+    response.json(runtime.switches.capabilities({
+      marketRelayAvailable: runtime.marketRelay.available(),
+      newsAvailable: runtime.news.available(),
+    }));
+  });
   app.get('/readyz', async (_request, response) => {
     const [database] = await Promise.all([
       databaseIsReady(runtime.db),
       runtime.economy.refreshReadiness(),
     ]);
+    const marketRelay = runtime.marketRelay.status();
     const features = {
       database,
-      walletAuth: runtime.auth.ready,
-      purchases: runtime.economy.ready,
+      walletAuth: runtime.switches.enabled('publicWalletAuth') && runtime.auth.ready,
+      purchases: runtime.switches.enabled('purchases') && runtime.economy.ready,
       trustedProxy: runtime.config.trustedProxyCidrs.length > 0,
-      administration: runtime.config.adminWallets.size > 0,
+      administration: runtime.switches.enabled('adminActions')
+        && runtime.config.adminWallets.size > 0,
+      marketRelay: runtime.marketRelay.available(),
+      marketAgeMs: marketRelay.ageMs,
+      news: runtime.news.available(),
     };
-    const productionProvidersReady = features.walletAuth
-      && features.purchases
-      && features.trustedProxy
-      && features.administration;
+    const productionProvidersReady = features.trustedProxy
+      && (!runtime.switches.enabled('publicWalletAuth') || features.walletAuth)
+      && (!runtime.switches.enabled('purchases') || features.purchases)
+      && (!runtime.switches.enabled('adminActions') || features.administration);
     const ready = database
       && (runtime.config.nodeEnv !== 'production' || productionProvidersReady);
     response.status(ready ? 200 : 503).json({
@@ -136,6 +185,20 @@ export function configureHttp(app: Application, runtime: ServerRuntime): void {
   });
   app.get('/api/populations', (_request, response) => {
     response.json({ populations: runtime.populations.snapshot() });
+  });
+  app.get('/api/news', (request, response) => {
+    if (Object.keys(request.query).some((key) => key !== 'scope')) {
+      throw new InputError('invalid_news_scope', 'Only the bounded scope query is supported');
+    }
+    const rawScope = typeof request.query.scope === 'string' ? request.query.scope.toUpperCase() : undefined;
+    if (rawScope && !(MARKET_SLUGS as readonly string[]).includes(rawScope.toLowerCase())) {
+      throw new InputError('invalid_news_scope', 'Unknown market scope');
+    }
+    const scope = rawScope && (MARKET_SLUGS as readonly string[]).includes(rawScope.toLowerCase())
+      ? rawScope as Parameters<ServerRuntime['news']['snapshot']>[0]
+      : undefined;
+    response.setHeader('Cache-Control', 'public, max-age=10, stale-while-revalidate=10');
+    response.json(runtime.news.snapshot(scope));
   });
   app.post('/api/anonymous/session', (request, response) => {
     enforceRateLimit(
@@ -148,7 +211,113 @@ export function configureHttp(app: Application, runtime: ServerRuntime): void {
     response.status(201).json(runtime.anonymous.issue());
   });
 
+  app.post('/api/invites', async (request, response) => {
+    requireFeature(runtime, 'admissions');
+    const body = inviteCreateSchema.parse(request.body);
+    let actorId: string;
+    if (body.anonymousToken) {
+      const identity = runtime.anonymous.verify(body.anonymousToken);
+      if (!identity) throw new UnauthorizedError('Anonymous identity proof is invalid');
+      actorId = identity.actorId;
+    } else {
+      const account = await runtime.auth.authenticate(body.sessionToken);
+      actorId = account.actorId;
+    }
+    enforceRateLimit(runtime, 'party_invite', actorId, 20, 60_000);
+    const room = runtime.populations.room(body.roomId);
+    if (!room || room.market !== body.market || !runtime.admissions.isActorInRoom(actorId, body.roomId)) {
+      throw new InputError('party_invalid', 'The invitation room is not active for this player');
+    }
+    if (room.clients >= MARKET_ROOM_MAX_CLIENTS) {
+      throw new ServiceError(409, 'party_full', 'The current shard is full');
+    }
+    response.status(201).json(runtime.invites.issue(
+      actorId,
+      body.roomId,
+      body.market,
+      Date.now(),
+      runtime.admissions.actorPosition(actorId),
+    ));
+  });
+  app.post('/api/invites/redeem', (request, response) => {
+    requireFeature(runtime, 'admissions');
+    enforceRateLimit(runtime, 'party_redeem', requestIpHash(request, runtime), 60, 60_000);
+    const { token } = inviteRedeemSchema.parse(request.body);
+    const invite = runtime.invites.inspect(token);
+    if (!invite.ok) {
+      response.json({ ok: false, code: invite.code, fallbackMarket: null });
+      return;
+    }
+    const room = runtime.populations.room(invite.roomId);
+    if (!room || room.market !== invite.market) {
+      response.json({ ok: false, code: 'party_invalid', fallbackMarket: invite.market });
+      return;
+    }
+    if (room.clients >= MARKET_ROOM_MAX_CLIENTS) {
+      response.json({ ok: false, code: 'party_full', fallbackMarket: invite.market });
+      return;
+    }
+    response.json({
+      ok: true,
+      market: invite.market,
+      roomId: invite.roomId,
+      expiresAt: invite.expiresAt,
+    });
+  });
+
+  const adminChallenge = async (request: Request, response: Response): Promise<void> => {
+    const body = authChallengeSchema.parse(request.body);
+    if (!runtime.config.adminWallets.has(body.publicKey)) {
+      throw new UnauthorizedError('Admin wallet is not allowlisted');
+    }
+    const ipHash = requestIpHash(request, runtime);
+    enforceRateLimit(
+      runtime,
+      'admin_auth_challenge_ip',
+      ipHash,
+      runtime.config.limits.authChallengesPerMinuteByIp,
+      60_000,
+    );
+    enforceRateLimit(
+      runtime,
+      'admin_auth_challenge_wallet',
+      body.publicKey,
+      runtime.config.limits.authChallengesPerMinuteByWallet,
+      60_000,
+    );
+    const identity = runtime.anonymous.verify(body.anonymousToken);
+    if (!identity || identity.actorId !== body.actorId) {
+      throw new UnauthorizedError('Anonymous identity proof is invalid');
+    }
+    response.status(201).json(await runtime.auth.issueChallenge(
+      body.publicKey,
+      identity.actorId,
+      identity.animal,
+      ipHash,
+    ));
+  };
+  const adminVerify = async (request: Request, response: Response): Promise<void> => {
+    const body = authVerifySchema.parse(request.body);
+    if (!runtime.config.adminWallets.has(body.publicKey)) {
+      throw new UnauthorizedError('Admin wallet is not allowlisted');
+    }
+    const identity = runtime.anonymous.verify(body.anonymousToken);
+    if (!identity || identity.actorId !== body.actorId) {
+      throw new UnauthorizedError('Anonymous identity proof is invalid');
+    }
+    const verified = await runtime.auth.verifyChallenge({
+      challengeId: body.challengeId,
+      walletAddress: body.publicKey,
+      actorId: body.actorId,
+      signature: body.signature,
+    });
+    response.json({ sessionToken: verified.token, profile: verified.profile });
+  };
+  app.post('/api/admin/auth/challenge', adminChallenge);
+  app.post('/api/admin/auth/verify', adminVerify);
+
   app.post('/api/auth/challenge', async (request, response) => {
+    requireFeature(runtime, 'publicWalletAuth');
     const body = authChallengeSchema.parse(request.body);
     const ipHash = requestIpHash(request, runtime);
     enforceRateLimit(
@@ -177,6 +346,7 @@ export function configureHttp(app: Application, runtime: ServerRuntime): void {
     ));
   });
   app.post('/api/auth/verify', async (request, response) => {
+    requireFeature(runtime, 'publicWalletAuth');
     const body = authVerifySchema.parse(request.body);
     const identity = runtime.anonymous.verify(body.anonymousToken);
     if (!identity || identity.actorId !== body.actorId) {
@@ -244,6 +414,7 @@ export function configureHttp(app: Application, runtime: ServerRuntime): void {
   });
 
   app.post('/api/purchases/quote', async (request, response) => {
+    requireFeature(runtime, 'purchases');
     const account = await runtime.auth.authenticate(bearerToken(request));
     enforceRateLimit(
       runtime,
@@ -260,6 +431,7 @@ export function configureHttp(app: Application, runtime: ServerRuntime): void {
     ));
   });
   app.post('/api/purchases/confirm', async (request, response) => {
+    requireFeature(runtime, 'purchases');
     const account = await runtime.auth.authenticate(bearerToken(request));
     enforceRateLimit(
       runtime,
@@ -285,6 +457,7 @@ export function configureHttp(app: Application, runtime: ServerRuntime): void {
   });
 
   app.get('/api/admin/reports', async (request, response) => {
+    requireFeature(runtime, 'adminActions');
     const account = await requireAdmin(request, runtime);
     void account;
     const reports = await runtime.db.selectFrom('moderation_reports')
@@ -296,6 +469,7 @@ export function configureHttp(app: Application, runtime: ServerRuntime): void {
     response.json({ reports });
   });
   app.post('/api/admin/actions', async (request, response) => {
+    requireFeature(runtime, 'adminActions');
     const account = await requireAdmin(request, runtime);
     const body = adminActionSchema.parse(request.body);
     let targetWalletAddress = body.targetWalletAddress ?? null;
@@ -309,38 +483,72 @@ export function configureHttp(app: Application, runtime: ServerRuntime): void {
         throw new InputError('target_has_no_wallet', 'That actor has no connected wallet account');
       }
     }
-    const id = await runtime.moderation.createAction({
-      admin_account_id: account.accountId,
-      target_actor_id: body.targetActorId ?? null,
-      target_wallet_address: targetWalletAddress,
-      target_ip_hash: body.targetIpHash ?? null,
-      action: body.action,
-      reason: body.reason.normalize('NFKC').trim(),
-      expires_at: body.expiresAt ?? null,
-    });
-    if (body.targetActorId) {
-      await runtime.db.updateTable('moderation_reports')
-        .set({ status: 'resolved', resolved_at: Date.now() })
-        .where('target_actor_id', '=', body.targetActorId)
-        .where('status', '=', 'open')
-        .execute();
+    let id: string;
+    try {
+      id = await runtime.moderation.createAction({
+        admin_account_id: account.accountId,
+        target_actor_id: body.targetActorId ?? null,
+        target_wallet_address: targetWalletAddress,
+        target_ip_hash: body.targetIpHash ?? null,
+        action: body.action,
+        reason: body.reason.normalize('NFKC').trim(),
+        expires_at: body.expiresAt ?? null,
+      });
+      if (body.targetActorId) {
+        await runtime.db.updateTable('moderation_reports')
+          .set({ status: 'resolved', resolved_at: Date.now() })
+          .where('target_actor_id', '=', body.targetActorId)
+          .where('status', '=', 'open')
+          .execute();
+      }
+    } catch (error) {
+      if (error instanceof ServiceError) throw error;
+      throw new ServiceUnavailableError(
+        'moderation_persistence_failed',
+        'The moderation action could not be stored',
+      );
     }
     response.status(201).json({ id });
   });
   app.patch('/api/admin/reports/:reportId', async (request, response) => {
+    requireFeature(runtime, 'adminActions');
     await requireAdmin(request, runtime);
     const reportId = z.string().min(10).max(64).parse(request.params.reportId);
     const { status } = reportResolutionSchema.parse(request.body);
-    const result = await runtime.db.updateTable('moderation_reports')
-      .set({ status, resolved_at: Date.now() })
-      .where('id', '=', reportId)
-      .where('status', '=', 'open')
-      .executeTakeFirst();
-    if (Number(result.numUpdatedRows) !== 1) {
+    let numUpdatedRows = 0;
+    try {
+      const result = await runtime.db.updateTable('moderation_reports')
+        .set({ status, resolved_at: Date.now() })
+        .where('id', '=', reportId)
+        .where('status', '=', 'open')
+        .executeTakeFirst();
+      numUpdatedRows = Number(result.numUpdatedRows);
+    } catch {
+      throw new ServiceUnavailableError(
+        'moderation_persistence_failed',
+        'The report resolution could not be stored',
+      );
+    }
+    if (numUpdatedRows !== 1) {
       response.status(404).json({ error: 'report_not_found' });
       return;
     }
     response.sendStatus(204);
+  });
+  app.patch('/api/admin/capabilities', async (request, response) => {
+    await requireAdmin(request, runtime);
+    const patch = switchPatchSchema.parse(request.body);
+    if (patch.purchases && !runtime.economy.ready) {
+      throw new ServiceUnavailableError('purchases_not_ready', 'Purchase providers are unavailable');
+    }
+    if (patch.publicWalletAuth && !runtime.auth.ready) {
+      throw new ServiceUnavailableError('wallet_auth_not_ready', 'Wallet authentication is unavailable');
+    }
+    if (patch.adminActions && runtime.config.adminWallets.size === 0) {
+      throw new ServiceUnavailableError('admin_not_ready', 'No admin wallet is configured');
+    }
+    const switches = runtime.switches.update(patch);
+    response.json({ switches, updatedAt: Date.now() });
   });
 
   app.use((error: unknown, _request: Request, response: Response, _next: NextFunction) => {
@@ -355,7 +563,11 @@ export function configureHttp(app: Application, runtime: ServerRuntime): void {
       response.status(400).json({ error: 'invalid_request', issues: error.issues });
       return;
     }
-    console.error(error);
+    runtime.logger.error('http_error', {
+      method: _request.method,
+      path: _request.path,
+      code: error instanceof Error ? error.name : 'unknown',
+    });
     response.status(500).json({ error: 'internal_error' });
   });
 }

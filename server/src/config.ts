@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import type { RuntimeKillSwitches } from '@tickerworld/shared';
 
 export interface ServerConfig {
   nodeEnv: 'development' | 'test' | 'production';
@@ -16,6 +17,11 @@ export interface ServerConfig {
   solUsdPriceUrl: string | null;
   adminWallets: ReadonlySet<string>;
   devSolUsdPrice: number | null;
+  launchSwitches: RuntimeKillSwitches;
+  marketRelayEnabled: boolean;
+  xBearerToken: string | null;
+  xTrackedHandles: readonly string[];
+  xDailyRequestLimit: number;
   limits: {
     maxProcessConnections: number;
     maxRooms: number;
@@ -38,7 +44,8 @@ function envString(env: NodeJS.ProcessEnv, key: string): string | null {
 
 function parseSecret(env: NodeJS.ProcessEnv, key: string, production: boolean): string {
   const value = envString(env, key);
-  if (value && value.length >= 32) return value;
+  const placeholder = value && /(?:replace[-_ ]?with|change[-_ ]?me|changeme|example[-_ ]?secret)/i.test(value);
+  if (value && value.length >= 32 && !placeholder) return value;
   if (production) throw new Error(`${key} must contain at least 32 characters in production`);
   return randomBytes(32).toString('hex');
 }
@@ -51,6 +58,14 @@ function positiveInteger(env: NodeJS.ProcessEnv, key: string, fallback: number):
     throw new Error(`${key} must be a positive integer`);
   }
   return value;
+}
+
+function booleanValue(env: NodeJS.ProcessEnv, key: string, fallback: boolean): boolean {
+  const raw = envString(env, key)?.toLowerCase();
+  if (!raw) return fallback;
+  if (raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on') return true;
+  if (raw === '0' || raw === 'false' || raw === 'no' || raw === 'off') return false;
+  throw new Error(`${key} must be a boolean`);
 }
 
 function isSolanaAddress(value: string): boolean {
@@ -93,6 +108,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
       ? 'test'
       : 'development';
   const production = nodeEnv === 'production';
+  const launchSwitches: RuntimeKillSwitches = {
+    admissions: booleanValue(env, 'ENABLE_ADMISSIONS', true),
+    chatSend: booleanValue(env, 'ENABLE_CHAT_SEND', true),
+    newsIngest: booleanValue(env, 'ENABLE_NEWS_INGEST', false),
+    directMarketFallback: booleanValue(env, 'ENABLE_DIRECT_MARKET_FALLBACK', true),
+    // Local/test tooling retains wallet coverage; production is fail-closed until explicitly enabled.
+    publicWalletAuth: booleanValue(env, 'ENABLE_PUBLIC_WALLET_AUTH', !production),
+    purchases: booleanValue(env, 'ENABLE_PURCHASES', false),
+    adminActions: booleanValue(env, 'ENABLE_ADMIN_ACTIONS', false),
+  };
   const databaseUrl = envString(env, 'DATABASE_URL');
   if (production && !databaseUrl) {
     throw new Error('DATABASE_URL is required in production; SQLite is development-only');
@@ -121,16 +146,25 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
       ? 'mainnet-beta'
       : 'devnet';
   const treasuryAddress = envString(env, 'TREASURY_ADDRESS');
-  if (production && (!treasuryAddress || !isSolanaAddress(treasuryAddress))) {
+  if (production && launchSwitches.purchases && (!treasuryAddress || !isSolanaAddress(treasuryAddress))) {
     throw new Error('TREASURY_ADDRESS must be a valid Solana address in production');
   }
-  const solanaRpcUrl = requireHttpsUrl(envString(env, 'SOLANA_RPC_URL'), 'SOLANA_RPC_URL', production);
-  const solUsdPriceUrl = requireHttpsUrl(envString(env, 'SOL_USD_PRICE_URL'), 'SOL_USD_PRICE_URL', production);
+  const solanaRpcUrl = requireHttpsUrl(
+    envString(env, 'SOLANA_RPC_URL'),
+    'SOLANA_RPC_URL',
+    production && launchSwitches.purchases,
+  );
+  const solUsdPriceUrl = requireHttpsUrl(
+    envString(env, 'SOL_USD_PRICE_URL'),
+    'SOL_USD_PRICE_URL',
+    production && launchSwitches.purchases,
+  );
   const adminWallets = (envString(env, 'ADMIN_WALLETS') ?? '')
     .split(',')
     .map((wallet) => wallet.trim())
     .filter(Boolean);
-  if (production && (adminWallets.length === 0 || adminWallets.some((wallet) => !isSolanaAddress(wallet)))) {
+  if (production && launchSwitches.adminActions
+    && (adminWallets.length === 0 || adminWallets.some((wallet) => !isSolanaAddress(wallet)))) {
     throw new Error('ADMIN_WALLETS must contain at least one valid Solana address in production');
   }
 
@@ -165,6 +199,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
   if (production && trustedProxyCidrs.length === 0) {
     throw new Error('TRUSTED_PROXY_CIDRS is required in production');
   }
+  const launchLimit = (key: string, fallback: number, maximum: number): number => {
+    const value = positiveInteger(env, key, fallback);
+    if (production && value > maximum) throw new Error(`${key} cannot exceed ${maximum} in production`);
+    return value;
+  };
 
   return {
     nodeEnv,
@@ -182,16 +221,24 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     solUsdPriceUrl,
     adminWallets: new Set(adminWallets),
     devSolUsdPrice,
+    launchSwitches,
+    marketRelayEnabled: booleanValue(env, 'MARKET_RELAY_ENABLED', production),
+    xBearerToken: envString(env, 'X_BEARER_TOKEN'),
+    xTrackedHandles: (envString(env, 'X_TRACKED_HANDLES') ?? 'DeItaone')
+      .split(',')
+      .map((handle) => handle.replace(/^@/, '').trim())
+      .filter((handle) => /^[A-Za-z0-9_]{1,15}$/.test(handle)),
+    xDailyRequestLimit: positiveInteger(env, 'X_DAILY_REQUEST_LIMIT', 500),
     limits: {
-      maxProcessConnections: positiveInteger(env, 'MAX_PROCESS_CONNECTIONS', 400),
-      maxRooms: positiveInteger(env, 'MAX_ROOMS', 16),
-      maxMarketShards: positiveInteger(env, 'MAX_MARKET_SHARDS', 8),
-      maxConcurrentConnectionsPerIp: positiveInteger(env, 'MAX_CONCURRENT_PER_IP', 20),
-      actorJoinsPerMinute: positiveInteger(env, 'ACTOR_JOINS_PER_MINUTE', 12),
-      ipJoinsPerMinute: positiveInteger(env, 'IP_JOINS_PER_MINUTE', 30),
-      anonymousSessionsPerMinute: positiveInteger(env, 'ANONYMOUS_SESSIONS_PER_MINUTE', 10),
-      authChallengesPerMinuteByIp: positiveInteger(env, 'AUTH_CHALLENGES_PER_MINUTE_IP', 5),
-      authChallengesPerMinuteByWallet: positiveInteger(env, 'AUTH_CHALLENGES_PER_MINUTE_WALLET', 5),
+      maxProcessConnections: launchLimit('MAX_PROCESS_CONNECTIONS', 400, 400),
+      maxRooms: launchLimit('MAX_ROOMS', 16, 16),
+      maxMarketShards: launchLimit('MAX_MARKET_SHARDS', 8, 8),
+      maxConcurrentConnectionsPerIp: launchLimit('MAX_CONCURRENT_PER_IP', 20, 20),
+      actorJoinsPerMinute: launchLimit('ACTOR_JOINS_PER_MINUTE', 12, 12),
+      ipJoinsPerMinute: launchLimit('IP_JOINS_PER_MINUTE', 30, 30),
+      anonymousSessionsPerMinute: launchLimit('ANONYMOUS_SESSIONS_PER_MINUTE', 10, 10),
+      authChallengesPerMinuteByIp: launchLimit('AUTH_CHALLENGES_PER_MINUTE_IP', 5, 5),
+      authChallengesPerMinuteByWallet: launchLimit('AUTH_CHALLENGES_PER_MINUTE_WALLET', 5, 5),
       purchaseQuotesPerHour: positiveInteger(env, 'PURCHASE_QUOTES_PER_HOUR', 10),
       purchaseConfirmsPerMinute: positiveInteger(env, 'PURCHASE_CONFIRMS_PER_MINUTE', 12),
     },

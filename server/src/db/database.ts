@@ -12,12 +12,14 @@ import type { ServerConfig } from '../config.js';
 import type { DatabaseSchema } from './types.js';
 import * as initialMigration from './migrations/001_initial.js';
 import * as identitySafetyMigration from './migrations/002_identity_safety.js';
+import * as launchOpsMigration from './migrations/003_launch_ops.js';
 
 class StaticMigrationProvider implements MigrationProvider {
   async getMigrations(): Promise<Record<string, Migration>> {
     return {
       '001_initial': initialMigration as Migration,
       '002_identity_safety': identitySafetyMigration as Migration,
+      '003_launch_ops': launchOpsMigration as Migration,
     };
   }
 }

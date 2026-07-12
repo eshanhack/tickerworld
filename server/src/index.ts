@@ -31,7 +31,7 @@ try {
 } finally {
   if (originalSend) ipcProcess.send = originalSend;
 }
-process.stdout.write(`Tickerworld multiplayer listening on :${runtime.config.port}\n`);
+runtime.logger.info('server_listening', { port: runtime.config.port, status: 'ready' });
 // PM2's wait_ready gate must not release traffic until configuration,
 // migrations, provider initialization, and the listening socket all succeed.
 originalSend?.('ready');

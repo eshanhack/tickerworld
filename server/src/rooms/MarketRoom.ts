@@ -6,12 +6,17 @@ import {
   SERVER_MESSAGES,
   STATE_PATCH_RATE_MS,
   allocateSpawnAssignment,
+  createPortalRoutes,
+  resolveWorldXZ,
+  sampleBoundedTerrainHeight,
   isActorId,
   isAnimalKind,
   isMarketSlug,
   isModerationReason,
   isSkinId,
   normalizeYaw,
+  isProtocolVersionAccepted,
+  EMOTE_KINDS,
   type ChatMessage,
   type EntitlementSku,
   type IdentityRefreshMessage,
@@ -19,10 +24,14 @@ import {
   type MarketSlug,
   type MoveSnapshot,
   type ReportSendMessage,
+  type EmoteSendMessage,
+  type PartyInviteRequestMessage,
+  type SpawnAssignment,
 } from '@tickerworld/shared';
 import { CloseCode, Room, validate, type AuthContext, type Client } from '@colyseus/core';
 import { z } from 'zod';
 import { createId } from '../services/crypto.js';
+import { AdmissionError } from '../services/admission.js';
 import { websocketOrigin, websocketPeer } from '../services/canonicalIp.js';
 import { validateMove, type MoveTracker } from './MoveValidator.js';
 import { MarketRoomState, PlayerState } from './schema.js';
@@ -37,6 +46,7 @@ import {
 interface RoomAuthData extends RoomIdentity {
   ipHash: string;
   admissionReservationId: string;
+  partyRoomId: string | null;
 }
 
 interface MarketClientData extends Omit<RoomIdentity, 'entitlements'> {
@@ -44,6 +54,7 @@ interface MarketClientData extends Omit<RoomIdentity, 'entitlements'> {
   entitlements: ReadonlySet<EntitlementSku>;
   move: MoveTracker;
   lastReportAt: number;
+  lastEmoteAt: number;
   spawnSlot: number;
 }
 
@@ -87,6 +98,53 @@ const identityRefreshSchema = z.object({
   anonymousToken: z.string().min(40).max(1_024).optional(),
 });
 
+const emoteSchema = z.object({
+  protocolVersion: z.number().int(),
+  kind: z.enum(EMOTE_KINDS),
+  nonce: z.string().regex(/^[A-Za-z0-9_-]{6,64}$/),
+});
+
+const partyInviteRequestSchema = z.object({
+  protocolVersion: z.number().int(),
+  requestId: z.string().regex(/^[A-Za-z0-9_-]{6,64}$/),
+});
+
+function nearbyPartySpawn(
+  actorId: string,
+  market: MarketSlug,
+  anchor: { x: number; z: number },
+  occupiedSlots: ReadonlySet<number>,
+  occupiedPositions: readonly { x: number; z: number }[],
+): SpawnAssignment {
+  const fallback = allocateSpawnAssignment(actorId, market, undefined, occupiedSlots);
+  let hash = 0x811c9dc5;
+  for (const character of actorId) hash = Math.imul(hash ^ character.charCodeAt(0), 0x01000193);
+  const startAngle = (hash >>> 0) / 0xffff_ffff * Math.PI * 2;
+  const portals = createPortalRoutes(market);
+  for (const radius of [3.2, 4.5, 5.8]) {
+    for (let offset = 0; offset < 8; offset += 1) {
+      const angle = startAngle + offset * Math.PI / 4;
+      const resolved = resolveWorldXZ(anchor, {
+        x: anchor.x + Math.cos(angle) * radius,
+        z: anchor.z + Math.sin(angle) * radius,
+      });
+      if (Math.hypot(resolved.x - anchor.x, resolved.z - anchor.z) < 2.4) continue;
+      if (portals.some((portal) => Math.hypot(resolved.x - portal.x, resolved.z - portal.z) < 4.5)) continue;
+      if (occupiedPositions.some((position) => (
+        Math.hypot(resolved.x - position.x, resolved.z - position.z) < 1.6
+      ))) continue;
+      return {
+        ...fallback,
+        x: resolved.x,
+        y: sampleBoundedTerrainHeight(resolved.x, resolved.z),
+        z: resolved.z,
+        yaw: Math.atan2(anchor.x - resolved.x, anchor.z - resolved.z),
+      };
+    }
+  }
+  return fallback;
+}
+
 export class MarketRoom extends Room<{ state: MarketRoomState; client: MarketClient }> {
   override maxClients = MARKET_ROOM_MAX_CLIENTS;
   override patchRate = STATE_PATCH_RATE_MS;
@@ -95,6 +153,7 @@ export class MarketRoom extends Room<{ state: MarketRoomState; client: MarketCli
   private market: MarketSlug = 'btc';
   private readonly chatHistory: ChatMessage[] = [];
   private readonly occupiedSpawnSlots = new Set<number>();
+  private stopMarketRelay: (() => void) | null = null;
 
   override messages = {
     [CLIENT_MESSAGES.move]: validate(moveSchema, (client, message) => {
@@ -112,6 +171,12 @@ export class MarketRoom extends Room<{ state: MarketRoomState; client: MarketCli
     [CLIENT_MESSAGES.identityRefresh]: validate(identityRefreshSchema, (client, message) => {
       void this.handleIdentityRefresh(client, message as IdentityRefreshMessage);
     }),
+    [CLIENT_MESSAGES.emote]: validate(emoteSchema, (client, message) => {
+      this.handleEmote(client, message as EmoteSendMessage);
+    }),
+    [CLIENT_MESSAGES.partyInviteRequest]: validate(partyInviteRequestSchema, (client, message) => {
+      this.handlePartyInviteRequest(client, message as PartyInviteRequestMessage);
+    }),
   };
 
   static override async onAuth(
@@ -121,6 +186,7 @@ export class MarketRoom extends Room<{ state: MarketRoomState; client: MarketCli
   ): Promise<RoomAuthData> {
     if (!isMarketSlug(options?.market)) throw new Error('invalid_market');
     const services = getRoomServices();
+    if (!services.switches.enabled('admissions')) throw new Error('admissions_disabled');
     if (!isAllowedRoomOrigin(
       websocketOrigin(context ?? {}),
       services.publicOrigins,
@@ -131,12 +197,28 @@ export class MarketRoom extends Room<{ state: MarketRoomState; client: MarketCli
     const identity = await resolveRoomIdentity(options, canonicalIp);
     const rejection = services.moderation.connectionRejection(identity);
     if (rejection) throw new Error(rejection);
-    const admissionReservationId = services.admissions.reserve(
-      identity.actorId,
-      identity.ipHash,
-      options.market,
-    );
-    return { ...identity, admissionReservationId };
+    let partyRoomId: string | null = null;
+    if (options.partyToken) {
+      const party = services.invites.inspect(options.partyToken);
+      if (!party.ok) throw new Error(party.code);
+      if (party.market !== options.market) throw new Error('party_invalid');
+      partyRoomId = party.roomId;
+    }
+    let admissionReservationId: string;
+    try {
+      admissionReservationId = services.admissions.reserve(
+        identity.actorId,
+        identity.ipHash,
+        options.market,
+      );
+    } catch (error) {
+      services.logger.warn('admission_rejected', {
+        market: options.market,
+        code: error instanceof AdmissionError ? error.code : 'unknown',
+      });
+      throw error;
+    }
+    return { ...identity, admissionReservationId, partyRoomId };
   }
 
   override onCreate(options: Partial<JoinOptions>): void {
@@ -151,12 +233,20 @@ export class MarketRoom extends Room<{ state: MarketRoomState; client: MarketCli
     directory.register(this.roomId, this.market, (populations) => {
       this.broadcast(SERVER_MESSAGES.population, populations);
     });
+    this.stopMarketRelay = services.marketRelay.subscribe(this.market, (state, mids) => {
+      this.broadcast(SERVER_MESSAGES.market, state);
+      this.broadcast(SERVER_MESSAGES.marketMids, mids);
+    });
   }
 
   override onJoin(client: MarketClient, options: JoinOptions): void {
     const identity = client.auth;
     if (!identity) throw new Error('missing_room_identity');
     if (options.market !== this.market) throw new Error('market_mismatch');
+    if (identity.partyRoomId && identity.partyRoomId !== this.roomId) {
+      getRoomServices().admissions.cancelReservation(identity.admissionReservationId);
+      throw new Error('party_invalid');
+    }
     const connectionKey = `${this.roomId}:${client.sessionId}`;
     getRoomServices().admissions.activate(
       identity.admissionReservationId,
@@ -164,19 +254,37 @@ export class MarketRoom extends Room<{ state: MarketRoomState; client: MarketCli
       this.market,
       connectionKey,
     );
+    let partyAnchor: { x: number; z: number } | null = null;
+    if (options.partyToken) {
+      const party = getRoomServices().invites.consume(options.partyToken, this.roomId, this.market);
+      if (!party.ok) {
+        getRoomServices().admissions.releaseConnection(connectionKey);
+        throw new Error(party.code);
+      }
+      partyAnchor = party.anchor;
+    }
     const fromMarket = isMarketSlug(options.fromMarket) ? options.fromMarket : undefined;
-    const spawn = allocateSpawnAssignment(
-      identity.actorId,
-      this.market,
-      fromMarket,
-      this.occupiedSpawnSlots,
-    );
+    const spawn = partyAnchor
+      ? nearbyPartySpawn(
+          identity.actorId,
+          this.market,
+          partyAnchor,
+          this.occupiedSpawnSlots,
+          [...this.state.players.values()].map(({ x, z }) => ({ x, z })),
+        )
+      : allocateSpawnAssignment(
+          identity.actorId,
+          this.market,
+          fromMarket,
+          this.occupiedSpawnSlots,
+        );
     this.occupiedSpawnSlots.add(spawn.slot);
     client.userData = {
       ...identity,
       entitlements: new Set(identity.entitlements),
       move: { lastSequence: -1, lastAcceptedAt: 0, lastReceivedAt: 0 },
       lastReportAt: 0,
+      lastEmoteAt: 0,
       spawnSlot: spawn.slot,
     };
     const player = new PlayerState();
@@ -190,6 +298,7 @@ export class MarketRoom extends Room<{ state: MarketRoomState; client: MarketCli
     player.username = identity.username ?? '';
     player.updatedAt = Date.now();
     this.state.players.set(client.sessionId, player);
+    getRoomServices().admissions.updatePosition(connectionKey, player.x, player.z);
     getRoomServices().moderation.registerConnection(connectionKey, {
       actorId: identity.actorId,
       walletAddress: identity.walletAddress,
@@ -228,6 +337,8 @@ export class MarketRoom extends Room<{ state: MarketRoomState; client: MarketCli
     getRoomServices().moderation.unregisterRoom(this.roomId);
     getRoomServices().admissions.unregisterRoom(this.roomId);
     getRoomServices().populations.unregister(this.roomId);
+    this.stopMarketRelay?.();
+    this.stopMarketRelay = null;
     this.occupiedSpawnSlots.clear();
   }
 
@@ -253,6 +364,7 @@ export class MarketRoom extends Room<{ state: MarketRoomState; client: MarketCli
     player.grounded = snapshot.grounded;
     player.gait = snapshot.gait;
     player.updatedAt = now;
+    getRoomServices().admissions.updatePosition(`${this.roomId}:${client.sessionId}`, player.x, player.z);
   }
 
   private handleChat(
@@ -265,6 +377,10 @@ export class MarketRoom extends Room<{ state: MarketRoomState; client: MarketCli
     }
     const services = getRoomServices();
     const data = this.clientData(client);
+    if (!services.switches.enabled('chatSend')) {
+      client.send(SERVER_MESSAGES.chatRejected, { code: 'disabled' });
+      return;
+    }
     if (services.moderation.isMuted(data.actorId)) {
       client.send(SERVER_MESSAGES.chatRejected, { code: 'muted' });
       return;
@@ -280,6 +396,10 @@ export class MarketRoom extends Room<{ state: MarketRoomState; client: MarketCli
     const safe = services.chatSafety.evaluate(payload.text);
     if (!safe.ok) {
       client.send(SERVER_MESSAGES.chatRejected, { code: safe.code });
+      return;
+    }
+    if (services.chatLimits.isRepeatedSpam(data.actorId, data.ipHash, safe.text)) {
+      client.send(SERVER_MESSAGES.chatRejected, { code: 'repeated_spam' });
       return;
     }
     const message: ChatMessage = {
@@ -302,10 +422,9 @@ export class MarketRoom extends Room<{ state: MarketRoomState; client: MarketCli
     if (payload.protocolVersion !== PROTOCOL_VERSION
       || !isAnimalKind(payload.animal)
       || !isSkinId(payload.skin)) return;
-    // Anonymous identities keep their assigned animal. Wallet accounts may use
-    // every base animal; paid skins require their exact entitlement.
+    // Every base animal is free at launch. Premium skins remain entitlement-only.
     const data = this.clientData(client);
-    if (!data.accountId) return;
+    if (!data.accountId && payload.skin !== 'base') return;
     if (payload.skin !== 'base' && !data.entitlements.has(payload.skin)) return;
     const player = this.state.players.get(client.sessionId);
     if (!player) return;
@@ -375,6 +494,10 @@ export class MarketRoom extends Room<{ state: MarketRoomState; client: MarketCli
       client.send(SERVER_MESSAGES.identityRejected, { code: 'invalid_identity' });
       return;
     }
+    if (payload.sessionToken && !getRoomServices().switches.enabled('publicWalletAuth')) {
+      client.send(SERVER_MESSAGES.identityRejected, { code: 'disabled' });
+      return;
+    }
     const data = this.clientData(client);
     try {
       const identity = await resolveRoomIdentityWithIpHash(payload, data.ipHash);
@@ -414,6 +537,46 @@ export class MarketRoom extends Room<{ state: MarketRoomState; client: MarketCli
     } catch {
       client.send(SERVER_MESSAGES.identityRejected, { code: 'invalid_identity' });
     }
+  }
+
+  private handleEmote(client: MarketClient, payload: EmoteSendMessage): void {
+    if (!isProtocolVersionAccepted(payload.protocolVersion)) return;
+    const data = this.clientData(client);
+    const now = Date.now();
+    if (now - data.lastEmoteAt < 350) return;
+    data.lastEmoteAt = now;
+    this.broadcast(SERVER_MESSAGES.emote, {
+      actorId: data.actorId,
+      kind: payload.kind,
+      nonce: payload.nonce,
+      protocolVersion: payload.protocolVersion,
+      sentAt: now,
+    });
+  }
+
+  private handlePartyInviteRequest(client: MarketClient, payload: PartyInviteRequestMessage): void {
+    if (!isProtocolVersionAccepted(payload.protocolVersion)) {
+      client.send(SERVER_MESSAGES.partyRejected, { requestId: payload.requestId, code: 'party_invalid' });
+      return;
+    }
+    if (this.clients.length >= this.maxClients) {
+      client.send(SERVER_MESSAGES.partyRejected, { requestId: payload.requestId, code: 'party_full' });
+      return;
+    }
+    const data = this.clientData(client);
+    const player = this.state.players.get(client.sessionId);
+    const invite = getRoomServices().invites.issue(
+      data.actorId,
+      this.roomId,
+      this.market,
+      Date.now(),
+      player ? { x: player.x, z: player.z } : null,
+    );
+    client.send(SERVER_MESSAGES.partyInvite, {
+      requestId: payload.requestId,
+      token: invite.token,
+      expiresAt: invite.expiresAt,
+    });
   }
 
   private clientData(client: MarketClient): MarketClientData {

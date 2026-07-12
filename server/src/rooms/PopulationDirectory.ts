@@ -50,6 +50,11 @@ export class PopulationDirectory {
     });
   }
 
+  room(roomId: string): { market: MarketSlug; clients: number } | null {
+    const entry = this.rooms.get(roomId);
+    return entry ? { market: entry.market, clients: entry.clients } : null;
+  }
+
   clear(): void {
     if (this.publishTimer) clearTimeout(this.publishTimer);
     this.publishTimer = null;

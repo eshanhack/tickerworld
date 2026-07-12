@@ -78,6 +78,8 @@ export const CLIENT_MESSAGES = {
   report: 'report',
   appearance: 'appearance',
   identityRefresh: 'identity-refresh',
+  emote: 'emote',
+  partyInviteRequest: 'party-invite-request',
 } as const;
 
 export const SERVER_MESSAGES = {
@@ -90,4 +92,9 @@ export const SERVER_MESSAGES = {
   reportRejected: 'report-rejected',
   identityRefreshed: 'identity-refreshed',
   identityRejected: 'identity-rejected',
+  emote: 'emote',
+  partyInvite: 'party-invite',
+  partyRejected: 'party-rejected',
+  market: 'market',
+  marketMids: 'market-mids',
 } as const;

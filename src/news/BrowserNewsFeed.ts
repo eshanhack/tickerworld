@@ -14,6 +14,8 @@ import {
   type NewsFeedUpdate,
   type NewsItem,
 } from './types.js';
+import { QA_MODE_ALLOWED } from '../config';
+import type { AssetSymbol } from '../types';
 
 type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
@@ -24,10 +26,11 @@ export interface BrowserNewsFeedOptions {
   now?: () => number;
   fetcher?: Fetcher;
   forceSimulation?: boolean;
+  activeMarket?: AssetSymbol;
 }
 
 function simulationRequested(): boolean {
-  if (typeof location === 'undefined') return false;
+  if (!QA_MODE_ALLOWED || typeof location === 'undefined') return false;
   return new URLSearchParams(location.search).get('news') === 'sim';
 }
 
@@ -42,6 +45,7 @@ export class BrowserNewsFeed implements NewsFeed {
   private readonly now: () => number;
   private readonly fetcher: Fetcher;
   private readonly forceSimulation: boolean;
+  private activeMarket: AssetSymbol | null;
   private readonly listeners = new Set<NewsFeedListener>();
   private readonly seenIds = new Set<string>();
   private newestCreatedAt = Number.NEGATIVE_INFINITY;
@@ -64,6 +68,7 @@ export class BrowserNewsFeed implements NewsFeed {
     this.now = options.now ?? Date.now;
     this.fetcher = options.fetcher ?? ((input, init) => fetch(input, init));
     this.forceSimulation = options.forceSimulation ?? simulationRequested();
+    this.activeMarket = options.activeMarket ?? null;
     this.snapshot = {
       mode: this.forceSimulation ? 'simulated' : 'connecting',
       items: [],
@@ -82,6 +87,20 @@ export class BrowserNewsFeed implements NewsFeed {
     }
     await this.pollOnce();
     this.schedulePoll();
+  }
+
+  setActiveMarket(symbol: AssetSymbol): void {
+    if (this.activeMarket === symbol || this.disposed) return;
+    this.activeMarket = symbol;
+    this.seenIds.clear();
+    this.newestCreatedAt = Number.NEGATIVE_INFINITY;
+    this.liveBaselineEstablished = false;
+    if (this.forceSimulation || !this.started || this.paused) return;
+    if (this.pollTimer !== undefined) clearTimeout(this.pollTimer);
+    this.pollTimer = undefined;
+    this.requestController?.abort();
+    this.publish('connecting', [], [], this.now());
+    void this.pollAndSchedule();
   }
 
   pause(): void {
@@ -135,7 +154,7 @@ export class BrowserNewsFeed implements NewsFeed {
     const controller = new AbortController();
     this.requestController = controller;
     try {
-      const response = await this.fetcher(this.endpoint, {
+      const response = await this.fetcher(this.scopedEndpoint(), {
         method: 'GET',
         headers: { Accept: 'application/json' },
         signal: controller.signal,
@@ -162,6 +181,14 @@ export class BrowserNewsFeed implements NewsFeed {
     } finally {
       if (this.requestController === controller) this.requestController = undefined;
     }
+  }
+
+  private scopedEndpoint(): string {
+    if (!this.activeMarket) return this.endpoint;
+    const base = typeof location === 'undefined' ? 'https://tickerworld.io' : location.origin;
+    const url = new URL(this.endpoint, base);
+    url.searchParams.set('scope', this.activeMarket);
+    return /^https?:/i.test(this.endpoint) ? url.toString() : `${url.pathname}${url.search}`;
   }
 
   private acceptLiveItems(incoming: readonly NewsItem[], checkedAt: number): void {

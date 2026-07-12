@@ -17,6 +17,8 @@ import {
   type IdentityRejection,
   type JoinOptions,
   type MarketSlug,
+  type CompactMarketMid,
+  type RelayedMarketState,
   type ModerationReason,
   type MoveSnapshot,
   type NetPlayerState,
@@ -24,16 +26,39 @@ import {
   type ReportRejection,
   type RoomConnectionState,
   type RoomPopulation,
+  type PartyJoinResult,
   type SkinId,
+  isProtocolVersionAccepted,
 } from '../../shared/src/index.js';
 import type { GameSystem } from '../types';
 import {
+  EMOTE_CLIENT_MESSAGE,
+  EMOTE_SERVER_MESSAGE,
+  EmoteRateGate,
+  createEmoteNonce,
+  parseServerEmote,
+  type EmoteKind,
+  type ServerEmoteMessage,
+} from '../social/emotes';
+import {
+  PARTY_CLIENT_INVITE_REQUEST,
+  PARTY_SERVER_INVITE,
+  isPartyToken,
+  parsePartyInvite,
+  partyFailureFromError,
+  type PartyInvite,
+  type PartyJoinStatus,
+} from '../share/party';
+import {
+  clearSignedGuestIdentity,
   readGuestIdentity,
   readSignedGuestIdentity,
   writeSignedGuestIdentity,
   type GuestIdentity,
   type SignedGuestIdentity,
 } from './identity';
+
+type RoomMatchClient = Pick<Client, 'joinOrCreate' | 'joinById'>;
 
 type RoomStateShape = {
   readonly players?: {
@@ -67,7 +92,7 @@ export interface RoomClientSystemOptions {
   readonly anonymousIdentity?: SignedGuestIdentity;
   readonly fetch?: typeof fetch;
   /** Test seam; production uses the Colyseus SDK client directly. */
-  readonly clientFactory?: (endpoint: string) => Pick<Client, 'joinOrCreate'>;
+  readonly clientFactory?: (endpoint: string) => RoomMatchClient;
   /** Bounds a blackholed matchmaking request. Defaults to eight seconds. */
   readonly joinTimeoutMs?: number;
   readonly snapshot: () => LocalNetworkSnapshot;
@@ -79,6 +104,9 @@ export interface RoomClientSystemOptions {
   readonly onReportRejected?: (rejection: ReportRejection) => void;
   readonly onIdentityRefreshRejected?: (rejection: IdentityRejection) => void;
   readonly onIdentityChanged?: (identity: GuestIdentity) => void;
+  readonly onEmote?: (event: ServerEmoteMessage) => void;
+  readonly onPartyJoinStatus?: (status: PartyJoinStatus) => void;
+  readonly partyToken?: string | null;
   readonly random?: () => number;
 }
 
@@ -87,6 +115,8 @@ type ChatListener = (message: ChatMessage) => void;
 type ChatRejectionListener = (rejection: ChatRejection) => void;
 type ReportAcceptedListener = () => void;
 type ReportRejectionListener = (rejection: ReportRejection) => void;
+type MarketRelayListener = (state: RelayedMarketState) => void;
+type MarketMidsListener = (mids: readonly CompactMarketMid[]) => void;
 
 const EMPTY_POPULATIONS = new Map<MarketSlug, RoomPopulation>();
 
@@ -116,6 +146,12 @@ interface JoinIdentityOptions {
   readonly session: AccountRoomSession | null;
   readonly retryOnFailure?: boolean;
   readonly publishIdentity?: boolean;
+}
+
+interface PendingPartyInvite {
+  readonly requestId: string;
+  readonly resolve: (invite: PartyInvite | null) => void;
+  readonly timer: number;
 }
 
 export function createRoomJoinOptions(
@@ -203,12 +239,16 @@ export class RoomClientSystem implements GameSystem {
   private readonly chatRejectionListeners = new Set<ChatRejectionListener>();
   private readonly reportAcceptedListeners = new Set<ReportAcceptedListener>();
   private readonly reportRejectionListeners = new Set<ReportRejectionListener>();
+  private readonly marketListeners = new Set<MarketRelayListener>();
+  private readonly marketMidsListeners = new Set<MarketMidsListener>();
   private readonly populations = new Map<MarketSlug, RoomPopulation>();
   private readonly random: () => number;
-  private readonly clientFactory: (endpoint: string) => Pick<Client, 'joinOrCreate'>;
+  private readonly emoteGate = new EmoteRateGate();
+  private readonly clientFactory: (endpoint: string) => RoomMatchClient;
   private readonly joinTimeoutMs: number;
-  private client: Pick<Client, 'joinOrCreate'> | null = null;
+  private client: RoomMatchClient | null = null;
   private room: Room | null = null;
+  private roomEpoch = 0;
   private market: MarketSlug = 'btc';
   private connection: RoomConnectionState = 'offline';
   private remotes: NetPlayerState[] = [];
@@ -224,6 +264,10 @@ export class RoomClientSystem implements GameSystem {
   private accountSession: AccountRoomSession | null = null;
   private boundActorId: string | null = null;
   private pendingIdentityRefresh: PendingIdentityRefresh | null = null;
+  private pendingPartyInvite: PendingPartyInvite | null = null;
+  private pendingPartyToken: string | null;
+  private pendingMarketState: RelayedMarketState | null = null;
+  private marketPairTimer: number | undefined;
   private operationTail: Promise<void> = Promise.resolve();
   private joinFromMarket: MarketSlug | undefined;
   private authoritativeSpawnReceived = false;
@@ -243,6 +287,7 @@ export class RoomClientSystem implements GameSystem {
       : 8_000;
     this.snapshotProvider = options.snapshot;
     this.random = options.random ?? Math.random;
+    this.pendingPartyToken = isPartyToken(options.partyToken) ? options.partyToken : null;
   }
 
   get state(): RoomClientSnapshot {
@@ -274,6 +319,11 @@ export class RoomClientSystem implements GameSystem {
     return this.accountSession?.token ?? null;
   }
 
+  /** Changes only when a new Colyseus room seat is successfully joined. */
+  get sessionRoomEpoch(): number {
+    return this.roomEpoch;
+  }
+
   subscribe(listener: SnapshotListener): () => void {
     this.listeners.add(listener);
     listener(this.state);
@@ -298,6 +348,16 @@ export class RoomClientSystem implements GameSystem {
   subscribeReportRejected(listener: ReportRejectionListener): () => void {
     this.reportRejectionListeners.add(listener);
     return () => this.reportRejectionListeners.delete(listener);
+  }
+
+  subscribeMarket(listener: MarketRelayListener): () => void {
+    this.marketListeners.add(listener);
+    return () => this.marketListeners.delete(listener);
+  }
+
+  subscribeMarketMids(listener: MarketMidsListener): () => void {
+    this.marketMidsListeners.add(listener);
+    return () => this.marketMidsListeners.delete(listener);
   }
 
   connect(market: MarketSlug): Promise<boolean> {
@@ -413,6 +473,24 @@ export class RoomClientSystem implements GameSystem {
     return true;
   }
 
+  sendEmote(kind: EmoteKind): string | null {
+    if (!this.room || this.connection !== 'online' || !this.emoteGate.tryTake()) return null;
+    const nonce = createEmoteNonce(this.random);
+    this.room.send(EMOTE_CLIENT_MESSAGE, { protocolVersion: PROTOCOL_VERSION, kind, nonce });
+    return nonce;
+  }
+
+  requestPartyInvite(): Promise<PartyInvite | null> {
+    if (!this.room || this.connection !== 'online') return Promise.resolve(null);
+    this.finishPartyInvite(null);
+    const requestId = createEmoteNonce(this.random);
+    return new Promise<PartyInvite | null>((resolve) => {
+      const timer = Number(globalThis.setTimeout(() => this.finishPartyInvite(null), 5_000));
+      this.pendingPartyInvite = { requestId, resolve, timer };
+      this.room!.send(PARTY_CLIENT_INVITE_REQUEST, { protocolVersion: PROTOCOL_VERSION, requestId });
+    });
+  }
+
   setVisible(visible: boolean): void {
     this.visible = visible;
     if (!visible) this.sendAccumulator = 0;
@@ -425,11 +503,15 @@ export class RoomClientSystem implements GameSystem {
     this.generation += 1;
     this.clearRetry();
     this.finishIdentityRefresh(false);
+    this.finishPartyInvite(null);
+    this.clearPendingMarketState();
     this.listeners.clear();
     this.chatListeners.clear();
     this.chatRejectionListeners.clear();
     this.reportAcceptedListeners.clear();
     this.reportRejectionListeners.clear();
+    this.marketListeners.clear();
+    this.marketMidsListeners.clear();
     void this.leaveRoom();
     this.client = null;
     this.remotes = [];
@@ -439,6 +521,7 @@ export class RoomClientSystem implements GameSystem {
   private async join(
     generation: number,
     identityOptions?: JoinIdentityOptions,
+    refreshedAnonymousIdentity = false,
   ): Promise<boolean> {
     if (!this.endpoint) {
       this.setConnection('offline', 'Multiplayer is not configured yet.');
@@ -457,14 +540,29 @@ export class RoomClientSystem implements GameSystem {
         session,
         this.joinFromMarket,
       );
+      const partyToken = this.pendingPartyToken;
+      const joinOptions = partyToken ? { ...options, partyToken } : options;
+      let roomRequest: Promise<Room>;
+      if (partyToken) {
+        const redemption = await this.redeemPartyToken(partyToken);
+        if (!redemption.ok || redemption.market !== this.market) {
+          const failure = redemption.ok ? 'party_invalid' : redemption.code;
+          this.fallbackFromParty(partyToken, failure);
+          return this.join(generation, identityOptions);
+        }
+        roomRequest = this.client.joinById(redemption.roomId, joinOptions);
+      } else {
+        roomRequest = this.client.joinOrCreate(MARKET_ROOM_NAME, joinOptions);
+      }
       const room = await this.joinRoomWithTimeout(
-        this.client.joinOrCreate(MARKET_ROOM_NAME, options),
+        roomRequest,
       );
       if (this.disposed || generation !== this.generation) {
         await room.leave(true);
         return false;
       }
       this.room = room;
+      this.roomEpoch += 1;
       this.boundActorId = targetIdentity.actorId;
       this.joinFromMarket = undefined;
       this.retryAttempt = 0;
@@ -475,31 +573,53 @@ export class RoomClientSystem implements GameSystem {
       room.reconnection.maxRetries = 3;
       room.reconnection.minDelay = 500;
       room.reconnection.maxDelay = 2_000;
-      room.onStateChange((state: RoomStateShape) => this.acceptState(state));
+      const isCurrentRoom = (): boolean => room === this.room
+        && generation === this.generation
+        && !this.disposed;
+      room.onStateChange((state: RoomStateShape) => {
+        if (isCurrentRoom()) this.acceptState(state);
+      });
       this.acceptState(room.state as RoomStateShape);
-      room.onMessage<CorrectionMessage>(SERVER_MESSAGES.correction, (message) => this.options.onCorrection?.(message));
+      room.onMessage<CorrectionMessage>(SERVER_MESSAGES.correction, (message) => {
+        if (isCurrentRoom()) this.options.onCorrection?.(message);
+      });
       room.onMessage<ChatMessage>(SERVER_MESSAGES.chat, (message) => {
+        if (!isCurrentRoom()) return;
         this.options.onChat?.(message);
         for (const listener of this.chatListeners) listener(message);
       });
       room.onMessage<ChatRejection>(SERVER_MESSAGES.chatRejected, (message) => {
+        if (!isCurrentRoom()) return;
         this.options.onChatRejected?.(message);
         for (const listener of this.chatRejectionListeners) listener(message);
       });
       room.onMessage<RoomPopulation | readonly RoomPopulation[]>(SERVER_MESSAGES.population, (message) => {
+        if (!isCurrentRoom()) return;
         const updates = Array.isArray(message) ? message : [message];
         for (const update of updates) this.populations.set(update.market, update);
         this.emit();
       });
+      room.onMessage<RelayedMarketState>(SERVER_MESSAGES.market, (state) => {
+        if (isCurrentRoom()) this.queueMarketState(state);
+      });
+      room.onMessage<readonly CompactMarketMid[]>(SERVER_MESSAGES.marketMids, (mids) => {
+        if (!isCurrentRoom()) return;
+        const bounded = Array.isArray(mids) ? mids.slice(0, 8) : [];
+        for (const listener of this.marketMidsListeners) listener(bounded);
+        this.flushPendingMarketState();
+      });
       room.onMessage(SERVER_MESSAGES.reportAccepted, () => {
+        if (!isCurrentRoom()) return;
         this.options.onReportAccepted?.();
         for (const listener of this.reportAcceptedListeners) listener();
       });
       room.onMessage<ReportRejection>(SERVER_MESSAGES.reportRejected, (rejection) => {
+        if (!isCurrentRoom()) return;
         this.options.onReportRejected?.(rejection);
         for (const listener of this.reportRejectionListeners) listener(rejection);
       });
       room.onMessage<IdentityRefreshResult>(SERVER_MESSAGES.identityRefreshed, (identity) => {
+        if (!isCurrentRoom()) return;
         const pending = this.pendingIdentityRefresh;
         if (!pending || identity.actorId !== pending.actorId) return;
         const acceptedSession = pending.session;
@@ -510,21 +630,41 @@ export class RoomClientSystem implements GameSystem {
         });
       });
       room.onMessage<IdentityRejection>(SERVER_MESSAGES.identityRejected, (rejection) => {
+        if (!isCurrentRoom()) return;
         this.lastError = `Identity refresh rejected: ${rejection.code}`;
         this.finishIdentityRefresh(false);
         this.options.onIdentityRefreshRejected?.(rejection);
         this.emit();
       });
+      room.onMessage<unknown>(EMOTE_SERVER_MESSAGE, (value) => {
+        if (!isCurrentRoom()) return;
+        const event = parseServerEmote(value);
+        if (event && isProtocolVersionAccepted(event.protocolVersion)) this.options.onEmote?.(event);
+      });
+      room.onMessage<unknown>(PARTY_SERVER_INVITE, (value) => {
+        if (!isCurrentRoom()) return;
+        const invite = parsePartyInvite(value);
+        if (!invite || invite.requestId !== this.pendingPartyInvite?.requestId) return;
+        this.finishPartyInvite(invite);
+      });
+      room.onMessage<{ requestId?: unknown }>(SERVER_MESSAGES.partyRejected, (value) => {
+        if (!isCurrentRoom()) return;
+        if (value?.requestId === this.pendingPartyInvite?.requestId) this.finishPartyInvite(null);
+      });
       room.onMessage(SERVER_MESSAGES.protocolRejected, () => {
+        if (!isCurrentRoom()) return;
         this.setConnection('incompatible', 'Multiplayer is updating. Solo mode is still available.');
       });
-      room.onDrop(() => this.setConnection('reconnecting', null));
+      room.onDrop(() => {
+        if (isCurrentRoom()) this.setConnection('reconnecting', null);
+      });
       room.onReconnect(() => {
+        if (!isCurrentRoom()) return;
         this.setConnection('online', null);
         this.sendIdentityRefresh(this.pendingIdentityRefresh?.session ?? this.accountSession);
       });
       room.onError((_code, message) => {
-        if (message) this.lastError = message;
+        if (isCurrentRoom() && message) this.lastError = message;
       });
       room.onLeave(() => {
         if (room !== this.room || this.disposed || generation !== this.generation) return;
@@ -532,17 +672,39 @@ export class RoomClientSystem implements GameSystem {
         this.boundActorId = null;
         this.remotes = [];
         this.finishIdentityRefresh(false);
+        this.finishPartyInvite(null);
+        this.clearPendingMarketState();
         this.setConnection('offline', this.lastError ?? 'Room connection lost.');
         this.scheduleRetry();
       });
       this.setConnection('online', null);
+      if (partyToken) {
+        this.pendingPartyToken = null;
+        this.options.onPartyJoinStatus?.({ status: 'joined', token: partyToken });
+      }
       if (identityOptions?.publishIdentity !== false) {
         this.options.onIdentityChanged?.(targetIdentity);
       }
       return true;
     } catch (error) {
       if (this.disposed || generation !== this.generation) return false;
+      const partyToken = this.pendingPartyToken;
+      const partyFailure = partyToken ? partyFailureFromError(error) : null;
+      if (partyToken && partyFailure) {
+        this.fallbackFromParty(partyToken, partyFailure);
+        return this.join(generation, identityOptions);
+      }
       const message = error instanceof Error ? error.message : 'Room server unavailable.';
+      if (
+        !refreshedAnonymousIdentity
+        && !identityOptions?.session
+        && !this.accountSession
+        && message.includes('anonymous_token_required')
+      ) {
+        this.anonymousIdentity = null;
+        clearSignedGuestIdentity();
+        return this.join(generation, identityOptions, true);
+      }
       this.setConnection('offline', message);
       if (identityOptions?.retryOnFailure !== false) this.scheduleRetry();
       return false;
@@ -603,6 +765,29 @@ export class RoomClientSystem implements GameSystem {
       expiresAt: payload.expiresAt,
     };
     writeSignedGuestIdentity(this.anonymousIdentity);
+  }
+
+  private async redeemPartyToken(token: string): Promise<PartyJoinResult> {
+    if (!this.apiEndpoint) throw new Error('Party invites are unavailable while multiplayer is offline.');
+    const response = await this.requestFetch(`${this.apiEndpoint}/api/invites/redeem`, {
+      method: 'POST',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token }),
+    });
+    const payload = await response.json().catch(() => null) as PartyJoinResult | null;
+    if (!response.ok || !payload || typeof payload !== 'object' || typeof payload.ok !== 'boolean') {
+      throw new Error('Party invite lookup failed.');
+    }
+    return payload;
+  }
+
+  private fallbackFromParty(token: string, failure: 'party_full' | 'party_invalid' | 'party_expired'): void {
+    this.pendingPartyToken = null;
+    this.options.onPartyJoinStatus?.({
+      status: failure === 'party_full' ? 'full' : failure === 'party_expired' ? 'expired' : 'invalid',
+      token,
+      fallback: 'normal-shard',
+    });
   }
 
   private async joinRoomWithTimeout(roomRequest: Promise<Room>): Promise<Room> {
@@ -714,11 +899,50 @@ export class RoomClientSystem implements GameSystem {
     pending.resolve(accepted);
   }
 
+  private finishPartyInvite(invite: PartyInvite | null): void {
+    const pending = this.pendingPartyInvite;
+    if (!pending) return;
+    this.pendingPartyInvite = null;
+    globalThis.clearTimeout(pending.timer);
+    pending.resolve(invite);
+  }
+
+  private queueMarketState(state: RelayedMarketState): void {
+    // The room broadcasts state immediately before its compact mids. Hold the
+    // state briefly so consumers see both from the same relay tick rather than
+    // applying portal prices one publication behind.
+    if (this.pendingMarketState) this.flushPendingMarketState();
+    this.pendingMarketState = state;
+    this.marketPairTimer = Number(globalThis.setTimeout(() => {
+      this.marketPairTimer = undefined;
+      this.flushPendingMarketState();
+    }, 50));
+  }
+
+  private flushPendingMarketState(): void {
+    if (this.marketPairTimer !== undefined) {
+      globalThis.clearTimeout(this.marketPairTimer);
+      this.marketPairTimer = undefined;
+    }
+    const state = this.pendingMarketState;
+    this.pendingMarketState = null;
+    if (!state) return;
+    for (const listener of this.marketListeners) listener(state);
+  }
+
+  private clearPendingMarketState(): void {
+    if (this.marketPairTimer !== undefined) globalThis.clearTimeout(this.marketPairTimer);
+    this.marketPairTimer = undefined;
+    this.pendingMarketState = null;
+  }
+
   private async leaveRoom(): Promise<void> {
     const room = this.room;
     this.room = null;
     this.boundActorId = null;
     this.finishIdentityRefresh(false);
+    this.finishPartyInvite(null);
+    this.clearPendingMarketState();
     if (!room) return;
     // Intentional transfers must never enter the SDK's automatic reconnect
     // loop. Keep listeners until the leave acknowledgement arrives: leave()

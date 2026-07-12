@@ -30,6 +30,8 @@ interface ActiveConnection {
   market: MarketSlug;
   connectionKey: string;
   ipHash: string;
+  x: number | null;
+  z: number | null;
 }
 
 export interface AdmissionLimits {
@@ -104,7 +106,9 @@ export class AdmissionControl {
     if (active && active.connectionKey !== connectionKey) throw new AdmissionError('actor_already_connected');
     this.reservations.delete(reservation.id);
     this.reservationByActor.delete(actorId);
-    this.activeByActor.set(actorId, { actorId, market, connectionKey, ipHash: reservation.ipHash });
+    this.activeByActor.set(actorId, {
+      actorId, market, connectionKey, ipHash: reservation.ipHash, x: null, z: null,
+    });
     this.actorByConnection.set(connectionKey, actorId);
   }
 
@@ -114,6 +118,34 @@ export class AdmissionControl {
     this.actorByConnection.delete(connectionKey);
     const active = this.activeByActor.get(actorId);
     if (active?.connectionKey === connectionKey) this.activeByActor.delete(actorId);
+  }
+
+  cancelReservation(reservationId: string): void {
+    const reservation = this.reservations.get(reservationId);
+    if (!reservation) return;
+    this.reservations.delete(reservationId);
+    if (this.reservationByActor.get(reservation.actorId) === reservationId) {
+      this.reservationByActor.delete(reservation.actorId);
+    }
+  }
+
+  isActorInRoom(actorId: string, roomId: string): boolean {
+    const active = this.activeByActor.get(actorId);
+    return Boolean(active?.connectionKey.startsWith(`${roomId}:`));
+  }
+
+  updatePosition(connectionKey: string, x: number, z: number): void {
+    if (!Number.isFinite(x) || !Number.isFinite(z)) return;
+    const actorId = this.actorByConnection.get(connectionKey);
+    const active = actorId ? this.activeByActor.get(actorId) : undefined;
+    if (!active || active.connectionKey !== connectionKey) return;
+    active.x = x;
+    active.z = z;
+  }
+
+  actorPosition(actorId: string): { x: number; z: number } | null {
+    const active = this.activeByActor.get(actorId);
+    return active && active.x !== null && active.z !== null ? { x: active.x, z: active.z } : null;
   }
 
   registerRoom(roomId: string, market: MarketSlug): void {

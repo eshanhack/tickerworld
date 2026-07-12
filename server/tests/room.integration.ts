@@ -67,6 +67,14 @@ describe.sequential('Colyseus market rooms', () => {
     expect(anonymous.statusCode).toBe(201);
     expect(anonymous.data.actorId).toMatch(/^anon_/);
     expect(anonymous.data.token).toContain('.');
+    const capabilities = await testServer.http.get('/api/capabilities');
+    expect(capabilities.data).toMatchObject({
+      protocolVersion: PROTOCOL_VERSION,
+      switches: { admissions: true, chatSend: true, purchases: false },
+      multiplayerAvailable: true,
+      maxPlayersPerShard: 50,
+      maxProcessConnections: 400,
+    });
   });
 
   it('binds wallet authentication to the signed anonymous actor and serves the canonical account API', async () => {
@@ -204,6 +212,68 @@ describe.sequential('Colyseus market rooms', () => {
     });
     expect(room.roomId).toBeTruthy();
     await room.leave();
+  });
+
+  it('issues same-shard invites through room and HTTP paths and relays bounded emotes', async () => {
+    const hostIdentity = runtime.anonymous.issue();
+    const host = await testServer.sdk.joinOrCreate('market', {
+      protocolVersion: PROTOCOL_VERSION,
+      market: 'sol',
+      animal: hostIdentity.animal,
+      anonymousToken: hostIdentity.token,
+    });
+    host.onMessage(SERVER_MESSAGES.population, () => {});
+    host.onMessage(SERVER_MESSAGES.emote, () => {});
+    const roomInvite = host.waitForMessage(SERVER_MESSAGES.partyInvite);
+    host.send(CLIENT_MESSAGES.partyInviteRequest, {
+      protocolVersion: PROTOCOL_VERSION,
+      requestId: 'request-room-1',
+    });
+    await expect(roomInvite).resolves.toMatchObject({
+      requestId: 'request-room-1',
+      token: expect.any(String),
+      expiresAt: expect.any(Number),
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 225));
+    const issued = await testServer.http.post('/api/invites', { body: {
+      market: 'sol',
+      roomId: host.roomId,
+      anonymousToken: hostIdentity.token,
+    } });
+    expect(issued.statusCode).toBe(201);
+    expect(issued.data).toMatchObject({ maxJoins: 12, remainingJoins: 12 });
+    const redeemed = await testServer.http.post('/api/invites/redeem', {
+      body: { token: issued.data.token },
+    });
+    expect(redeemed.data).toMatchObject({ ok: true, market: 'sol', roomId: host.roomId });
+
+    const guestIdentity = runtime.anonymous.issue();
+    const guest = await testServer.sdk.joinById(host.roomId, {
+      protocolVersion: PROTOCOL_VERSION,
+      market: 'sol',
+      animal: guestIdentity.animal,
+      anonymousToken: guestIdentity.token,
+      partyToken: issued.data.token,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const partyPlayers = [...(host.state as any).players.values()];
+    const hostPlayer = partyPlayers.find((player: any) => player.actorId === hostIdentity.actorId);
+    const guestPlayer = partyPlayers.find((player: any) => player.actorId === guestIdentity.actorId);
+    expect(Math.hypot(hostPlayer.x - guestPlayer.x, hostPlayer.z - guestPlayer.z)).toBeLessThanOrEqual(5.9);
+    const emote = guest.waitForMessage(SERVER_MESSAGES.emote);
+    host.send(CLIENT_MESSAGES.emote, {
+      protocolVersion: PROTOCOL_VERSION,
+      kind: 'sparkle-heart',
+      nonce: 'emote-1',
+    });
+    await expect(emote).resolves.toMatchObject({
+      actorId: hostIdentity.actorId,
+      kind: 'sparkle-heart',
+      nonce: 'emote-1',
+    });
+    await host.leave();
+    await guest.leave();
   });
 
   it('rejects unsigned identities and keeps one live connection per actor', async () => {

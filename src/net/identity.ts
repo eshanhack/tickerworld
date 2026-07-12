@@ -89,6 +89,14 @@ export function writeSignedGuestIdentity(
   }
 }
 
+export function clearSignedGuestIdentity(storage: Storage | null = safeSessionStorage()): void {
+  try {
+    storage?.removeItem(SIGNED_IDENTITY_KEY);
+  } catch {
+    // A failed cleanup still allows the in-memory refresh to proceed.
+  }
+}
+
 function safeSessionStorage(): Storage | null {
   try {
     return typeof sessionStorage === 'undefined' ? null : sessionStorage;

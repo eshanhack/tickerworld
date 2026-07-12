@@ -13,6 +13,10 @@ import { hashIp } from '../services/crypto.js';
 import type { PopulationDirectory } from './PopulationDirectory.js';
 import type { AdmissionControl } from '../services/admission.js';
 import type { CanonicalIpResolver } from '../services/canonicalIp.js';
+import type { RuntimeSwitchboard } from '../services/runtimeSwitches.js';
+import type { PartyInviteService } from '../services/partyInvites.js';
+import type { MarketRelay } from '../services/marketRelay.js';
+import type { SafeLogger } from '../services/safeLogger.js';
 
 export interface RoomIdentity {
   actorId: string;
@@ -36,6 +40,10 @@ export interface RoomServices {
   ipHmacSecret: string;
   publicOrigins: readonly string[];
   requireWebSocketOrigin: boolean;
+  switches: RuntimeSwitchboard;
+  invites: PartyInviteService;
+  marketRelay: MarketRelay;
+  logger: SafeLogger;
 }
 
 let current: RoomServices | null = null;

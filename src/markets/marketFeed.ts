@@ -1,4 +1,5 @@
 import { ASSET_SYMBOLS, type AssetState, type AssetSymbol, type Candle, type FeedMode, type MarketFeed } from '../types';
+import type { CompactMarketMid, RelayedMarketState } from '../../shared/src/index.js';
 import { FORCE_SIMULATION, WORLD_SEED } from '../config';
 import { BASE_PRICES, createSimulatedCandles, createSimulatedHistory, hashString, mulberry32, stepSimulation } from './simulator';
 import {
@@ -239,14 +240,28 @@ export function parseHyperliquidTrades(payload: unknown): ParsedTrade[] {
   return trades.sort((left, right) => left.time - right.time);
 }
 
-export function buildHyperliquidSubscriptions(): HyperliquidSubscription[] {
+export function buildHyperliquidSubscriptions(activeSymbol?: AssetSymbol): HyperliquidSubscription[] {
+  const symbols = activeSymbol ? [activeSymbol] : ASSET_SYMBOLS;
   return [
     { type: 'allMids' },
-    ...ASSET_SYMBOLS.flatMap((coin): HyperliquidSubscription[] => [
+    ...symbols.flatMap((coin): HyperliquidSubscription[] => [
       { type: 'trades', coin },
       { type: 'candle', coin, interval: '1m' },
     ]),
   ];
+}
+
+/** Parses the compact allMids payload used for portal labels. */
+export function parseHyperliquidMids(payload: unknown): Partial<Record<AssetSymbol, number>> {
+  const source = isRecord(payload) && isRecord(payload.mids) ? payload.mids : payload;
+  if (!isRecord(source)) return {};
+  const mids: Partial<Record<AssetSymbol, number>> = {};
+  for (const [key, value] of Object.entries(source)) {
+    const symbol = toAssetSymbol(key);
+    const price = finiteNumber(value);
+    if (symbol && price !== undefined && price > 0) mids[symbol] = price;
+  }
+  return mids;
 }
 
 export function computeReconnectDelay(attempt: number, random = Math.random): number {
@@ -274,6 +289,10 @@ export class HyperliquidMarketFeed implements MarketFeed {
   private readonly lastTradeTime = new Map<AssetSymbol, number>();
   private readonly minuteHistories = new Map<AssetSymbol, Candle[]>();
   private readonly dailyHistories = new Map<AssetSymbol, Candle[]>();
+  private readonly prefetchedSnapshots = new Map<AssetSymbol, { snapshot: SnapshotBundle; fetchedAt: number }>();
+  private activeSymbol: AssetSymbol = 'BTC';
+  private relayActive = false;
+  private directFallbackAllowed = true;
   private socket: WebSocket | undefined;
   private simulationTimer: number | undefined;
   private presentationTimer: number | undefined;
@@ -350,6 +369,104 @@ export class HyperliquidMarketFeed implements MarketFeed {
     return () => this.listeners.delete(listener);
   }
 
+  /** Switches the only full browser fallback chart; compact mids remain global. */
+  async setActiveMarket(symbol: AssetSymbol): Promise<void> {
+    if (this.disposed || symbol === this.activeSymbol) return;
+    this.activeSymbol = symbol;
+    this.pendingTrades.clear();
+    this.lastPresented.delete(symbol);
+    this.lastTradeTime.set(symbol, 0);
+    if (FORCE_SIMULATION || !this.started || this.paused) return;
+    if (this.relayActive) {
+      this.setAllModes('reconnecting');
+      return;
+    }
+    this.syncGeneration += 1;
+    this.clearReconnect();
+    this.closeSocket(1_000, 'Tickerworld market switch');
+    await this.resyncAndConnect(true);
+  }
+
+  /** Warms a destination during portal dwell without changing the visible chart. */
+  async prefetchMarket(symbol: AssetSymbol): Promise<void> {
+    if (FORCE_SIMULATION || this.relayActive || this.disposed || symbol === this.activeSymbol) return;
+    const cached = this.prefetchedSnapshots.get(symbol);
+    if (cached && Date.now() - cached.fetchedAt < 20_000) return;
+    try {
+      const snapshot = await this.fetchSnapshot(symbol);
+      if (!this.disposed) this.prefetchedSnapshots.set(symbol, { snapshot, fetchedAt: Date.now() });
+    } catch {
+      // Portal travel still performs a normal snapshot retry after the veil.
+    }
+  }
+
+  /** Lets the room relay own prices without maintaining a duplicate browser socket. */
+  setRelayAvailable(available: boolean, directFallbackAllowed = true): void {
+    if (FORCE_SIMULATION || this.disposed) return;
+    this.directFallbackAllowed = directFallbackAllowed;
+    if (available) {
+      if (this.relayActive) return;
+      this.relayActive = true;
+      this.syncGeneration += 1;
+      this.clearReconnect();
+      this.pendingTrades.clear();
+      this.closeSocket(1_000, 'Tickerworld room relay active');
+      this.setAllModes('reconnecting');
+      return;
+    }
+    const wasRelayed = this.relayActive;
+    this.relayActive = false;
+    if (!this.started || this.paused) return;
+    if (!this.directFallbackAllowed) {
+      this.setAllModes('reconnecting');
+      return;
+    }
+    if (wasRelayed || !this.socket) void this.resyncAndConnect(false);
+  }
+
+  /** Applies one server-coalesced active chart and compact portal mids. */
+  acceptRelayState(state: RelayedMarketState, mids: readonly CompactMarketMid[] = []): void {
+    if (FORCE_SIMULATION || this.disposed || state.instrument !== this.activeSymbol) return;
+    if (!this.relayActive) this.setRelayAvailable(true, this.directFallbackAllowed);
+    this.applyCompactMids(mids, state.publishedAt);
+    const previous = this.getState(state.instrument);
+    const candles: Candle[] = state.candles.slice(-SNAPSHOT_CANDLE_COUNT).map((candle, index, rows) => ({
+      ...candle,
+      closed: index < rows.length - 1,
+    }));
+    const previousPrice = previous.price;
+    const price = state.price;
+    const direction = previousPrice === null || price === null
+      ? 'flat'
+      : price > previousPrice
+        ? 'up'
+        : price < previousPrice
+          ? 'down'
+          : 'flat';
+    const tradePresentation = !state.stale && price !== null && previousPrice !== null;
+    const next: AssetState = {
+      ...previous,
+      candles,
+      price,
+      previousPrice: previousPrice ?? price,
+      direction,
+      mode: state.stale ? 'reconnecting' : 'live',
+      updateKind: tradePresentation ? 'trade' : 'snapshot',
+      updatedAt: state.upstreamAt ?? state.publishedAt,
+      ageMs: state.ageMs,
+      presentationTick: tradePresentation ? previous.presentationTick + 1 : previous.presentationTick,
+      horizonChanges: computeHorizonChanges(
+        price,
+        state.upstreamAt ?? state.publishedAt,
+        candles,
+        this.dailyHistories.get(state.instrument) ?? [],
+      ),
+    };
+    this.minuteHistories.set(state.instrument, candles);
+    this.states.set(state.instrument, next);
+    this.emit(next);
+  }
+
   pause(): void {
     this.paused = true;
     this.syncGeneration += 1;
@@ -361,7 +478,9 @@ export class HyperliquidMarketFeed implements MarketFeed {
   resume(): void {
     if (this.disposed || !this.started || !this.paused) return;
     this.paused = false;
-    if (!FORCE_SIMULATION) void this.resyncAndConnect(false);
+    if (!FORCE_SIMULATION && !this.relayActive && this.directFallbackAllowed) {
+      void this.resyncAndConnect(false);
+    }
   }
 
   dispose(): void {
@@ -420,46 +539,47 @@ export class HyperliquidMarketFeed implements MarketFeed {
   }
 
   private async resyncAndConnect(initial: boolean): Promise<void> {
-    if (this.paused || this.disposed || FORCE_SIMULATION) return;
+    if (this.paused || this.disposed || FORCE_SIMULATION || this.relayActive || !this.directFallbackAllowed) return;
     const generation = ++this.syncGeneration;
     this.clearReconnect();
     this.pendingTrades.clear();
     this.setAllModes(initial ? 'connecting' : 'reconnecting');
 
     try {
-      const snapshots = await Promise.all(
-        ASSET_SYMBOLS.map(async (symbol) => [symbol, await this.fetchSnapshot(symbol)] as const),
-      );
+      const symbol = this.activeSymbol;
+      const cached = this.prefetchedSnapshots.get(symbol);
+      const snapshot = cached && Date.now() - cached.fetchedAt < 20_000
+        ? cached.snapshot
+        : await this.fetchSnapshot(symbol);
+      this.prefetchedSnapshots.delete(symbol);
       if (generation !== this.syncGeneration || this.paused || this.disposed) return;
 
       const now = Date.now();
-      for (const [symbol, snapshot] of snapshots) {
-        const previous = this.getState(symbol);
-        const price = snapshot.chartCandles.at(-1)?.close ?? null;
-        this.minuteHistories.set(symbol, snapshot.minuteHistory);
-        this.dailyHistories.set(symbol, snapshot.dailyHistory);
-        const state: AssetState = {
-          ...previous,
-          instrument: symbol,
-          provider: 'hyperliquid',
-          candles: snapshot.chartCandles,
+      const previous = this.getState(symbol);
+      const price = snapshot.chartCandles.at(-1)?.close ?? null;
+      this.minuteHistories.set(symbol, snapshot.minuteHistory);
+      this.dailyHistories.set(symbol, snapshot.dailyHistory);
+      const state: AssetState = {
+        ...previous,
+        instrument: symbol,
+        provider: 'hyperliquid',
+        candles: snapshot.chartCandles,
+        price,
+        previousPrice: price,
+        direction: 'flat',
+        mode: initial ? 'connecting' : 'reconnecting',
+        updateKind: 'snapshot',
+        updatedAt: now,
+        horizonChanges: computeHorizonChanges(
           price,
-          previousPrice: price,
-          direction: 'flat',
-          mode: initial ? 'connecting' : 'reconnecting',
-          updateKind: 'snapshot',
-          updatedAt: now,
-          horizonChanges: computeHorizonChanges(
-            price,
-            now,
-            snapshot.minuteHistory,
-            snapshot.dailyHistory,
-          ),
-        };
-        this.states.set(symbol, state);
-        this.lastTradeTime.set(symbol, 0);
-        this.emit(state);
-      }
+          now,
+          snapshot.minuteHistory,
+          snapshot.dailyHistory,
+        ),
+      };
+      this.states.set(symbol, state);
+      this.lastTradeTime.set(symbol, 0);
+      this.emit(state);
       this.connect(generation);
     } catch {
       if (generation !== this.syncGeneration || this.paused || this.disposed) return;
@@ -522,6 +642,8 @@ export class HyperliquidMarketFeed implements MarketFeed {
       || this.paused
       || this.disposed
       || FORCE_SIMULATION
+      || this.relayActive
+      || !this.directFallbackAllowed
       || this.socket
     ) return;
 
@@ -532,7 +654,7 @@ export class HyperliquidMarketFeed implements MarketFeed {
       socket.addEventListener('open', () => {
         if (this.socket !== socket || generation !== this.syncGeneration) return;
         this.lastSocketActivity = Date.now();
-        for (const subscription of buildHyperliquidSubscriptions()) {
+        for (const subscription of buildHyperliquidSubscriptions(this.activeSymbol)) {
           socket.send(JSON.stringify({ method: 'subscribe', subscription }));
         }
         this.reconnectAttempt = 0;
@@ -560,6 +682,10 @@ export class HyperliquidMarketFeed implements MarketFeed {
     this.lastSocketActivity = Date.now();
 
     const channel = message.channel;
+    if (channel === 'allMids') {
+      this.handleMids(message.data);
+      return;
+    }
     if (channel === 'trades') {
       for (const trade of parseHyperliquidTrades(message.data)) this.queueTrade(trade);
       return;
@@ -568,6 +694,7 @@ export class HyperliquidMarketFeed implements MarketFeed {
   }
 
   private queueTrade(trade: ParsedTrade): void {
+    if (trade.symbol !== this.activeSymbol) return;
     const lastTradeTime = this.lastTradeTime.get(trade.symbol) ?? 0;
     const pending = this.pendingTrades.get(trade.symbol);
     if (trade.time < lastTradeTime || (pending && trade.time < pending.time)) return;
@@ -577,11 +704,46 @@ export class HyperliquidMarketFeed implements MarketFeed {
   private flushTrades(): void {
     if (this.paused || this.disposed || !this.socket) return;
     const now = Date.now();
-    for (const symbol of ASSET_SYMBOLS) {
-      const pending = this.pendingTrades.get(symbol);
-      if (!pending || now - (this.lastPresented.get(symbol) ?? 0) < PRESENTATION_INTERVAL_MS) continue;
-      this.pendingTrades.delete(symbol);
-      this.presentTrade(symbol, pending, now);
+    const symbol = this.activeSymbol;
+    const pending = this.pendingTrades.get(symbol);
+    if (!pending || now - (this.lastPresented.get(symbol) ?? 0) < PRESENTATION_INTERVAL_MS) return;
+    this.pendingTrades.delete(symbol);
+    this.presentTrade(symbol, pending, now);
+  }
+
+  private handleMids(payload: unknown): void {
+    const now = Date.now();
+    const mids = Object.entries(parseHyperliquidMids(payload)).flatMap(([key, price]) => (
+      price === undefined ? [] : [{ instrument: key as AssetSymbol, price, upstreamAt: now }]
+    ));
+    this.applyCompactMids(mids, now);
+  }
+
+  private applyCompactMids(mids: readonly CompactMarketMid[], publishedAt: number): void {
+    for (const mid of mids) {
+      const symbol = mid.instrument;
+      const price = mid.price;
+      if (symbol === this.activeSymbol || price === undefined) continue;
+      const previous = this.getState(symbol);
+      const direction = previous.price === null
+        ? 'flat'
+        : price > previous.price
+          ? 'up'
+          : price < previous.price
+            ? 'down'
+            : 'flat';
+      const state: AssetState = {
+        ...previous,
+        price,
+        previousPrice: previous.price ?? price,
+        direction,
+        mode: 'live',
+        updateKind: 'snapshot',
+        updatedAt: mid.upstreamAt || publishedAt,
+        ageMs: Math.max(0, publishedAt - mid.upstreamAt),
+      };
+      this.states.set(symbol, state);
+      this.emit(state);
     }
   }
 
@@ -634,6 +796,7 @@ export class HyperliquidMarketFeed implements MarketFeed {
           ? toAssetSymbol(item.s ?? item.coin ?? item.symbol)
           : undefined;
       if (!symbol) continue;
+      if (symbol !== this.activeSymbol) continue;
       const incoming = parseHyperliquidCandles(item).at(-1);
       if (!incoming) continue;
 
@@ -678,7 +841,7 @@ export class HyperliquidMarketFeed implements MarketFeed {
   }
 
   private watchdog(): void {
-    if (this.paused || this.disposed || FORCE_SIMULATION || !this.socket) return;
+    if (this.paused || this.disposed || FORCE_SIMULATION || this.relayActive || !this.socket) return;
     if (isSocketActivityStale([this.lastSocketActivity], Date.now())) this.socket.close();
   }
 
@@ -696,13 +859,13 @@ export class HyperliquidMarketFeed implements MarketFeed {
     if (socket && this.socket !== socket) return;
     this.socket = undefined;
     this.pendingTrades.clear();
-    if (this.paused || this.disposed || FORCE_SIMULATION) return;
+    if (this.paused || this.disposed || FORCE_SIMULATION || this.relayActive || !this.directFallbackAllowed) return;
     this.setAllModes('reconnecting');
     this.scheduleReconnect();
   }
 
   private scheduleReconnect(): void {
-    if (this.reconnectTimer !== undefined || this.paused || this.disposed) return;
+    if (this.reconnectTimer !== undefined || this.paused || this.disposed || this.relayActive || !this.directFallbackAllowed) return;
     const delay = computeReconnectDelay(this.reconnectAttempt);
     this.reconnectAttempt += 1;
     this.reconnectTimer = window.setTimeout(() => {
@@ -728,13 +891,12 @@ export class HyperliquidMarketFeed implements MarketFeed {
   }
 
   private setAllModes(mode: FeedMode): void {
-    for (const symbol of ASSET_SYMBOLS) {
-      const previous = this.getState(symbol);
-      if (previous.mode === mode) continue;
-      const state: AssetState = { ...previous, mode, updateKind: 'snapshot' };
-      this.states.set(symbol, state);
-      this.emit(state);
-    }
+    const symbol = this.activeSymbol;
+    const previous = this.getState(symbol);
+    if (previous.mode === mode) return;
+    const state: AssetState = { ...previous, mode, updateKind: 'snapshot' };
+    this.states.set(symbol, state);
+    this.emit(state);
   }
 
   private emit(state: AssetState): void {

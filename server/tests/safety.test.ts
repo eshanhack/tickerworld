@@ -247,6 +247,7 @@ describe('launch safety controls', () => {
       ADMIN_WALLETS: '11111111111111111111111111111111',
       SOLANA_RPC_URL: 'https://rpc.example.test',
       SOL_USD_PRICE_URL: 'https://prices.example.test/sol-usd',
+      ENABLE_PURCHASES: 'true',
     })).toThrow(/TREASURY_ADDRESS/);
     expect(normalizeYaw(Math.PI * 5)).toBeCloseTo(-Math.PI);
     expect(normalizeYaw(-Math.PI * 4.5)).toBeCloseTo(-Math.PI / 2);

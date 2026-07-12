@@ -40,12 +40,15 @@ export interface AssetState {
   /** Identifies the event that produced this state so presentation side-effects stay truthful. */
   updateKind: MarketUpdateKind;
   updatedAt: number;
+  /** Age of the last genuine upstream value when relayed or reconnecting. */
+  ageMs?: number | null;
   presentationTick: number;
   horizonChanges: readonly HorizonChange[];
 }
 
 export interface MarketFeed {
   start(): Promise<void>;
+  setActiveMarket(symbol: AssetSymbol): Promise<void>;
   pause(): void;
   resume(): void;
   subscribe(listener: (state: AssetState) => void): () => void;

@@ -258,6 +258,7 @@ export class RemoteAvatarSystem implements GameSystem {
   private readonly screenPoint = new THREE.Vector3();
   private readonly cameraPoint = new THREE.Vector3();
   private visible = true;
+  private labelsVisible = true;
   private disposed = false;
 
   constructor(options: RemoteAvatarSystemOptions) {
@@ -406,8 +407,8 @@ export class RemoteAvatarSystem implements GameSystem {
       const distanceSquared = (pose.x - local.x) ** 2 + (pose.z - local.z) ** 2;
       const shouldRender = distanceSquared <= this.cullDistanceSquared;
       slot.rendered = shouldRender;
-      slot.nameplate.visible = shouldRender;
-      slot.speech.visible = shouldRender && slot.speechExpiresAt > now;
+      slot.nameplate.visible = shouldRender && this.labelsVisible;
+      slot.speech.visible = shouldRender && this.labelsVisible && slot.speechExpiresAt > now;
       if (!shouldRender) {
         this.hideMatrices(slot.index);
         continue;
@@ -425,6 +426,16 @@ export class RemoteAvatarSystem implements GameSystem {
   setVisible(visible: boolean): void {
     this.visible = visible;
     this.root.visible = visible;
+  }
+
+  /** Keeps staged captures private without removing the connected avatars. */
+  setLabelsVisible(visible: boolean): void {
+    this.labelsVisible = visible;
+    if (visible) return;
+    for (const slot of this.slots) {
+      slot.nameplate.visible = false;
+      slot.speech.visible = false;
+    }
   }
 
   getDebugStats(): RemoteAvatarDebugStats {

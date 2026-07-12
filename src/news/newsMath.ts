@@ -94,6 +94,17 @@ function parseNewsItem(value: unknown): NewsItem | undefined {
   const avatar = nullableString(value.authorAvatarUrl);
   const permalink = nullableString(value.permalink);
   const links = parseNewsLinks(value.links);
+  const scope = value.scope === 'global'
+    || value.scope === 'BTC'
+    || value.scope === 'ETH'
+    || value.scope === 'SOL'
+    || value.scope === 'XRP'
+    || value.scope === 'DOGE'
+    || value.scope === 'BNB'
+    || value.scope === 'LINK'
+    || value.scope === 'AVAX'
+    ? value.scope
+    : 'global';
   if (
     typeof value.id !== 'string'
     || value.id.length === 0
@@ -126,6 +137,7 @@ function parseNewsItem(value: unknown): NewsItem | undefined {
     authorAvatarUrl: avatar,
     permalink,
     demo: source === 'simulation',
+    scope,
   };
 }
 
@@ -229,5 +241,6 @@ export function createDemoNewsItem(sequence: number, createdAt: number): NewsIte
     authorAvatarUrl: null,
     permalink: null,
     demo: true,
+    scope: 'global',
   };
 }

@@ -1,6 +1,14 @@
 import { CLIENT_MESSAGES, SERVER_MESSAGES, type AccountProfile } from '../shared/src/index.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { RoomClientSystem } from '../src/net';
+import { RoomClientSystem, type RoomClientSystemOptions } from '../src/net';
+import {
+  EMOTE_CLIENT_MESSAGE,
+  EMOTE_SERVER_MESSAGE,
+} from '../src/social';
+import {
+  PARTY_CLIENT_INVITE_REQUEST,
+  PARTY_SERVER_INVITE,
+} from '../src/share';
 
 function player(actorId: string, animal: 'fox' | 'rabbit' = 'fox') {
   return {
@@ -25,8 +33,8 @@ class FakeRoom {
   readonly reconnection = { enabled: false, minDelay: 0, maxDelay: 0 };
   readonly sent: Array<{ type: string; payload: unknown }> = [];
   readonly leave = vi.fn(async () => undefined);
-  readonly removeAllListeners = vi.fn();
   private readonly messages = new Map<string, (payload: any) => void>();
+  readonly removeAllListeners = vi.fn(() => this.messages.clear());
 
   constructor(actorId: string, animal: 'fox' | 'rabbit' = 'fox') {
     this.state = { players: new Map([['local', player(actorId, animal)]]) };
@@ -65,26 +73,31 @@ function accountProfile(actorId: string): AccountProfile {
 }
 
 function createSystem(
-  rooms: Array<FakeRoom | Promise<FakeRoom>>,
+  rooms: Array<FakeRoom | Promise<FakeRoom> | Error>,
   onIdentityChanged = vi.fn(),
   joinTimeoutMs = 8_000,
+  extra: Partial<RoomClientSystemOptions> = {},
 ) {
-  const joinOrCreate = vi.fn(async () => {
+  const nextRoom = async () => {
     const room = rooms.shift();
     if (!room) throw new Error('No fake room queued.');
+    if (room instanceof Error) throw room;
     return await room;
-  });
+  };
+  const joinOrCreate = vi.fn(nextRoom);
+  const joinById = vi.fn(nextRoom);
   const system = new RoomClientSystem({
+    ...extra,
     endpoint: 'ws://multiplayer.test',
     anonymousIdentity: anonymous,
     snapshot: () => ({
       x: 0, y: 0, z: 0, yaw: 0, speed: 0, verticalSpeed: 0, grounded: true, gait: 'idle',
     }),
-    clientFactory: () => ({ joinOrCreate } as any),
+    clientFactory: () => ({ joinOrCreate, joinById } as any),
     joinTimeoutMs,
     onIdentityChanged,
   });
-  return { system, joinOrCreate, onIdentityChanged };
+  return { system, joinOrCreate, joinById, onIdentityChanged };
 }
 
 async function flushMicrotasks(): Promise<void> {
@@ -208,6 +221,173 @@ describe('RoomClientSystem identity transitions', () => {
     await flushMicrotasks();
     expect(lateRoom.removeAllListeners).toHaveBeenCalledTimes(1);
     expect(lateRoom.leave).toHaveBeenCalledWith(true);
+    system.dispose();
+  });
+
+  it('sends typed emotes and resolves same-shard invite replies', async () => {
+    const room = new FakeRoom('anon-a');
+    const onEmote = vi.fn();
+    const { system } = createSystem([room], vi.fn(), 8_000, { onEmote, random: () => 0.25 });
+    await system.connect('btc');
+
+    const nonce = system.sendEmote('sparkle-heart');
+    expect(nonce).toMatch(/^[A-Za-z0-9_-]{6,64}$/);
+    expect(system.sendEmote('wave')).toBeNull();
+    expect(room.sent.at(-1)).toMatchObject({
+      type: EMOTE_CLIENT_MESSAGE,
+      payload: { protocolVersion: 2, kind: 'sparkle-heart', nonce },
+    });
+    room.emit(EMOTE_SERVER_MESSAGE, {
+      protocolVersion: 2,
+      actorId: 'remote-b',
+      kind: 'wave',
+      nonce: 'server_123',
+      sentAt: 1_000,
+    });
+    expect(onEmote).toHaveBeenCalledWith(expect.objectContaining({ actorId: 'remote-b', kind: 'wave' }));
+
+    const invitePromise = system.requestPartyInvite();
+    const request = room.sent.find(({ type }) => type === PARTY_CLIENT_INVITE_REQUEST)!;
+    const requestId = (request.payload as { requestId: string }).requestId;
+    room.emit(PARTY_SERVER_INVITE, { requestId, token: 'party_123456', expiresAt: Date.now() + 60_000 });
+    await expect(invitePromise).resolves.toMatchObject({ requestId, token: 'party_123456' });
+    system.dispose();
+  });
+
+  it('falls back truthfully to a normal shard when an invited shard is full', async () => {
+    const normalRoom = new FakeRoom('anon-a');
+    const onPartyJoinStatus = vi.fn();
+    const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      ok: false, code: 'party_full', fallbackMarket: 'btc',
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    const { system, joinOrCreate, joinById } = createSystem(
+      [normalRoom],
+      vi.fn(),
+      8_000,
+      { partyToken: 'party_123456', onPartyJoinStatus, fetch },
+    );
+
+    await expect(system.connect('btc')).resolves.toBe(true);
+    expect(fetch).toHaveBeenCalledWith('http://multiplayer.test/api/invites/redeem', expect.objectContaining({ method: 'POST' }));
+    expect(joinById).not.toHaveBeenCalled();
+    expect(joinOrCreate).toHaveBeenCalledTimes(1);
+    expect((joinOrCreate.mock.calls as unknown[][])[0]?.[1]).not.toHaveProperty('partyToken');
+    expect(onPartyJoinStatus).toHaveBeenCalledWith({
+      status: 'full', token: 'party_123456', fallback: 'normal-shard',
+    });
+    expect(system.state.connection).toBe('online');
+    system.dispose();
+  });
+
+  it('redeems a party hash token and joins the exact shard by id', async () => {
+    const partyRoom = new FakeRoom('anon-a');
+    const onPartyJoinStatus = vi.fn();
+    const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      ok: true, market: 'btc', roomId: 'btc-shard-party', expiresAt: Date.now() + 60_000,
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    const { system, joinOrCreate, joinById } = createSystem(
+      [partyRoom], vi.fn(), 8_000, { partyToken: 'party_123456', onPartyJoinStatus, fetch },
+    );
+
+    await expect(system.connect('btc')).resolves.toBe(true);
+    expect(joinOrCreate).not.toHaveBeenCalled();
+    expect(joinById).toHaveBeenCalledWith(
+      'btc-shard-party',
+      expect.objectContaining({ partyToken: 'party_123456', market: 'btc' }),
+    );
+    expect(onPartyJoinStatus).toHaveBeenCalledWith({ status: 'joined', token: 'party_123456' });
+    system.dispose();
+  });
+
+  it('relays bounded market snapshots and detaches old-room handlers on transfer', async () => {
+    const firstRoom = new FakeRoom('anon-a');
+    const secondRoom = new FakeRoom('anon-a');
+    const { system } = createSystem([firstRoom, secondRoom]);
+    const onMarket = vi.fn();
+    const onMids = vi.fn();
+    const order: string[] = [];
+    system.subscribeMarket((state) => { order.push('market'); onMarket(state); });
+    system.subscribeMarketMids((mids) => { order.push('mids'); onMids(mids); });
+    await system.connect('btc');
+
+    const state = {
+      instrument: 'BTC', candles: [], candle: null, price: 64_000,
+      upstreamAt: 1, publishedAt: 2, ageMs: 1, stale: false,
+    } as const;
+    const mids = Array.from({ length: 9 }, (_, index) => ({
+      instrument: 'BTC' as const,
+      price: 64_000 + index,
+      upstreamAt: 1,
+    }));
+    firstRoom.emit(SERVER_MESSAGES.market, state);
+    firstRoom.emit(SERVER_MESSAGES.marketMids, mids);
+    expect(order).toEqual(['mids', 'market']);
+    expect(onMarket).toHaveBeenCalledWith(state);
+    expect(onMids).toHaveBeenCalledWith(mids.slice(0, 8));
+
+    await system.switchMarket('eth');
+    firstRoom.emit(SERVER_MESSAGES.market, { ...state, price: 1 });
+    expect(onMarket).toHaveBeenCalledTimes(1);
+    secondRoom.emit(SERVER_MESSAGES.market, { ...state, instrument: 'ETH', price: 3_200 });
+    secondRoom.emit(SERVER_MESSAGES.marketMids, []);
+    expect(onMarket).toHaveBeenCalledTimes(2);
+    system.dispose();
+  });
+
+  it('ignores old-room social and market packets as soon as a transfer starts', async () => {
+    const firstRoom = new FakeRoom('anon-a');
+    const secondRoom = new FakeRoom('anon-a');
+    let acknowledgeLeave!: () => void;
+    firstRoom.leave.mockImplementation(() => new Promise<undefined>((resolve) => {
+      acknowledgeLeave = () => resolve(undefined);
+    }));
+    const onEmote = vi.fn();
+    const { system } = createSystem([firstRoom, secondRoom], vi.fn(), 8_000, { onEmote });
+    const onChat = vi.fn();
+    const onMarket = vi.fn();
+    system.subscribeChat(onChat);
+    system.subscribeMarket(onMarket);
+    await system.connect('btc');
+
+    const transfer = system.switchMarket('eth');
+    await flushMicrotasks();
+    firstRoom.emit(SERVER_MESSAGES.chat, { actorId: 'remote-b', text: 'old room' });
+    firstRoom.emit(EMOTE_SERVER_MESSAGE, {
+      protocolVersion: 2,
+      actorId: 'remote-b',
+      kind: 'wave',
+      nonce: 'old_room_1',
+      sentAt: 1_000,
+    });
+    firstRoom.emit(SERVER_MESSAGES.market, {
+      instrument: 'BTC', candles: [], candle: null, price: 64_000,
+      upstreamAt: 1, publishedAt: 2, ageMs: 1, stale: false,
+    });
+    firstRoom.emit(SERVER_MESSAGES.marketMids, []);
+    expect(onChat).not.toHaveBeenCalled();
+    expect(onEmote).not.toHaveBeenCalled();
+    expect(onMarket).not.toHaveBeenCalled();
+
+    acknowledgeLeave();
+    await expect(transfer).resolves.toBe(true);
+    expect(system.sessionRoomEpoch).toBe(2);
+    system.dispose();
+  });
+
+  it('flushes a relay state after a bounded wait when its mids packet is missing', async () => {
+    vi.useFakeTimers();
+    const room = new FakeRoom('anon-a');
+    const { system } = createSystem([room]);
+    const onMarket = vi.fn();
+    system.subscribeMarket(onMarket);
+    await system.connect('btc');
+    room.emit(SERVER_MESSAGES.market, {
+      instrument: 'BTC', candles: [], candle: null, price: 64_000,
+      upstreamAt: 1, publishedAt: 2, ageMs: 1, stale: false,
+    });
+    expect(onMarket).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(50);
+    expect(onMarket).toHaveBeenCalledTimes(1);
     system.dispose();
   });
 });

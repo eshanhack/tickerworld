@@ -1,0 +1,19 @@
+.tickerworld-share { position: fixed; inset: 0; z-index: 64; pointer-events: none; font-family: Nunito, system-ui, sans-serif; color: #31373d; }
+.share-toggle { position: absolute; top: max(1rem, env(safe-area-inset-top)); right: max(1rem, env(safe-area-inset-right)); pointer-events: auto; display: flex; align-items: center; gap: .45rem; border: 1px solid rgba(255,241,207,.68); border-radius: 999px; padding: .58rem .82rem; color: #31373d; background: rgba(255,241,207,.88); box-shadow: 0 .45rem 1.4rem rgba(46,58,58,.14); backdrop-filter: blur(14px); cursor: pointer; }
+.share-toggle span { color: #5f9b91; font-size: 1.05rem; }
+.share-panel { position: absolute; top: max(4.4rem, calc(env(safe-area-inset-top) + 4rem)); right: max(1rem, env(safe-area-inset-right)); width: min(22rem, calc(100vw - 2rem)); pointer-events: auto; display: grid; gap: .55rem; padding: .85rem; border: 1px solid rgba(255,241,207,.72); border-radius: 1.35rem; background: rgba(255,245,221,.94); box-shadow: 0 1.1rem 3rem rgba(42,54,57,.24); backdrop-filter: blur(20px); }
+.share-panel.is-hidden { display: none; }
+.share-panel header { display: flex; align-items: center; justify-content: space-between; padding: .15rem .15rem .45rem .35rem; }
+.share-panel header div { display: grid; gap: .05rem; }
+.share-panel header small { color: #5f9b91; font-size: .64rem; letter-spacing: .12em; }
+.share-panel header strong { font-size: 1.08rem; }
+.share-panel header button { border: 0; border-radius: 999px; width: 2rem; height: 2rem; background: rgba(95,155,145,.14); color: #31373d; cursor: pointer; }
+.share-panel > button { display: flex; align-items: center; gap: .75rem; width: 100%; border: 1px solid rgba(95,155,145,.18); border-radius: 1rem; padding: .75rem; text-align: left; color: #31373d; background: rgba(255,255,255,.5); cursor: pointer; }
+.share-panel > button:hover { background: rgba(255,255,255,.82); transform: translateY(-1px); }
+.share-panel > button:disabled { opacity: .56; cursor: wait; transform: none; }
+.share-panel > button > span { display: grid; place-items: center; width: 2.25rem; height: 2.25rem; flex: 0 0 auto; border-radius: .8rem; color: #5f9b91; background: rgba(95,155,145,.12); font-size: 1.1rem; }
+.share-panel > button div { display: grid; gap: .08rem; }
+.share-panel > button small { color: rgba(49,55,61,.7); font-size: .72rem; }
+.share-panel > p { min-height: 1.2rem; margin: .25rem .3rem .1rem; color: rgba(49,55,61,.72); font-size: .72rem; }
+@media (max-width: 720px) { .share-toggle { top: max(.75rem, env(safe-area-inset-top)); right: max(.75rem, env(safe-area-inset-right)); } .share-panel { top: auto; right: max(.75rem, env(safe-area-inset-right)); bottom: max(8.8rem, calc(env(safe-area-inset-bottom) + 8.2rem)); width: min(22rem, calc(100vw - 1.5rem)); } }
+@media (prefers-reduced-motion: reduce) { .share-panel > button { transition: none; } }

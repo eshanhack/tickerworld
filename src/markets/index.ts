@@ -9,6 +9,7 @@ export {
   isSocketActivityStale,
   parseHyperliquidCandles,
   parseHyperliquidCandleHistory,
+  parseHyperliquidMids,
   parseHyperliquidTrades,
   reconcileCandle,
 } from './marketFeed';

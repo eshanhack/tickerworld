@@ -1,3 +1,7 @@
+import type { AssetSymbol, NewsScope as SharedNewsScope } from '../../shared/src/index.js';
+
+export type NewsScope = SharedNewsScope;
+
 export const NEWS_ITEM_TTL_MS = 10 * 60_000;
 export const NEWS_POLL_INTERVAL_MS = 20_000;
 export const NEWS_DEMO_INTERVAL_MS = 2 * 60_000;
@@ -32,6 +36,8 @@ export interface NewsItem {
   authorAvatarUrl: string | null;
   permalink: string | null;
   demo: boolean;
+  /** Asset-specific posts stay in that world; global posts are contextual, never causal. */
+  scope: NewsScope;
 }
 
 export interface NewsApiResponse {
@@ -53,6 +59,7 @@ export type NewsFeedListener = (update: NewsFeedUpdate) => void;
 
 export interface NewsFeed {
   start(): Promise<void>;
+  setActiveMarket(symbol: AssetSymbol): void;
   pause(): void;
   resume(): void;
   subscribe(listener: NewsFeedListener): () => void;

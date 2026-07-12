@@ -1,4 +1,14 @@
-export type UiInteractionOwner = 'chat' | 'player' | 'economy' | 'news' | 'portal';
+export type UiInteractionOwner =
+  | 'chat'
+  | 'player'
+  | 'economy'
+  | 'news'
+  | 'portal'
+  | 'share'
+  | 'settings'
+  | 'wardrobe'
+  | 'emote'
+  | 'context';
 
 export type UiInteractionListener = (
   locked: boolean,

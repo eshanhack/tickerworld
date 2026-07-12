@@ -46,21 +46,22 @@ npm run verify:release
 
 `npm run verify:release` includes both dependency audits.
 `npm run smoke:production` performs read-only public route, admin noindex, news,
-and (when explicitly required) multiplayer health/readiness checks after
-deployment. Production activation is fail-closed: the client remains playable
+trust-page, route-card, canonical metadata, and (when explicitly required)
+multiplayer health/readiness/capability checks after deployment. Use
+`SMOKE_EXPECT_MULTIPLAYER_LIVE=1` and `SMOKE_EXPECT_NEWS_LIVE=1` for the public
+launch gate. Production activation is fail-closed: the client remains playable
 in truthful solo mode until the room service is ready. Follow
 `docs/production-readiness.md`, `docs/integration-validation.md`, and
 `server/README.md` for the evidence and compatible-server-first checklist.
 
 ## X news feed
 
-Tickerworld polls its server-side `/api/news` function for recent posts from
-[@DeItaone](https://x.com/DeItaone). Create a paid X developer app, add its bearer token as the
-server-only `X_BEARER_TOKEN` environment variable in Vercel (Production, Preview, and Development
-as needed), and redeploy. Never expose this value through a `VITE_`-prefixed variable.
-Set a spending limit and balance alert in the X Developer Console before enabling production reads.
+One multiplayer server process ingests recent posts from configured headline accounts and stores
+only the ten-minute cache. Put the paid `X_BEARER_TOKEN` on that process with
+`ENABLE_NEWS_INGEST=true`, a bounded `X_DAILY_REQUEST_LIMIT`, and the provider-side spend controls.
+Vercel receives only `NEWS_CACHE_ORIGIN=https://multiplayer.tickerworld.io`; its `/api/news`
+function reads the shared cache and never contacts X or holds an X credential.
 
-Production must hide live news or report it unavailable when the token is absent;
-it must never substitute fictional headlines. Use `?news=sim` only for explicit
-local/QA simulation. For local testing of the live function, copy `.env.example`
-to an ignored `.env.local`, add the token, and run `vercel dev`.
+Production hides news or reports it unavailable when the cache is not genuinely live. It never
+substitutes fictional headlines. `?news=sim`, `?data=sim`, and `?debug=1` work only in local or an
+explicitly opted-in preview build (`VITE_ENABLE_QA_MODE=1`), never in the default production build.

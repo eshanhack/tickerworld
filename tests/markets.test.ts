@@ -14,6 +14,7 @@ import {
   isSocketActivityStale,
   mulberry32,
   parseHyperliquidCandles,
+  parseHyperliquidMids,
   parseHyperliquidTrades,
   reconcileCandle,
   stepSimulation,
@@ -140,6 +141,43 @@ describe('market candle helpers', () => {
     expect(subscriptions[0]).toEqual({ type: 'allMids' });
     expect(subscriptions).toContainEqual({ type: 'trades', coin: 'AVAX' });
     expect(subscriptions).toContainEqual({ type: 'candle', coin: 'BTC', interval: '1m' });
+  });
+
+  it('limits the browser fallback to one active chart plus compact mids', () => {
+    expect(buildHyperliquidSubscriptions('ETH')).toEqual([
+      { type: 'allMids' },
+      { type: 'trades', coin: 'ETH' },
+      { type: 'candle', coin: 'ETH', interval: '1m' },
+    ]);
+    expect(parseHyperliquidMids({ mids: { BTC: '64123.5', ETH: 3120, BAD: 1, SOL: 'nope' } }))
+      .toEqual({ BTC: 64123.5, ETH: 3120 });
+  });
+
+  it('accepts server-coalesced active charts and silent portal mids', () => {
+    const feed = new HyperliquidMarketFeed();
+    const relay = (price: number, publishedAt: number) => feed.acceptRelayState({
+      instrument: 'BTC',
+      candles: [{ openTime: 60_000, open: 100, high: Math.max(100, price), low: 99, close: price }],
+      candle: { openTime: 60_000, open: 100, high: Math.max(100, price), low: 99, close: price },
+      price,
+      upstreamAt: publishedAt - 50,
+      publishedAt,
+      ageMs: 50,
+      stale: false,
+    }, [{ instrument: 'ETH', price: 3_200, upstreamAt: publishedAt - 25 }]);
+
+    relay(101, 70_000);
+    expect(feed.getState('BTC')).toMatchObject({ price: 101, mode: 'live', updateKind: 'snapshot' });
+    expect(feed.getState('ETH')).toMatchObject({ price: 3_200, updateKind: 'snapshot' });
+    relay(102, 70_400);
+    expect(feed.getState('BTC')).toMatchObject({
+      price: 102,
+      previousPrice: 101,
+      updateKind: 'trade',
+      presentationTick: 1,
+      ageMs: 50,
+    });
+    feed.dispose();
   });
 
   it('uses a 25-second heartbeat and bounded jittered reconnect delays', () => {

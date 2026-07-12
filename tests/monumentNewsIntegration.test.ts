@@ -109,6 +109,7 @@ function newsItem(id: string, createdAt: number, permalink: string | null): News
     authorAvatarUrl: null,
     permalink,
     demo: permalink === null,
+    scope: 'global',
   };
 }
 

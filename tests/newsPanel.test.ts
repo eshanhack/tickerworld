@@ -21,6 +21,7 @@ function item(id: string, createdAt: number, expiresAt = createdAt + 600_000): N
     authorAvatarUrl: null,
     permalink: null,
     demo: true,
+    scope: 'global',
   };
 }
 

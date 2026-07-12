@@ -25,6 +25,12 @@ import { ModerationService } from './services/moderation.js';
 import { AdmissionControl } from './services/admission.js';
 import { CanonicalIpResolver } from './services/canonicalIp.js';
 import { SlidingWindowRateLimiter } from './services/rateLimits.js';
+import { RuntimeSwitchboard } from './services/runtimeSwitches.js';
+import { PartyInviteService } from './services/partyInvites.js';
+import { DisabledMarketRelay, HyperliquidMarketRelay, type MarketRelay } from './services/marketRelay.js';
+import { DatabaseNewsRequestBudget, NewsIngestService } from './services/newsIngest.js';
+import { SafeLogger } from './services/safeLogger.js';
+import { RetentionService } from './services/retention.js';
 
 export interface RuntimeOverrides {
   db?: Kysely<DatabaseSchema>;
@@ -46,6 +52,12 @@ export interface ServerRuntime {
   admissions: AdmissionControl;
   clientIps: CanonicalIpResolver;
   requestLimits: SlidingWindowRateLimiter;
+  switches: RuntimeSwitchboard;
+  invites: PartyInviteService;
+  marketRelay: MarketRelay;
+  news: NewsIngestService;
+  logger: SafeLogger;
+  retention: RetentionService;
   dispose(): Promise<void>;
 }
 
@@ -74,7 +86,8 @@ export async function createRuntime(
   const paymentVerifierReady = paymentVerifier.initialize
     ? await paymentVerifier.initialize().catch(() => false)
     : paymentVerifier.available;
-  if (config.nodeEnv === 'production' && (!quoteAuthorityReady || !paymentVerifierReady)) {
+  if (config.nodeEnv === 'production' && config.launchSwitches.purchases
+    && (!quoteAuthorityReady || !paymentVerifierReady)) {
     throw new Error('Production economy providers failed readiness checks');
   }
   const economy = new EconomyService(
@@ -90,6 +103,27 @@ export async function createRuntime(
   const admissions = new AdmissionControl(config.limits);
   const clientIps = new CanonicalIpResolver(config.trustedProxyCidrs);
   const requestLimits = new SlidingWindowRateLimiter();
+  const switches = new RuntimeSwitchboard(config.launchSwitches, config.limits.maxProcessConnections);
+  const invites = new PartyInviteService(config.serverHmacSecret);
+  const marketRelay: MarketRelay = config.marketRelayEnabled
+    ? new HyperliquidMarketRelay()
+    : new DisabledMarketRelay();
+  const news = new NewsIngestService(
+    config.xBearerToken,
+    config.xTrackedHandles,
+    config.xDailyRequestLimit,
+    switches,
+    fetch,
+    Date.now,
+    60_000,
+    new DatabaseNewsRequestBudget(db),
+  );
+  const logger = new SafeLogger();
+  const retention = new RetentionService(db, logger);
+  await retention.run();
+  marketRelay.start();
+  news.start();
+  retention.start();
   const runtime: ServerRuntime = {
     config,
     db,
@@ -103,11 +137,21 @@ export async function createRuntime(
     admissions,
     clientIps,
     requestLimits,
+    switches,
+    invites,
+    marketRelay,
+    news,
+    logger,
+    retention,
     async dispose() {
       populations.clear();
       admissions.clear();
       requestLimits.clear();
       chatLimits.clear();
+      invites.clear();
+      marketRelay.dispose();
+      news.dispose();
+      retention.dispose();
       if (!overrides.db) await db.destroy();
     },
   };
@@ -123,6 +167,10 @@ export async function createRuntime(
     ipHmacSecret: config.ipHmacSecret,
     publicOrigins: config.publicOrigins,
     requireWebSocketOrigin: config.nodeEnv === 'production',
+    switches,
+    invites,
+    marketRelay,
+    logger,
   });
   return runtime;
 }

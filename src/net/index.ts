@@ -1,4 +1,5 @@
 export {
+  clearSignedGuestIdentity,
   readGuestIdentity,
   readSignedGuestIdentity,
   writeSignedGuestIdentity,
@@ -16,3 +17,8 @@ export {
   type RoomClientSnapshot,
   type RoomClientSystemOptions,
 } from './RoomClientSystem';
+export {
+  OFFLINE_RUNTIME_CAPABILITIES,
+  fetchRuntimeCapabilities,
+  multiplayerHttpOrigin,
+} from './RuntimeCapabilitiesClient';

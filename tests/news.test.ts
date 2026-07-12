@@ -38,6 +38,7 @@ function item(
     authorAvatarUrl: 'https://example.com/avatar.jpg',
     permalink: `https://x.com/DeItaone/status/${id}`,
     demo: false,
+    scope: 'global',
     ...overrides,
   };
 }
@@ -132,6 +133,18 @@ describe('BrowserNewsFeed lifecycle', () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it('requests only the active market scope from the centralized cache', async () => {
+    const requested: string[] = [];
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      requested.push(String(input));
+      return response('live', []);
+    });
+    const feed = new BrowserNewsFeed({ fetcher, activeMarket: 'ETH' });
+    await feed.start();
+    expect(requested).toEqual(['/api/news?scope=ETH']);
+    feed.dispose();
   });
 
   it('emits one silent demo immediately, then one notifiable item every two minutes', async () => {
@@ -396,6 +409,27 @@ describe('X timeline endpoint helpers', () => {
     );
     expect(method.status).toBe(405);
     expect(method.headers.get('Allow')).toBe('GET');
+  });
+
+  it('reads only the centralized cache and permits one bounded market scope variant', async () => {
+    const cacheFetch = vi.fn(async (_input: RequestInfo | URL) => Response.json({
+      mode: 'live',
+      items: [],
+      checkedAt: NOW - 250,
+    }));
+    const result = await handleNewsRequest(
+      new Request('https://tickerworld.test/api/news?scope=BTC'),
+      '',
+      NOW,
+      'https://multiplayer.tickerworld.test',
+      cacheFetch,
+    );
+    expect(result.status).toBe(200);
+    expect(await result.json()).toEqual({ mode: 'live', items: [], checkedAt: NOW - 250 });
+    expect(cacheFetch).toHaveBeenCalledTimes(1);
+    expect(String(cacheFetch.mock.calls[0]?.[0])).toBe(
+      'https://multiplayer.tickerworld.test/api/news?scope=BTC',
+    );
   });
 
   it('rejects cache-busting request variants before they can spend X API reads', async () => {

@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en"><head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#a9d6ce">
+  <meta name="description" content="Current Tickerworld web, multiplayer, market, and news availability."><link rel="canonical" href="https://tickerworld.io/status"><link rel="stylesheet" href="/legal.css"><title>Service status · Tickerworld</title>
+</head><body>
+  <header class="site-header"><a class="brand" href="/btc">Tickerworld</a><a class="back-link" href="/btc">Enter BTC world</a></header>
+  <main><p class="kicker">Service status</p><h1>Truthful status, in plain language.</h1><p class="lede">This page checks public service endpoints from your browser. “Solo available” means the world remains playable locally even when shared rooms are offline.</p>
+    <section class="status-grid" aria-live="polite">
+      <article class="status-card" data-status="web" data-state="ok"><strong><span class="status-dot"></span>Web world</strong><span>Available</span></article>
+      <article class="status-card" data-status="multiplayer"><strong><span class="status-dot"></span>Multiplayer</strong><span>Checking…</span></article>
+      <article class="status-card" data-status="markets"><strong><span class="status-dot"></span>Live markets</strong><span>Checked inside each world</span></article>
+      <article class="status-card" data-status="news"><strong><span class="status-dot"></span>Market news</strong><span>Checking…</span></article>
+    </section>
+    <p class="updated" data-updated>Checking public endpoints…</p>
+    <div class="notice"><strong>Current launch posture</strong>At capacity or during a room outage, visitors should reach solo mode within three seconds. Production never substitutes fictional players, prices, or news.</div>
+    <h2>Data and hosting</h2><p>The web client is hosted on Vercel. Live pricing is from Hyperliquid perpetual markets. Multiplayer is designed for one capped Colyseus process at launch; its active hosting/database region will be listed here before multiplayer activation.</p>
+  </main>
+  <footer class="site-footer"><a href="/privacy">Privacy</a><a href="/terms">Terms</a><a href="/community">Community rules</a><a href="/support">Support</a></footer>
+  <script type="module" src="/status/status.js"></script>
+</body></html>

@@ -6,7 +6,12 @@ import {
   type MarketChooserRoute,
   type MarketRouteModel,
 } from './routing';
+import { LAUNCH_CAPTURE_MODE } from './config';
 import './styles.css';
+import { initializeObservability } from './telemetry';
+
+initializeObservability();
+document.documentElement.classList.toggle('is-launch-capture', LAUNCH_CAPTURE_MODE);
 
 const root = document.querySelector<HTMLDivElement>('#app');
 if (!root) throw new Error('Tickerworld could not find its app root.');
@@ -25,7 +30,8 @@ function supportsWebGL(): boolean {
 const routeHistory = new BrowserMarketRouteHistory();
 let game: Game | null = null;
 
-function renderUnsupported(): void {
+function renderWebGLFailure(titleText: string, messageText: string, retry = false): void {
+  document.title = `${titleText} · Tickerworld`;
   appRoot.replaceChildren();
   const screen = document.createElement('main');
   screen.className = 'unsupported-screen';
@@ -35,15 +41,30 @@ function renderUnsupported(): void {
   icon.setAttribute('aria-hidden', 'true');
   icon.textContent = '🦊';
   const heading = document.createElement('h1');
-  heading.textContent = 'This little world needs WebGL';
+  heading.textContent = titleText;
   const copy = document.createElement('p');
-  copy.textContent = 'Try opening Tickerworld in a recent version of Chrome, Edge, Firefox, or Safari.';
+  copy.textContent = messageText;
   card.append(icon, heading, copy);
+  if (retry) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = 'Retry Tickerworld';
+    button.addEventListener('click', () => location.reload(), { once: true });
+    card.append(button);
+  }
   screen.append(card);
   appRoot.append(screen);
 }
 
+function renderUnsupported(): void {
+  renderWebGLFailure(
+    'This little world needs WebGL',
+    'Try opening Tickerworld in a recent version of Chrome, Edge, Firefox, or Safari.',
+  );
+}
+
 function renderChooser(route: MarketChooserRoute): void {
+  document.title = `${route.title} · Tickerworld`;
   game?.dispose();
   game = null;
   appRoot.replaceChildren();
@@ -84,9 +105,19 @@ function mountRoute(route: MarketRouteModel): void {
     renderUnsupported();
     return;
   }
+  document.body.dataset.captureMarket = route.market;
   THREE.ColorManagement.enabled = true;
   if (!game) {
-    game = new Game(appRoot, { activeMarket: route.market, routeHistory });
+    try {
+      game = new Game(appRoot, { activeMarket: route.market, routeHistory });
+    } catch {
+      game = null;
+      renderWebGLFailure(
+        'The world could not grow',
+        'Your route is safe. Close another graphics-heavy tab, then try Tickerworld again.',
+        true,
+      );
+    }
     return;
   }
   if (game.marketSymbol !== route.market) void game.switchMarket(route.market);

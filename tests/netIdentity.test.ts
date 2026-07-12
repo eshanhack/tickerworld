@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { AccountProfile } from '../shared/src/index.js';
 import {
+  clearSignedGuestIdentity,
   classifyIdentityTransition,
   createIdentityRefreshMessage,
   createRoomJoinOptions,
@@ -40,6 +41,8 @@ describe('signed room identity', () => {
     writeSignedGuestIdentity(identity, storage);
     expect(readSignedGuestIdentity(storage, 1_000)).toEqual(identity);
     expect(readSignedGuestIdentity(storage, 46_000)).toBeNull();
+    clearSignedGuestIdentity(storage);
+    expect(readSignedGuestIdentity(storage, 1_000)).toBeNull();
   });
 
   it('never sends a client-controlled actor id in protocol-v2 join options', () => {

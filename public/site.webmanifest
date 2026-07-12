@@ -1,8 +1,8 @@
 {
   "name": "Tickerworld",
   "short_name": "Tickerworld",
-  "description": "A calm living market world to explore.",
-  "start_url": "/",
+  "description": "Walk inside live crypto markets with friends.",
+  "start_url": "/btc",
   "display": "fullscreen",
   "background_color": "#a9d6ce",
   "theme_color": "#a9d6ce",

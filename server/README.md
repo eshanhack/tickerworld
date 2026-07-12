@@ -13,8 +13,10 @@ npm run dev
 ```
 
 Development uses SQLite by default. `docker compose up --build` uses Postgres.
-Production startup fails unless `DATABASE_URL`, independent HMAC secrets, and a
-treasury address are present. Wallet sign-in is verified locally with Ed25519.
+Production startup requires `DATABASE_URL` and independent HMAC secrets. Wallet
+and purchase APIs are disabled by default and do not require treasury/RPC/price
+credentials until their explicit positive switches are enabled. Wallet sign-in
+is verified locally with Ed25519.
 Production requires explicit `DATABASE_SSL=verify-full` and a non-empty
 `TRUSTED_PROXY_CIDRS`; there is no insecure production escape hatch. Forwarding
 headers remain ignored unless the immediate peer is in that trusted proxy set.
@@ -26,6 +28,31 @@ signature status and the parsed transaction's signer, treasury, lamports,
 reference key, cluster, and execution status. Missing or malformed provider
 responses return `503`/reject confirmation; client claims never grant ownership.
 
+`GET /api/capabilities` exposes the current positive launch switches without
+secrets. `admissions`, `chatSend`, `newsIngest`, `directMarketFallback`,
+`publicWalletAuth`, `purchases`, and `adminActions` can be changed through the
+allowlisted `PATCH /api/admin/capabilities` recovery path. The endpoint refuses
+to enable providers that are not ready. Production defaults keep public wallet
+authentication, purchases, news ingestion, and admin actions off.
+
+`MARKET_RELAY_ENABLED=true` creates one Hyperliquid socket set per process,
+bootstraps bounded 30-candle windows, publishes active charts at 2.5Hz, and
+freezes the last genuine state with an age/stale marker during outages. The
+`directMarketFallback` capability tells clients whether active-market-only
+browser fallback is allowed. X reads are likewise centralized: configure the
+paid token only here, set `ENABLE_NEWS_INGEST=true`, and point Vercel's
+`NEWS_CACHE_ORIGIN` at this service. No token means `unconfigured`, never demo
+headlines. Reset headers, exponential backoff, a daily request limit, and the
+runtime kill switch bound spend.
+
+A six-hour retention job removes ordinary auth/IP challenge records after 24
+hours, report evidence after 90 days, expired moderation audit records after 12
+months, and old provider-budget rows after 14 days. Expired IP-throttle audit
+rows are retained without their HMAC IP identifier after 24 hours. Active or
+permanent safety actions are never removed by the audit-retention pass. Platform
+runtime-log retention remains an infrastructure setting and must be capped at
+14 days without request bodies, tokens, chat, wallet addresses, or raw IPs.
+
 ## Canonical HTTP contract
 
 - `POST /api/anonymous/session` returns a signed opaque `{ actorId, animal,
@@ -34,6 +61,14 @@ responses return `503`/reject confirmation; client claims never grant ownership.
   The actor and nonce are included in the wallet-signed message.
 - `POST /api/auth/verify` accepts the challenge, signature, actor and anonymous
   proof, returning `{ sessionToken, profile, blocks }`.
+- `POST /api/invites` issues a signed token for the authenticated actor's active
+  shard. `POST /api/invites/redeem` returns a truthful room hint or
+  `party_full`, `party_invalid`, or `party_expired`. Tokens last 30 minutes and
+  allow 12 joins. The room message `party-invite-request` provides the same
+  flow without separate HTTP authentication; clients redeem, use `joinById`,
+  and pass `partyToken` again in the join options.
+- `GET /api/capabilities`, `/api/populations`, and `/api/news?scope=BTC` expose
+  bounded public launch state. Symbol news is isolated; global posts are shared.
 - `GET /api/account` and `PATCH /api/account/profile` read/update the account.
 - `GET /api/account/blocks` returns an actor-id array. `PUT` or `DELETE
   /api/account/blocks/:actorId` changes it.
@@ -47,6 +82,8 @@ responses return `503`/reject confirmation; client claims never grant ownership.
 - `/api/admin/reports` and `/api/admin/actions` require an allowlisted wallet
   session. Live kicks, mutes, wallet temp-bans and HMAC-IP throttles are enforced;
   report resolution uses `PATCH /api/admin/reports/:reportId`.
+- `/api/admin/auth/challenge` and `/api/admin/auth/verify` are allowlist-first,
+  so protected operations do not require enabling public wallet authentication.
 
 ## Deployment order
 
