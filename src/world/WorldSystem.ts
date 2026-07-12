@@ -7,7 +7,8 @@ import {
   PALETTE,
   WORLD_SEED,
 } from '../config';
-import type { ChunkDescriptor, SurfaceKind } from '../types';
+import type { AssetSymbol, ChunkDescriptor, SurfaceKind } from '../types';
+import { MARKET_TRADE_CONFIG, type TradeSurgeConfig } from '../trades/config';
 import {
   ECHO_GRAND_SUPPRESSION_RADIUS,
   generateChunkLayout,
@@ -73,6 +74,8 @@ export interface WorldDebugStats {
   activeLampMotes: number;
   dropFlashIntensity: number;
   riseFlashIntensity: number;
+  tradeSurgeIntensity: number;
+  tradeSurgeDirection: 'up' | 'down';
   rainIntensity: number;
   activeRainDrops: number;
   grassInstances: number;
@@ -88,6 +91,7 @@ export interface WorldDebugStats {
 
 export type DropFlashTier = 'large' | 'exceptional';
 export type RiseFlashTier = DropFlashTier;
+export type TradeSurgeDirection = 'buy' | 'sell' | 'up' | 'down';
 
 interface QueuedChunk {
   x: number;
@@ -297,6 +301,21 @@ export class WorldSystem {
   private marketFlashPeak = 0;
   private marketFlashStartIntensity = 0;
   private marketFlashIntensity = 0;
+  private tradeSurgeDirection: 'up' | 'down' = 'up';
+  private tradeSurgeConfig: TradeSurgeConfig = MARKET_TRADE_CONFIG.BTC.surge;
+  private tradeSurgeStartedAt = Number.NEGATIVE_INFINITY;
+  private tradeSurgeHoldUntil = Number.NEGATIVE_INFINITY;
+  private tradeSurgeEndsAt = Number.NEGATIVE_INFINITY;
+  private lastTradeSurgeStartedAt = Number.NEGATIVE_INFINITY;
+  private tradeSurgeIntensity = 0;
+  private tradeSurgePeak = 0;
+  private readonly baselineSky = new THREE.Color();
+  private readonly baselineFog = new THREE.Color();
+  private readonly baselineHemisphere = new THREE.Color();
+  private readonly baselineGround = new THREE.Color();
+  private readonly baselineSun = new THREE.Color();
+  private baselineHemisphereIntensity = 0;
+  private baselineSunIntensity = 0;
   private previousWeatherElapsed: number | null = null;
   private previousVegetationElapsed: number | null = null;
   private hasPreviousVegetationPlayer = false;
@@ -532,6 +551,8 @@ export class WorldSystem {
       activeLampMotes: this.lampMotePoints.geometry.drawRange.count,
       dropFlashIntensity: this.marketFlashDirection === 'down' ? this.marketFlashIntensity : 0,
       riseFlashIntensity: this.marketFlashDirection === 'up' ? this.marketFlashIntensity : 0,
+      tradeSurgeIntensity: this.tradeSurgeIntensity,
+      tradeSurgeDirection: this.tradeSurgeDirection,
       rainIntensity: this.rainIntensity,
       activeRainDrops: this.rainLines.geometry.drawRange.count / 2,
       grassInstances: this.grassInstanceCount,
@@ -556,6 +577,57 @@ export class WorldSystem {
     this.triggerMarketFlash('up', tier);
   }
 
+  /**
+   * Starts one slow, bounded market mood. Repeats during the active/cooldown
+   * window can only lengthen the current hold; they never restart the attack
+   * or reverse its colour, preventing a volatile tape from producing flashes.
+   */
+  triggerTradeSurge(
+    direction: TradeSurgeDirection,
+    symbol: AssetSymbol = 'BTC',
+  ): boolean {
+    if (this.disposed) return false;
+    const now = this.currentElapsedSeconds;
+    const config = MARKET_TRADE_CONFIG[symbol].surge;
+    const active = now < this.tradeSurgeEndsAt;
+    const coolingDown = now - this.lastTradeSurgeStartedAt < config.cooldownSeconds;
+    if (active || coolingDown) {
+      if (active) {
+        const maximumHoldUntil = this.tradeSurgeStartedAt
+          + this.tradeSurgeConfig.attackSeconds
+          + this.tradeSurgeConfig.maximumHoldSeconds;
+        this.tradeSurgeHoldUntil = Math.min(
+          maximumHoldUntil,
+          this.tradeSurgeHoldUntil + this.tradeSurgeConfig.repeatHoldExtensionSeconds,
+        );
+        this.tradeSurgeEndsAt = this.tradeSurgeHoldUntil + this.tradeSurgeConfig.releaseSeconds;
+      }
+      return false;
+    }
+
+    this.tradeSurgeConfig = config;
+    this.tradeSurgeDirection = direction === 'buy' || direction === 'up' ? 'up' : 'down';
+    this.tradeSurgeStartedAt = now;
+    this.lastTradeSurgeStartedAt = now;
+    this.tradeSurgeHoldUntil = now + config.attackSeconds + config.holdSeconds;
+    this.tradeSurgeEndsAt = this.tradeSurgeHoldUntil + config.releaseSeconds;
+    this.tradeSurgePeak = config.tintStrength
+      * (this.reducedMotion ? config.reducedMotionStrengthMultiplier : 1);
+    return true;
+  }
+
+  /** Drops all tape-scoped mood state so it cannot bleed across market worlds. */
+  clearTradeSurge(): void {
+    this.tradeSurgeStartedAt = Number.NEGATIVE_INFINITY;
+    this.tradeSurgeHoldUntil = Number.NEGATIVE_INFINITY;
+    this.tradeSurgeEndsAt = Number.NEGATIVE_INFINITY;
+    this.lastTradeSurgeStartedAt = Number.NEGATIVE_INFINITY;
+    this.tradeSurgeIntensity = 0;
+    this.tradeSurgePeak = 0;
+    this.tradeSurgeDirection = 'up';
+    this.tradeSurgeConfig = MARKET_TRADE_CONFIG.BTC.surge;
+  }
+
   private triggerMarketFlash(direction: 'up' | 'down', tier: DropFlashTier): void {
     if (this.disposed) return;
     const requestedPeak = tier === 'exceptional' ? 0.7 : 0.45;
@@ -574,6 +646,13 @@ export class WorldSystem {
   setReducedMotion(reducedMotion: boolean): void {
     this.reducedMotion = reducedMotion;
     if (reducedMotion) this.marketFlashPeak = Math.min(this.marketFlashPeak, 0.22);
+    if (reducedMotion) {
+      this.tradeSurgePeak = Math.min(
+        this.tradeSurgePeak,
+        this.tradeSurgeConfig.tintStrength
+          * this.tradeSurgeConfig.reducedMotionStrengthMultiplier,
+      );
+    }
   }
 
   update(playerPosition: WorldPosition, elapsedSeconds: number): void {
@@ -1446,6 +1525,17 @@ export class WorldSystem {
     this.sunLight.color.copy(this.duskSun).lerp(this.daySun, this.daylight);
     this.sunLight.intensity = 0.12 + this.daylight * 1.43;
 
+    // Capture the exact dynamic day/night baseline before any market layer.
+    // The values are rebuilt every frame, so a five-second surge can cross
+    // dusk without freezing the clock or accumulating colour drift.
+    this.baselineSky.copy(this.skyColor);
+    this.baselineFog.copy(this.fog.color);
+    this.baselineHemisphere.copy(this.hemisphereLight.color);
+    this.baselineGround.copy(this.hemisphereLight.groundColor);
+    this.baselineSun.copy(this.sunLight.color);
+    this.baselineHemisphereIntensity = this.hemisphereLight.intensity;
+    this.baselineSunIntensity = this.sunLight.intensity;
+
     const marketFlash = this.computeMarketFlash(elapsedSeconds);
     if (marketFlash > 0) {
       const rising = this.marketFlashDirection === 'up';
@@ -1462,6 +1552,34 @@ export class WorldSystem {
       this.hemisphereLight.intensity += marketFlash * 0.12;
       this.sunLight.color.lerp(rising ? this.riseSun : this.dropSun, marketFlash * 0.78);
       this.sunLight.intensity += marketFlash * 0.28;
+    }
+
+    const tradeSurge = this.computeTradeSurge(elapsedSeconds);
+    if (tradeSurge > 0) {
+      const rising = this.tradeSurgeDirection === 'up';
+      this.skyColor.lerp(rising ? this.riseSky : this.dropSky, tradeSurge);
+      this.fog.color.lerp(rising ? this.riseFog : this.dropFog, tradeSurge * 0.86);
+      this.hemisphereLight.color.lerp(
+        rising ? this.riseHemisphere : this.dropHemisphere,
+        tradeSurge,
+      );
+      this.hemisphereLight.groundColor.lerp(
+        rising ? this.riseGround : this.dropGround,
+        tradeSurge * 0.68,
+      );
+      this.hemisphereLight.intensity += tradeSurge * 0.06;
+      this.sunLight.color.lerp(rising ? this.riseSun : this.dropSun, tradeSurge * 0.82);
+      this.sunLight.intensity += tradeSurge * 0.08;
+    } else if (marketFlash <= 0) {
+      // Explicit restoration makes the invariant resilient to future layers:
+      // inactive market presentation is bit-for-bit the day/night baseline.
+      this.skyColor.copy(this.baselineSky);
+      this.fog.color.copy(this.baselineFog);
+      this.hemisphereLight.color.copy(this.baselineHemisphere);
+      this.hemisphereLight.groundColor.copy(this.baselineGround);
+      this.hemisphereLight.intensity = this.baselineHemisphereIntensity;
+      this.sunLight.color.copy(this.baselineSun);
+      this.sunLight.intensity = this.baselineSunIntensity;
     }
 
     this.sunLight.position.set(
@@ -1486,6 +1604,37 @@ export class WorldSystem {
       ? THREE.MathUtils.lerp(this.marketFlashStartIntensity, this.marketFlashPeak, attack)
       : this.marketFlashPeak * (1 - smoothstep(attackSeconds, this.marketFlashDuration, age));
     return this.marketFlashIntensity;
+  }
+
+  private computeTradeSurge(elapsedSeconds: number): number {
+    if (
+      !Number.isFinite(this.tradeSurgeStartedAt)
+      || elapsedSeconds < this.tradeSurgeStartedAt
+      || elapsedSeconds >= this.tradeSurgeEndsAt
+    ) {
+      this.tradeSurgeIntensity = 0;
+      return 0;
+    }
+    if (elapsedSeconds < this.tradeSurgeStartedAt + this.tradeSurgeConfig.attackSeconds) {
+      const attack = smoothstep(
+        this.tradeSurgeStartedAt,
+        this.tradeSurgeStartedAt + this.tradeSurgeConfig.attackSeconds,
+        elapsedSeconds,
+      );
+      this.tradeSurgeIntensity = this.tradeSurgePeak * attack;
+      return this.tradeSurgeIntensity;
+    }
+    if (elapsedSeconds <= this.tradeSurgeHoldUntil) {
+      this.tradeSurgeIntensity = this.tradeSurgePeak;
+      return this.tradeSurgeIntensity;
+    }
+    const release = smoothstep(
+      this.tradeSurgeHoldUntil,
+      this.tradeSurgeEndsAt,
+      elapsedSeconds,
+    );
+    this.tradeSurgeIntensity = this.tradeSurgePeak * (1 - release);
+    return this.tradeSurgeIntensity;
   }
 
   private updateLampLights(player: WorldPosition, elapsedSeconds: number): void {

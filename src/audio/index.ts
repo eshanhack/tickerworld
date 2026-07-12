@@ -24,6 +24,9 @@ export {
   normaliseMoveIntensity,
 } from './audioMath';
 export type {
+  AggregatedTradeAudioSide,
+  AggregatedTradeAudioTier,
+  AggregatedTradeSoundOptions,
   AssetAudioProfile,
   AudioEnvironment,
   AudioEngineOptions,
@@ -35,6 +38,7 @@ export type {
   AudioStateListener,
   AudioSubmixKind,
   FootstepSoundOptions,
+  HologramShimmerSoundOptions,
   MarketAccentSoundOptions,
   MarketAccentTier,
   MonumentAudioSource,

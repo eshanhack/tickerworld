@@ -1,5 +1,6 @@
 import { Quaternion, Vector3, type Camera } from 'three';
 import type { SurfaceKind, TickDirection } from '../types';
+import { MARKET_TRADE_CONFIG, tradeTierProgress } from '../trades/config';
 import {
   AMBIENT_KEY_DELAY_RANGE_SECONDS,
   AMBIENT_PAD_DELAY_RANGE_SECONDS,
@@ -31,7 +32,9 @@ import type {
   AudioPosition,
   AudioStateListener,
   AudioSubmixKind,
+  AggregatedTradeSoundOptions,
   FootstepSoundOptions,
+  HologramShimmerSoundOptions,
   JumpSoundKind,
   MarketAccentSoundOptions,
   MonumentAudioSource,
@@ -48,6 +51,8 @@ const SFX_VOLUME_KEY = 'tickerworld:audio:sfx-volume';
 const SFX_MUTED_KEY = 'tickerworld:audio:sfx-muted';
 const MARKET_VOLUME_KEY = 'tickerworld:audio:market-volume';
 const MARKET_MUTED_KEY = 'tickerworld:audio:market-muted';
+const TRADE_VOLUME_KEY = 'tickerworld:audio:trade-volume';
+const TRADE_MUTED_KEY = 'tickerworld:audio:trade-muted';
 const WEATHER_VOLUME_KEY = 'tickerworld:audio:weather-volume';
 const WEATHER_MUTED_KEY = 'tickerworld:audio:weather-muted';
 const MOVEMENT_VOLUME_KEY = 'tickerworld:audio:movement-volume';
@@ -56,6 +61,7 @@ const SFX_FULL_DEFAULT_MIGRATION_KEY = 'tickerworld:audio:sfx-full-default-v1';
 const MAX_MONUMENT_SOURCES = 24;
 const MAX_SCHEDULED_SOURCES = 48;
 const MARKET_ALERT_RESERVED_VOICES = 12;
+const HARD_MAX_ACTIVE_TRADE_VOICES = 12;
 const LARGE_UP_ALERT_VOICES = 7;
 const EXCEPTIONAL_UP_ALERT_VOICES = 11;
 const DEFAULT_VOLUME = 0.72;
@@ -67,7 +73,15 @@ interface MonumentGraph {
   readonly descriptor: MonumentAudioSource;
   readonly input: GainNode;
   readonly panner: PannerNode;
+  readonly tradeInput: GainNode;
+  readonly tradePanner: PannerNode;
   proximityGain: number;
+}
+
+interface ActiveTradeVoice {
+  readonly sources: readonly AudioScheduledSourceNode[];
+  readonly importance: number;
+  active: boolean;
 }
 
 interface AmbientPadVoice {
@@ -207,6 +221,7 @@ export class AudioEngine {
   private readonly monumentGraphs = new Map<string, MonumentGraph>();
   private readonly scheduledSources = new Set<AudioScheduledSourceNode>();
   private readonly finiteNodes = new Set<AudioNode>();
+  private readonly activeTradeVoices = new Set<ActiveTradeVoice>();
   private readonly ambientSources = new Set<AudioScheduledSourceNode>();
   private readonly ambientNodes = new Set<AudioNode>();
   private readonly rainGraphs = new Set<RainAmbienceGraph>();
@@ -220,6 +235,8 @@ export class AudioEngine {
   private ambientBus: GainNode | null = null;
   private sfxBus: GainNode | null = null;
   private marketBus: GainNode | null = null;
+  private tradeBus: GainNode | null = null;
+  private tradeCompressor: DynamicsCompressorNode | null = null;
   private weatherBus: GainNode | null = null;
   private movementBus: GainNode | null = null;
   private outputCompressor: DynamicsCompressorNode | null = null;
@@ -249,6 +266,8 @@ export class AudioEngine {
   private sfxMutedValue: boolean;
   private marketVolumeValue: number;
   private marketMutedValue: boolean;
+  private tradeVolumeValue: number;
+  private tradeMutedValue: boolean;
   private weatherVolumeValue: number;
   private weatherMutedValue: boolean;
   private movementVolumeValue: number;
@@ -284,6 +303,12 @@ export class AudioEngine {
     this.sfxMutedValue = readStoredChannelMute(this.storage, SFX_MUTED_KEY, this.mutedValue);
     this.marketVolumeValue = readStoredChannelVolume(this.storage, MARKET_VOLUME_KEY, 1);
     this.marketMutedValue = readStoredChannelMute(this.storage, MARKET_MUTED_KEY, false);
+    this.tradeVolumeValue = readStoredChannelVolume(
+      this.storage,
+      TRADE_VOLUME_KEY,
+      MARKET_TRADE_CONFIG.BTC.audio.defaultVolume,
+    );
+    this.tradeMutedValue = readStoredChannelMute(this.storage, TRADE_MUTED_KEY, false);
     this.weatherVolumeValue = readStoredChannelVolume(this.storage, WEATHER_VOLUME_KEY, 1);
     this.weatherMutedValue = readStoredChannelMute(this.storage, WEATHER_MUTED_KEY, false);
     this.movementVolumeValue = readStoredChannelVolume(this.storage, MOVEMENT_VOLUME_KEY, 1);
@@ -296,6 +321,8 @@ export class AudioEngine {
     this.persist(SFX_MUTED_KEY, String(this.sfxMutedValue));
     this.persist(MARKET_VOLUME_KEY, String(this.marketVolumeValue));
     this.persist(MARKET_MUTED_KEY, String(this.marketMutedValue));
+    this.persist(TRADE_VOLUME_KEY, String(this.tradeVolumeValue));
+    this.persist(TRADE_MUTED_KEY, String(this.tradeMutedValue));
     this.persist(WEATHER_VOLUME_KEY, String(this.weatherVolumeValue));
     this.persist(WEATHER_MUTED_KEY, String(this.weatherMutedValue));
     this.persist(MOVEMENT_VOLUME_KEY, String(this.movementVolumeValue));
@@ -319,6 +346,8 @@ export class AudioEngine {
       sfxMuted: this.sfxMutedValue,
       marketVolume: this.marketVolumeValue,
       marketMuted: this.marketMutedValue,
+      tradeVolume: this.tradeVolumeValue,
+      tradeMuted: this.tradeMutedValue,
       weatherVolume: this.weatherVolumeValue,
       weatherMuted: this.weatherMutedValue,
       movementVolume: this.movementVolumeValue,
@@ -357,6 +386,14 @@ export class AudioEngine {
 
   public get marketMuted(): boolean {
     return this.marketMutedValue;
+  }
+
+  public get tradeVolume(): number {
+    return this.tradeVolumeValue;
+  }
+
+  public get tradeMuted(): boolean {
+    return this.tradeMutedValue;
   }
 
   public get weatherVolume(): number {
@@ -555,6 +592,169 @@ export class AudioEngine {
         profile.accent * 0.5,
       );
     }
+  }
+
+  /**
+   * Plays one normalized aggregated tape order through its own compressed,
+   * positional submix. Existing chart pulses never enter this path.
+   */
+  public playAggregatedTrade(sourceId: string, options: AggregatedTradeSoundOptions): boolean {
+    const graph = this.monumentGraphs.get(sourceId);
+    if (!graph || !this.context || !this.isMonumentGraphAudible(graph)) return false;
+    if (options.tier === 'dust') return false;
+    const symbol = graph.descriptor.symbol;
+    const config = MARKET_TRADE_CONFIG[symbol].audio;
+    const ranks = { minor: 1, notable: 2, big: 3, whale: 4 } as const;
+    const tierRank = ranks[options.tier];
+    const minimumRank = ranks[config.minimumTier];
+    if (!tierRank || tierRank < minimumRank || !Number.isFinite(options.notionalUsd)) return false;
+
+    const progress = options.tierProgress === undefined
+      ? tradeTierProgress(symbol, options.tier, options.notionalUsd)
+      : clampUnit(options.tierProgress);
+    const strengthRange = {
+      minor: [0.18, 0.3],
+      notable: [0.3, 0.48],
+      big: [0.5, 0.75],
+      whale: [0.72, 1],
+    } as const;
+    const durationRange = {
+      minor: [0.1, 0.15],
+      notable: [0.15, 0.24],
+      big: [0.32, 0.46],
+      whale: [0.46, 0.66],
+    } as const;
+    const [minimumStrength, maximumStrength] = strengthRange[options.tier];
+    const [minimumDuration, maximumDuration] = durationRange[options.tier];
+    const strength = minimumStrength + (maximumStrength - minimumStrength) * progress;
+    const duration = minimumDuration + (maximumDuration - minimumDuration) * progress;
+    const requiredSources = options.tier === 'big' || options.tier === 'whale' ? 3 : 2;
+    const importance = tierRank * 2 + progress;
+    if (!this.reserveTradeVoice(importance, requiredSources, config.maxVoices)) return false;
+
+    const now = this.context.currentTime;
+    const profile = ASSET_AUDIO_PROFILES[symbol];
+    const buy = options.side === 'buy';
+    const countWeight = Math.min(1.08, 1 + Math.log2(Math.max(1, options.tradeCount ?? 1)) * 0.018);
+    const peak = config.peakGain * strength * countWeight;
+    const root = Math.min(680, Math.max(170, profile.frequency * (buy ? 1 : 0.82)));
+    const target = Math.min(760, Math.max(130, root * (buy
+      ? 1.08 + progress * 0.08
+      : 0.9 - progress * 0.06)));
+
+    const primary = this.context.createOscillator();
+    const colorVoice = this.context.createOscillator();
+    const filter = this.context.createBiquadFilter();
+    const colorGain = this.context.createGain();
+    const envelope = this.context.createGain();
+    primary.type = 'sine';
+    colorVoice.type = buy ? 'triangle' : 'sine';
+    primary.frequency.setValueAtTime(root, now);
+    primary.frequency.exponentialRampToValueAtTime(target, now + duration * 0.82);
+    colorVoice.frequency.setValueAtTime(root * (buy ? 1.5 : 0.75), now);
+    colorVoice.frequency.exponentialRampToValueAtTime(
+      target * (buy ? 1.5 : 0.75),
+      now + duration * 0.82,
+    );
+    colorGain.gain.value = buy ? 0.17 + progress * 0.05 : 0.23 + progress * 0.04;
+    filter.type = 'lowpass';
+    filter.frequency.value = buy ? 1_500 + progress * 650 : 760 + progress * 280;
+    filter.Q.value = buy ? 0.44 : 0.28;
+    envelope.gain.setValueAtTime(0.0001, now);
+    envelope.gain.exponentialRampToValueAtTime(peak, now + 0.008);
+    envelope.gain.exponentialRampToValueAtTime(peak * (buy ? 0.42 : 0.5), now + duration * 0.46);
+    envelope.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+    primary.connect(filter);
+    colorVoice.connect(colorGain);
+    colorGain.connect(filter);
+    filter.connect(envelope);
+    envelope.connect(graph.tradeInput);
+
+    const sources: AudioScheduledSourceNode[] = [primary, colorVoice];
+    const nodes: AudioNode[] = [primary, colorVoice, filter, colorGain, envelope];
+    primary.start(now);
+    colorVoice.start(now);
+    primary.stop(now + duration + 0.02);
+    colorVoice.stop(now + duration + 0.02);
+
+    if (requiredSources === 3) {
+      const sub = this.context.createOscillator();
+      const subGain = this.context.createGain();
+      sub.type = 'sine';
+      const subStart = options.tier === 'whale' ? 92 : 112;
+      sub.frequency.setValueAtTime(subStart, now);
+      sub.frequency.exponentialRampToValueAtTime(buy ? subStart * 1.08 : subStart * 0.78, now + duration);
+      subGain.gain.setValueAtTime(0.0001, now);
+      subGain.gain.exponentialRampToValueAtTime(
+        config.subPeakGain * strength,
+        now + 0.018,
+      );
+      subGain.gain.exponentialRampToValueAtTime(0.0001, now + duration + 0.08);
+      sub.connect(subGain);
+      subGain.connect(graph.tradeInput);
+      sub.start(now);
+      sub.stop(now + duration + 0.1);
+      sources.push(sub);
+      nodes.push(sub, subGain);
+    }
+
+    this.trackTradeVoice(sources, nodes, importance);
+    return true;
+  }
+
+  /** Soft positional projection shimmer layered over a big/whale tape voice. */
+  public playHologramShimmer(
+    position: AudioPosition,
+    options: HologramShimmerSoundOptions,
+  ): boolean {
+    if (
+      !this.canPlaySfx(false, 'trade')
+      || !this.context
+      || !this.tradeBus
+      || this.scheduledSources.size > MAX_SCHEDULED_SOURCES - MARKET_ALERT_RESERVED_VOICES - 2
+    ) return false;
+    const intensity = clampUnit(options.intensity ?? (options.tier === 'whale' ? 1 : 0.72));
+    const spatial = this.createPositionalEffectBus(
+      position,
+      MARKET_AUDIO_MAX_RADIUS,
+      0.52 + intensity * 0.3,
+      this.tradeBus,
+    );
+    if (!spatial) return false;
+    const now = this.context.currentTime;
+    const duration = options.tier === 'whale' ? 0.78 : 0.56;
+    const buy = options.side === 'buy';
+    const first = this.context.createOscillator();
+    const second = this.context.createOscillator();
+    const firstGain = this.context.createGain();
+    const secondGain = this.context.createGain();
+    first.type = 'sine';
+    second.type = 'sine';
+    const firstStart = buy ? 659.25 : 493.88;
+    const firstEnd = buy ? 880 : 369.99;
+    first.frequency.setValueAtTime(firstStart, now);
+    first.frequency.exponentialRampToValueAtTime(firstEnd, now + duration * 0.76);
+    second.frequency.setValueAtTime(firstStart * 1.5, now + 0.045);
+    second.frequency.exponentialRampToValueAtTime(firstEnd * 1.5, now + duration * 0.82);
+    firstGain.gain.setValueAtTime(0.0001, now);
+    firstGain.gain.exponentialRampToValueAtTime(0.018 + intensity * 0.014, now + 0.018);
+    firstGain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+    secondGain.gain.setValueAtTime(0.0001, now + 0.045);
+    secondGain.gain.exponentialRampToValueAtTime(0.007 + intensity * 0.006, now + 0.07);
+    secondGain.gain.exponentialRampToValueAtTime(0.0001, now + duration + 0.06);
+    first.connect(firstGain);
+    second.connect(secondGain);
+    firstGain.connect(spatial.input);
+    secondGain.connect(spatial.input);
+    first.start(now);
+    second.start(now + 0.045);
+    first.stop(now + duration + 0.02);
+    second.stop(now + duration + 0.08);
+    this.trackFiniteVoice(
+      [first, second],
+      [first, second, firstGain, secondGain, ...spatial.nodes],
+    );
+    return true;
   }
 
   /** Priority fanfare/siren selected by Game's single authoritative event gate. */
@@ -963,6 +1163,10 @@ export class AudioEngine {
     this.setSubmixVolume('market', volume);
   }
 
+  public setTradeVolume(volume: number): void {
+    this.setSubmixVolume('trade', volume);
+  }
+
   public setWeatherVolume(volume: number): void {
     this.setSubmixVolume('weather', volume);
   }
@@ -995,6 +1199,10 @@ export class AudioEngine {
 
   public toggleMarketMuted(force?: boolean): boolean {
     return this.toggleSubmixMuted('market', force);
+  }
+
+  public toggleTradeMuted(force?: boolean): boolean {
+    return this.toggleSubmixMuted('trade', force);
   }
 
   public toggleWeatherMuted(force?: boolean): boolean {
@@ -1053,12 +1261,15 @@ export class AudioEngine {
     for (const node of this.finiteNodes) safeDisconnect(node);
     this.scheduledSources.clear();
     this.finiteNodes.clear();
+    this.activeTradeVoices.clear();
     for (const graph of this.monumentGraphs.values()) this.disposeMonumentGraph(graph);
     this.monumentGraphs.clear();
     this.desiredSources.clear();
     for (const node of [
       this.ambientBus,
       this.marketBus,
+      this.tradeBus,
+      this.tradeCompressor,
       this.weatherBus,
       this.movementBus,
       this.sfxBus,
@@ -1072,6 +1283,8 @@ export class AudioEngine {
     this.masterBus = null;
     this.ambientBus = null;
     this.marketBus = null;
+    this.tradeBus = null;
+    this.tradeCompressor = null;
     this.weatherBus = null;
     this.movementBus = null;
     this.sfxBus = null;
@@ -1095,9 +1308,11 @@ export class AudioEngine {
     const ambient = context.createGain();
     const sfx = context.createGain();
     const market = context.createGain();
+    const trade = context.createGain();
     const weather = context.createGain();
     const movement = context.createGain();
     const compressor = context.createDynamicsCompressor();
+    const tradeCompressor = context.createDynamicsCompressor();
     ambient.gain.value = 0.4;
     sfx.gain.value = 1;
     compressor.threshold.value = -15;
@@ -1105,8 +1320,17 @@ export class AudioEngine {
     compressor.ratio.value = 3;
     compressor.attack.value = 0.008;
     compressor.release.value = 0.22;
+    // A gentle tape-only limiter keeps eight concurrent prints lively without
+    // changing any existing candle, weather, movement, or ambient routing.
+    tradeCompressor.threshold.value = -22;
+    tradeCompressor.knee.value = 20;
+    tradeCompressor.ratio.value = 4;
+    tradeCompressor.attack.value = 0.006;
+    tradeCompressor.release.value = 0.18;
     ambient.connect(master);
     market.connect(sfx);
+    trade.connect(tradeCompressor);
+    tradeCompressor.connect(sfx);
     weather.connect(sfx);
     movement.connect(sfx);
     sfx.connect(master);
@@ -1116,6 +1340,8 @@ export class AudioEngine {
     this.ambientBus = ambient;
     this.sfxBus = sfx;
     this.marketBus = market;
+    this.tradeBus = trade;
+    this.tradeCompressor = tradeCompressor;
     this.weatherBus = weather;
     this.movementBus = movement;
     this.outputCompressor = compressor;
@@ -1151,6 +1377,11 @@ export class AudioEngine {
     this.sfxBus?.gain.setTargetAtTime(sfxLevel, now, 0.025);
     this.marketBus?.gain.setTargetAtTime(
       this.marketMutedValue ? 0 : Math.pow(this.marketVolumeValue, 1.3),
+      now,
+      0.025,
+    );
+    this.tradeBus?.gain.setTargetAtTime(
+      this.tradeMutedValue ? 0 : Math.pow(this.tradeVolumeValue, 1.35),
       now,
       0.025,
     );
@@ -1199,7 +1430,7 @@ export class AudioEngine {
   }
 
   private syncMonumentGraphs(): void {
-    if (!this.context || !this.marketBus) return;
+    if (!this.context || !this.marketBus || !this.tradeBus) return;
     for (const [id, graph] of this.monumentGraphs) {
       if (!this.desiredSources.has(id)) {
         this.disposeMonumentGraph(graph);
@@ -1217,16 +1448,25 @@ export class AudioEngine {
       if (existing) this.disposeMonumentGraph(existing);
       const input = this.context.createGain();
       const panner = this.context.createPanner();
+      const tradeInput = this.context.createGain();
+      const tradePanner = this.context.createPanner();
       panner.panningModel = 'HRTF';
+      tradePanner.panningModel = 'HRTF';
       // The explicit fox-proximity curve owns distance. HRTF supplies only
       // direction, preventing the previous second exponential attenuation.
       panner.distanceModel = 'inverse';
       panner.refDistance = 1;
       panner.maxDistance = MARKET_AUDIO_MAX_RADIUS + 4;
       panner.rolloffFactor = 0;
+      tradePanner.distanceModel = 'inverse';
+      tradePanner.refDistance = 1;
+      tradePanner.maxDistance = MARKET_AUDIO_MAX_RADIUS + 4;
+      tradePanner.rolloffFactor = 0;
       input.connect(panner);
       panner.connect(this.marketBus);
-      const graph = { descriptor, input, panner, proximityGain: 0 };
+      tradeInput.connect(tradePanner);
+      tradePanner.connect(this.tradeBus);
+      const graph = { descriptor, input, panner, tradeInput, tradePanner, proximityGain: 0 };
       this.monumentGraphs.set(descriptor.id, graph);
       this.positionMonumentGraph(graph);
     }
@@ -1242,14 +1482,24 @@ export class AudioEngine {
       now,
       0.08,
     );
+    graph.tradeInput.gain.setTargetAtTime(
+      (graph.descriptor.gain ?? 1) * graph.proximityGain,
+      now,
+      0.08,
+    );
     graph.panner.positionX.setTargetAtTime(x, now, 0.035);
     graph.panner.positionY.setTargetAtTime(y, now, 0.035);
     graph.panner.positionZ.setTargetAtTime(z, now, 0.035);
+    graph.tradePanner.positionX.setTargetAtTime(x, now, 0.035);
+    graph.tradePanner.positionY.setTargetAtTime(y, now, 0.035);
+    graph.tradePanner.positionZ.setTargetAtTime(z, now, 0.035);
   }
 
   private disposeMonumentGraph(graph: MonumentGraph): void {
     safeDisconnect(graph.input);
     safeDisconnect(graph.panner);
+    safeDisconnect(graph.tradeInput);
+    safeDisconnect(graph.tradePanner);
   }
 
   private proximityGainFor(descriptor: MonumentAudioSource): number {
@@ -1268,6 +1518,11 @@ export class AudioEngine {
     for (const graph of this.monumentGraphs.values()) {
       graph.proximityGain = this.proximityGainFor(graph.descriptor);
       graph.input.gain.setTargetAtTime(
+        (graph.descriptor.gain ?? 1) * graph.proximityGain,
+        now,
+        0.12,
+      );
+      graph.tradeInput.gain.setTargetAtTime(
         (graph.descriptor.gain ?? 1) * graph.proximityGain,
         now,
         0.12,
@@ -1930,6 +2185,54 @@ export class AudioEngine {
     for (const source of sources) source.addEventListener('ended', release, { once: true });
   }
 
+  private reserveTradeVoice(
+    importance: number,
+    requiredSources: number,
+    configuredLimit: number,
+  ): boolean {
+    if (
+      !this.canPlaySfx(false, 'trade')
+      || this.scheduledSources.size
+        > MAX_SCHEDULED_SOURCES - MARKET_ALERT_RESERVED_VOICES - requiredSources
+    ) return false;
+    const limit = Math.max(1, Math.min(HARD_MAX_ACTIVE_TRADE_VOICES, Math.floor(configuredLimit)));
+    if (this.activeTradeVoices.size < limit) return true;
+
+    let quietest: ActiveTradeVoice | null = null;
+    for (const voice of this.activeTradeVoices) {
+      if (!quietest || voice.importance < quietest.importance) quietest = voice;
+    }
+    if (!quietest || quietest.importance >= importance) return false;
+    quietest.active = false;
+    this.activeTradeVoices.delete(quietest);
+    for (const source of quietest.sources) safeStop(source);
+    return true;
+  }
+
+  private trackTradeVoice(
+    sources: readonly AudioScheduledSourceNode[],
+    nodes: readonly AudioNode[],
+    importance: number,
+  ): void {
+    const voice: ActiveTradeVoice = { sources, importance, active: true };
+    this.activeTradeVoices.add(voice);
+    for (const source of sources) this.scheduledSources.add(source);
+    for (const node of nodes) this.finiteNodes.add(node);
+    let remaining = sources.length;
+    const release = (): void => {
+      remaining -= 1;
+      if (remaining > 0) return;
+      voice.active = false;
+      this.activeTradeVoices.delete(voice);
+      for (const source of sources) this.scheduledSources.delete(source);
+      for (const node of nodes) {
+        this.finiteNodes.delete(node);
+        safeDisconnect(node);
+      }
+    };
+    for (const source of sources) source.addEventListener('ended', release, { once: true });
+  }
+
   private canPlayEffect(priority = false): boolean {
     const voiceLimit = priority
       ? MAX_SCHEDULED_SOURCES
@@ -1946,6 +2249,7 @@ export class AudioEngine {
   } {
     switch (kind) {
       case 'market': return { volume: this.marketVolumeValue, muted: this.marketMutedValue };
+      case 'trade': return { volume: this.tradeVolumeValue, muted: this.tradeMutedValue };
       case 'weather': return { volume: this.weatherVolumeValue, muted: this.weatherMutedValue };
       case 'movement': return { volume: this.movementVolumeValue, muted: this.movementMutedValue };
     }
@@ -1960,6 +2264,10 @@ export class AudioEngine {
       case 'market':
         this.marketVolumeValue = next;
         this.persist(MARKET_VOLUME_KEY, String(next));
+        break;
+      case 'trade':
+        this.tradeVolumeValue = next;
+        this.persist(TRADE_VOLUME_KEY, String(next));
         break;
       case 'weather':
         this.weatherVolumeValue = next;
@@ -1982,6 +2290,10 @@ export class AudioEngine {
       case 'market':
         this.marketMutedValue = next;
         this.persist(MARKET_MUTED_KEY, String(next));
+        break;
+      case 'trade':
+        this.tradeMutedValue = next;
+        this.persist(TRADE_MUTED_KEY, String(next));
         break;
       case 'weather':
         this.weatherMutedValue = next;

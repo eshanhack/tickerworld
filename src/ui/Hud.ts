@@ -1,5 +1,7 @@
 import type { AnimalKind, EmoteKind, SkinId } from '../../shared/src/index.js';
 import type { AssetSymbol, FeedMode } from '../types';
+import { MARKET_TRADE_CONFIG } from '../trades/config';
+import type { TradeTapeMode } from '../trades/types';
 import { formatPrice } from '../monuments';
 import {
   entryFeedStatusLabel,
@@ -41,6 +43,8 @@ export interface HudCallbacks {
   onSfxVolumeChange: (value: number) => void;
   onMarketMuteToggle: () => void;
   onMarketVolumeChange: (value: number) => void;
+  onTradeMuteToggle?: () => void;
+  onTradeVolumeChange?: (value: number) => void;
   onWeatherMuteToggle: () => void;
   onWeatherVolumeChange: (value: number) => void;
   onMovementMuteToggle: () => void;
@@ -60,12 +64,25 @@ export interface HudCallbacks {
   onNewsInteractionChange?: (active: boolean) => void;
 }
 
-interface NearbyView {
+export interface NearbyView {
   symbol: AssetSymbol;
   price: number | null;
   mode: FeedMode;
   distance: number;
   ageMs?: number | null;
+  /** Independent multi-exchange trade-tape health; omitted while the feature is disabled. */
+  tradeTapeMode?: TradeTapeMode;
+}
+
+export function tradeTapeStatusLabel(mode: TradeTapeMode | undefined): string | null {
+  switch (mode) {
+    case 'live': return 'TAPE LIVE';
+    case 'simulated': return 'TAPE SIM';
+    case 'unavailable': return 'TAPE OFF';
+    case 'connecting': return 'TAPE CONNECTING';
+    case 'reconnecting': return 'TAPE RECONNECTING';
+    default: return null;
+  }
 }
 
 const EMOTES: readonly { kind: UiEmoteKind; icon: string; label: string }[] = [
@@ -124,6 +141,8 @@ export class Hud {
   private readonly nearbySymbol: HTMLElement;
   private readonly nearbyPrice: HTMLElement;
   private readonly nearbyMode: HTMLElement;
+  private readonly nearbyModeLabel: HTMLElement;
+  private readonly nearbyTapeMode: HTMLElement;
   private readonly worldClock: HTMLElement;
   private readonly worldClockIcon: HTMLElement;
   private readonly worldClockTime: HTMLElement;
@@ -145,6 +164,8 @@ export class Hud {
   private readonly sfxVolumeInput: HTMLInputElement;
   private readonly marketMuteButton: HTMLButtonElement;
   private readonly marketVolumeInput: HTMLInputElement;
+  private readonly tradeMuteButton: HTMLButtonElement;
+  private readonly tradeVolumeInput: HTMLInputElement;
   private readonly weatherMuteButton: HTMLButtonElement;
   private readonly weatherVolumeInput: HTMLInputElement;
   private readonly movementMuteButton: HTMLButtonElement;
@@ -208,7 +229,7 @@ export class Hud {
       <section class="nearby-panel is-hidden" aria-live="polite" data-nearby>
         <div class="nearby-symbol" data-nearby-symbol>BTC</div>
         <div><div class="nearby-label">nearby market</div><div class="nearby-price" data-nearby-price>$&mdash;</div></div>
-        <div class="market-mode connecting" data-nearby-mode>CONNECTING</div>
+        <div class="market-mode connecting" data-nearby-mode><span data-nearby-mode-label>CONNECTING</span><span class="trade-tape-mode is-hidden" data-nearby-tape-mode></span></div>
       </section>
 
       <section class="world-clock" aria-label="World time, daylight" data-world-clock>
@@ -247,6 +268,7 @@ export class Hud {
           <div class="audio-channel"><button class="channel-mute" type="button" aria-label="Mute music" data-music-mute><span>&#9834;</span><strong>Music</strong></button><label aria-label="Music volume"><input type="range" min="0" max="1" step="0.01" value="1" data-music-volume /></label></div>
           <div class="audio-channel"><button class="channel-mute" type="button" aria-label="Mute sound effects" data-sfx-mute><span>&#10022;</span><strong>FX</strong></button><label aria-label="Sound effects volume"><input type="range" min="0" max="1" step="0.01" value="1" data-sfx-volume /></label></div>
           <div class="audio-channel audio-submix"><button class="channel-mute" type="button" aria-label="Mute chart sounds" data-market-mute><span>&#8599;</span><strong>Charts</strong></button><label aria-label="Chart and market volume"><input type="range" min="0" max="1" step="0.01" value="1" data-market-volume /></label></div>
+          <div class="audio-channel audio-submix"><button class="channel-mute" type="button" aria-label="Mute live trade tape" data-trade-mute><span>&#8645;</span><strong>Trade tape</strong></button><label aria-label="Live trade tape volume"><input type="range" min="0" max="1" step="0.01" value="${MARKET_TRADE_CONFIG.BTC.audio.defaultVolume}" data-trade-volume /></label></div>
           <div class="audio-channel audio-submix"><button class="channel-mute" type="button" aria-label="Mute weather and world ambience" data-weather-mute><span>&#9729;</span><strong>Weather</strong></button><label aria-label="Weather and world ambience volume"><input type="range" min="0" max="1" step="0.01" value="1" data-weather-volume /></label></div>
           <div class="audio-channel audio-submix"><button class="channel-mute" type="button" aria-label="Mute movement sounds" data-movement-mute><span>&#8767;</span><strong>Movement</strong></button><label aria-label="Movement, footsteps, and foliage volume"><input type="range" min="0" max="1" step="0.01" value="1" data-movement-volume /></label></div>
         </div>
@@ -275,6 +297,8 @@ export class Hud {
     this.nearbySymbol = this.required('[data-nearby-symbol]');
     this.nearbyPrice = this.required('[data-nearby-price]');
     this.nearbyMode = this.required('[data-nearby-mode]');
+    this.nearbyModeLabel = this.required('[data-nearby-mode-label]');
+    this.nearbyTapeMode = this.required('[data-nearby-tape-mode]');
     this.worldClock = this.required('[data-world-clock]');
     this.worldClockIcon = this.required('[data-world-clock-icon]');
     this.worldClockTime = this.required('[data-world-clock-time]');
@@ -295,6 +319,8 @@ export class Hud {
     this.sfxVolumeInput = this.required<HTMLInputElement>('[data-sfx-volume]');
     this.marketMuteButton = this.required<HTMLButtonElement>('[data-market-mute]');
     this.marketVolumeInput = this.required<HTMLInputElement>('[data-market-volume]');
+    this.tradeMuteButton = this.required<HTMLButtonElement>('[data-trade-mute]');
+    this.tradeVolumeInput = this.required<HTMLInputElement>('[data-trade-volume]');
     this.weatherMuteButton = this.required<HTMLButtonElement>('[data-weather-mute]');
     this.weatherVolumeInput = this.required<HTMLInputElement>('[data-weather-volume]');
     this.movementMuteButton = this.required<HTMLButtonElement>('[data-movement-mute]');
@@ -342,6 +368,8 @@ export class Hud {
     this.sfxVolumeInput.addEventListener('input', this.sfxVolume);
     this.marketMuteButton.addEventListener('click', this.marketMute);
     this.marketVolumeInput.addEventListener('input', this.marketVolume);
+    this.tradeMuteButton.addEventListener('click', this.tradeMute);
+    this.tradeVolumeInput.addEventListener('input', this.tradeVolume);
     this.weatherMuteButton.addEventListener('click', this.weatherMute);
     this.weatherVolumeInput.addEventListener('input', this.weatherVolume);
     this.movementMuteButton.addEventListener('click', this.movementMute);
@@ -478,7 +506,7 @@ export class Hud {
       && Number.isFinite(view.ageMs)
       ? `${Math.max(0, Math.round(view.ageMs / 1_000))}s old`
       : null;
-    this.nearbyMode.textContent = view.mode === 'live'
+    this.nearbyModeLabel.textContent = view.mode === 'live'
       ? view.symbol === 'WTI'
         ? 'LIVE · HYPERLIQUID · CL PERP'
         : view.symbol === 'PUMP' || view.symbol === 'ANSEM'
@@ -496,6 +524,9 @@ export class Hud {
               : 'RECONNECTING'
           : view.symbol === 'TEST' ? 'SIMULATED · TEST LAB' : 'SIMULATED · QA';
     this.nearbyMode.className = `market-mode ${view.mode === 'reconnecting' && view.price === null ? 'connecting' : view.mode}`;
+    const tapeLabel = tradeTapeStatusLabel(view.tradeTapeMode);
+    this.nearbyTapeMode.textContent = tapeLabel ?? '';
+    this.nearbyTapeMode.className = `trade-tape-mode ${view.tradeTapeMode ?? 'disabled'}${tapeLabel ? '' : ' is-hidden'}`;
     this.nearbyPanel.style.setProperty('--nearby-distance', `${Math.min(1, view.distance / 80)}`);
   }
 
@@ -554,6 +585,14 @@ export class Hud {
 
   public setMarketVolume(value: number): void {
     this.marketVolumeInput.value = String(value);
+  }
+
+  public setTradeMuted(muted: boolean): void {
+    this.setSubmixMuted(this.tradeMuteButton, muted, '\u21c5', 'live trade tape');
+  }
+
+  public setTradeVolume(value: number): void {
+    this.tradeVolumeInput.value = String(value);
   }
 
   public setWeatherMuted(muted: boolean): void {
@@ -617,6 +656,8 @@ export class Hud {
     this.sfxVolumeInput.removeEventListener('input', this.sfxVolume);
     this.marketMuteButton.removeEventListener('click', this.marketMute);
     this.marketVolumeInput.removeEventListener('input', this.marketVolume);
+    this.tradeMuteButton.removeEventListener('click', this.tradeMute);
+    this.tradeVolumeInput.removeEventListener('input', this.tradeVolume);
     this.weatherMuteButton.removeEventListener('click', this.weatherMute);
     this.weatherVolumeInput.removeEventListener('input', this.weatherVolume);
     this.movementMuteButton.removeEventListener('click', this.movementMute);
@@ -753,6 +794,8 @@ export class Hud {
   private readonly sfxVolume = (): void => this.callbacks.onSfxVolumeChange(Number(this.sfxVolumeInput.value));
   private readonly marketMute = (): void => this.callbacks.onMarketMuteToggle();
   private readonly marketVolume = (): void => this.callbacks.onMarketVolumeChange(Number(this.marketVolumeInput.value));
+  private readonly tradeMute = (): void => this.callbacks.onTradeMuteToggle?.();
+  private readonly tradeVolume = (): void => this.callbacks.onTradeVolumeChange?.(Number(this.tradeVolumeInput.value));
   private readonly weatherMute = (): void => this.callbacks.onWeatherMuteToggle();
   private readonly weatherVolume = (): void => this.callbacks.onWeatherVolumeChange(Number(this.weatherVolumeInput.value));
   private readonly movementMute = (): void => this.callbacks.onMovementMuteToggle();

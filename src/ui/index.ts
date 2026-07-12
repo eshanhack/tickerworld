@@ -69,3 +69,10 @@ export {
   type ParkourRunResultInput,
   type ParkourRunResult,
 } from './ParkourHudView';
+export {
+  TradeDebugPanel,
+  type TradeDebugPanelCallbacks,
+  type TradeDebugSide,
+  type TradeDebugSnapshot,
+  type TradeDebugTier,
+} from './TradeDebugPanel';

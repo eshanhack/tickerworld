@@ -2,6 +2,11 @@ import { Camera, Group, Object3D, Raycaster, Vector2, Vector3 } from 'three';
 import type { NewsItem } from '../news';
 import type { AssetState, AssetSymbol, GameSystem } from '../types';
 import {
+  BigOrderHologramSystem,
+  type BigOrderHologramEvent,
+  type BigOrderHologramShowResult,
+} from './BigOrderHologramSystem';
+import {
   Monument,
   type MonumentChartOcclusionBounds,
   type MonumentNewsOverlayState,
@@ -24,6 +29,7 @@ export interface MonumentSystemOptions {
   interactionDragThreshold?: number;
   /** Disable the built-in click listener when a shared canvas coordinator owns picking. */
   attachInteractionListeners?: boolean;
+  reducedMotion?: boolean;
 }
 
 export interface NearestMonument {
@@ -72,6 +78,7 @@ export function isSafeNewsPermalink(value: string): boolean {
 
 export class MonumentSystem implements GameSystem {
   readonly root = new Group();
+  readonly bigOrderHolograms: BigOrderHologramSystem;
 
   private readonly monuments = new Set<Monument>();
   private camera: Camera;
@@ -97,6 +104,12 @@ export class MonumentSystem implements GameSystem {
     this.interactionDragThreshold = Math.max(0, options.interactionDragThreshold ?? 7);
     this.root.name = 'tickerworld-monuments';
     options.parent.add(this.root);
+    this.bigOrderHolograms = new BigOrderHologramSystem({
+      parent: this.root,
+      camera: this.camera,
+      fontUrl: this.fontUrl,
+      reducedMotion: options.reducedMotion,
+    });
     if (options.attachInteractionListeners !== false) this.attachInteractionListeners();
   }
 
@@ -187,6 +200,25 @@ export class MonumentSystem implements GameSystem {
     return [...this.monuments];
   }
 
+  /** Shows a qualifying order beside its grand chart. */
+  showBigOrder(order: BigOrderHologramEvent): BigOrderHologramShowResult | null {
+    for (const monument of this.monuments) {
+      if (monument.symbol === order.symbol && monument.discoverable) {
+        return this.bigOrderHolograms.show(order, monument);
+      }
+    }
+    return null;
+  }
+
+  /** Clears active order projections before switching market rooms. */
+  clearBigOrders(): void {
+    this.bigOrderHolograms.clear();
+  }
+
+  getBigOrderHologramAudioPosition(target = new Vector3()): Vector3 | null {
+    return this.bigOrderHolograms.getLatestWorldPosition(target);
+  }
+
   nearestTo(
     point: Vector3,
     maxDistance = Number.POSITIVE_INFINITY,
@@ -234,6 +266,11 @@ export class MonumentSystem implements GameSystem {
 
   setCamera(camera: Camera): void {
     this.camera = camera;
+    this.bigOrderHolograms.setCamera(camera);
+  }
+
+  setReducedMotion(reducedMotion: boolean): void {
+    this.bigOrderHolograms.setReducedMotion(reducedMotion);
   }
 
   /** Activates the top-most candle news pin at a canvas client coordinate. */
@@ -297,6 +334,7 @@ export class MonumentSystem implements GameSystem {
     for (const monument of this.monuments) {
       monument.update(deltaSeconds, elapsedSeconds, this.camera);
     }
+    this.bigOrderHolograms.update(deltaSeconds, elapsedSeconds);
   }
 
   setVisible(visible: boolean): void {
@@ -312,6 +350,7 @@ export class MonumentSystem implements GameSystem {
     this.detachInteractionListeners();
     this.pointerGesture = null;
     this.newsItems = [];
+    this.bigOrderHolograms.dispose();
     for (const monument of this.monuments) {
       monument.dispose();
     }

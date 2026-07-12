@@ -61,6 +61,7 @@ interface FakeNode extends Partial<AudioScheduledSourceNode> {
   readonly detune?: AudioParam;
   readonly delayTime?: AudioParam;
   readonly Q?: AudioParam;
+  readonly emitEnded?: () => void;
   loop?: boolean;
   buffer?: AudioBuffer | null;
   type?: string;
@@ -145,20 +146,30 @@ function makeFakeContext(): {
     }),
     createOscillator: vi.fn(() => {
       const node = createNode(['frequency', 'detune']);
+      const ended: EventListener[] = [];
       Object.assign(node, {
         start: vi.fn(),
         stop: vi.fn(),
-        addEventListener: vi.fn(),
+        addEventListener: vi.fn((type: string, listener: EventListenerOrEventListenerObject) => {
+          if (type !== 'ended' || typeof listener !== 'function') return;
+          ended.push(listener);
+        }),
+        emitEnded: () => ended.splice(0).forEach((listener) => listener(new Event('ended'))),
       });
       oscillators.push(node);
       return node as unknown as OscillatorNode;
     }),
     createBufferSource: vi.fn(() => {
       const node = createNode();
+      const ended: EventListener[] = [];
       Object.assign(node, {
         start: vi.fn(),
         stop: vi.fn(),
-        addEventListener: vi.fn(),
+        addEventListener: vi.fn((type: string, listener: EventListenerOrEventListenerObject) => {
+          if (type !== 'ended' || typeof listener !== 'function') return;
+          ended.push(listener);
+        }),
+        emitEnded: () => ended.splice(0).forEach((listener) => listener(new Event('ended'))),
         buffer: null,
         loop: false,
       });
@@ -184,10 +195,12 @@ describe('AudioEngine preferences and fallback', () => {
     expect(engine.state).toMatchObject({
       musicVolume: 0.72,
       sfxVolume: 1,
+      tradeVolume: 0.62,
       musicMuted: false,
       sfxMuted: false,
     });
     expect(storage.getItem('tickerworld:audio:sfx-volume')).toBe('1');
+    expect(storage.getItem('tickerworld:audio:trade-volume')).toBe('0.62');
     engine.dispose();
   });
 
@@ -231,14 +244,16 @@ describe('AudioEngine preferences and fallback', () => {
     restored.dispose();
   });
 
-  it('persists independent chart, weather, and movement submixes under FX', () => {
+  it('persists independent chart, trade tape, weather, and movement submixes under FX', () => {
     const storage = new MemoryStorage();
     const engine = new AudioEngine({ storage });
 
     engine.setMarketVolume(0.31);
+    engine.setTradeVolume(0.26);
     engine.setWeatherVolume(0.47);
     engine.setMovementVolume(0.83);
     engine.toggleMarketMuted(true);
+    engine.toggleTradeMuted(true);
     engine.toggleWeatherMuted(false);
     engine.toggleMovementMuted(true);
 
@@ -248,12 +263,16 @@ describe('AudioEngine preferences and fallback', () => {
       sfxMuted: false,
       marketVolume: 0.31,
       marketMuted: true,
+      tradeVolume: 0.26,
+      tradeMuted: true,
       weatherVolume: 0.47,
       weatherMuted: false,
       movementVolume: 0.83,
       movementMuted: true,
     });
     expect(storage.getItem('tickerworld:audio:market-volume')).toBe('0.31');
+    expect(storage.getItem('tickerworld:audio:trade-volume')).toBe('0.26');
+    expect(storage.getItem('tickerworld:audio:trade-muted')).toBe('true');
     expect(storage.getItem('tickerworld:audio:weather-volume')).toBe('0.47');
     expect(storage.getItem('tickerworld:audio:movement-volume')).toBe('0.83');
     engine.dispose();
@@ -456,19 +475,27 @@ describe('AudioEngine lifecycle', () => {
 
     const buses = engine as unknown as {
       marketBus: FakeNode;
+      tradeBus: FakeNode;
+      tradeCompressor: FakeNode;
       weatherBus: FakeNode;
       movementBus: FakeNode;
       sfxBus: FakeNode;
     };
     expect(buses.marketBus.connect).toHaveBeenCalledWith(buses.sfxBus);
+    expect(buses.tradeBus.connect).toHaveBeenCalledWith(buses.tradeCompressor);
+    expect(buses.tradeCompressor.connect).toHaveBeenCalledWith(buses.sfxBus);
     expect(buses.weatherBus.connect).toHaveBeenCalledWith(buses.sfxBus);
     expect(buses.movementBus.connect).toHaveBeenCalledWith(buses.sfxBus);
 
     engine.setMarketVolume(0.4);
+    engine.setTradeVolume(0.35);
     engine.setWeatherVolume(0.5);
     engine.setMovementVolume(0.6);
     expect(buses.marketBus.gain?.setTargetAtTime).toHaveBeenLastCalledWith(
       Math.pow(0.4, 1.3), 0, 0.025,
+    );
+    expect(buses.tradeBus.gain?.setTargetAtTime).toHaveBeenLastCalledWith(
+      Math.pow(0.35, 1.35), 0, 0.025,
     );
     expect(buses.weatherBus.gain?.setTargetAtTime).toHaveBeenLastCalledWith(
       Math.pow(0.5, 1.3), 0, 0.04,
@@ -578,6 +605,170 @@ describe('AudioEngine lifecycle', () => {
     expect(fake.oscillators.length).toBeGreaterThan(baselineOscillators);
     expect(fake.bufferSources.length).toBeGreaterThan(baselineBuffers);
 
+    engine.dispose();
+    vi.useRealTimers();
+  });
+
+  it('plays side-distinct compressed trade tape without touching the chart bus', async () => {
+    vi.useFakeTimers();
+    const fake = makeFakeContext();
+    const engine = new AudioEngine({ contextFactory: () => fake.context, storage: null, random: () => 0.5 });
+    engine.setMonumentSources([{
+      id: 'grand:BTC',
+      symbol: 'BTC',
+      position: { x: 0, y: 2, z: 0 },
+    }]);
+    engine.updateProximityPosition({ x: 0, y: 0, z: 0 });
+    await engine.unlock();
+    const baseline = fake.oscillators.length;
+
+    expect(engine.playAggregatedTrade('grand:BTC', {
+      side: 'buy', tier: 'dust', notionalUsd: 999,
+    })).toBe(false);
+    expect(fake.oscillators).toHaveLength(baseline);
+
+    expect(engine.playAggregatedTrade('grand:BTC', {
+      side: 'buy',
+      tier: 'minor',
+      notionalUsd: 5_000,
+      tradeCount: 3,
+    })).toBe(true);
+    const buyPrimary = fake.oscillators[baseline]!;
+    const buyStart = buyPrimary.frequency?.setValueAtTime as unknown as ReturnType<typeof vi.fn>;
+    const buyEnd = buyPrimary.frequency?.exponentialRampToValueAtTime as unknown as ReturnType<typeof vi.fn>;
+    expect(buyEnd.mock.calls.at(-1)?.[0]).toBeGreaterThan(buyStart.mock.calls.at(-1)?.[0]);
+
+    const sellBaseline = fake.oscillators.length;
+    expect(engine.playAggregatedTrade('grand:BTC', {
+      side: 'sell',
+      tier: 'notable',
+      notionalUsd: 50_000,
+      tradeCount: 4,
+    })).toBe(true);
+    const sellPrimary = fake.oscillators[sellBaseline]!;
+    const sellStart = sellPrimary.frequency?.setValueAtTime as unknown as ReturnType<typeof vi.fn>;
+    const sellEnd = sellPrimary.frequency?.exponentialRampToValueAtTime as unknown as ReturnType<typeof vi.fn>;
+    expect(sellEnd.mock.calls.at(-1)?.[0]).toBeLessThan(sellStart.mock.calls.at(-1)?.[0]);
+
+    const graph = [...(engine as unknown as {
+      monumentGraphs: Map<string, { input: FakeNode; tradeInput: FakeNode }>;
+    }).monumentGraphs.values()][0]!;
+    expect(graph.tradeInput.connect).toHaveBeenCalled();
+    expect(graph.input.connect).toHaveBeenCalledTimes(1);
+    engine.dispose();
+    vi.useRealTimers();
+  });
+
+  it('caps ordinary tape voices at eight and lets a whale replace the quietest voice', async () => {
+    vi.useFakeTimers();
+    const fake = makeFakeContext();
+    const engine = new AudioEngine({ contextFactory: () => fake.context, storage: null, random: () => 0.5 });
+    engine.setMonumentSources([{
+      id: 'grand:BTC',
+      symbol: 'BTC',
+      position: { x: 0, y: 2, z: 0 },
+    }]);
+    engine.updateProximityPosition({ x: 0, y: 0, z: 0 });
+    await engine.unlock();
+    const tapeBaseline = fake.oscillators.length;
+
+    for (let index = 0; index < 8; index += 1) {
+      expect(engine.playAggregatedTrade('grand:BTC', {
+        side: index % 2 === 0 ? 'buy' : 'sell',
+        tier: 'minor',
+        notionalUsd: 1_100 + index,
+      })).toBe(true);
+    }
+    expect((engine as unknown as { activeTradeVoices: Set<unknown> }).activeTradeVoices.size).toBe(8);
+    const beforeRejected = fake.oscillators.length;
+    expect(engine.playAggregatedTrade('grand:BTC', {
+      side: 'buy',
+      tier: 'minor',
+      notionalUsd: 1_050,
+    })).toBe(false);
+    expect(fake.oscillators).toHaveLength(beforeRejected);
+
+    const quietSources = fake.oscillators.slice(tapeBaseline, tapeBaseline + 2);
+    expect(engine.playAggregatedTrade('grand:BTC', {
+      side: 'buy',
+      tier: 'whale',
+      notionalUsd: 2_000_000,
+    })).toBe(true);
+    expect((engine as unknown as { activeTradeVoices: Set<unknown> }).activeTradeVoices.size).toBe(8);
+    expect(quietSources.some((source) => (source.stop?.mock.calls.length ?? 0) > 1)).toBe(true);
+    engine.dispose();
+    vi.useRealTimers();
+  });
+
+  it('releases natural and preempted tape voices back to their resource baseline', async () => {
+    vi.useFakeTimers();
+    const fake = makeFakeContext();
+    const engine = new AudioEngine({ contextFactory: () => fake.context, storage: null, random: () => 0.5 });
+    engine.setMonumentSources([{
+      id: 'grand:BTC',
+      symbol: 'BTC',
+      position: { x: 0, y: 2, z: 0 },
+    }]);
+    engine.updateProximityPosition({ x: 0, y: 0, z: 0 });
+    await engine.unlock();
+    const internals = engine as unknown as {
+      activeTradeVoices: Set<unknown>;
+      scheduledSources: Set<AudioScheduledSourceNode>;
+      finiteNodes: Set<AudioNode>;
+    };
+    const scheduledBaseline = internals.scheduledSources.size;
+    const finiteBaseline = internals.finiteNodes.size;
+
+    const naturalStart = fake.oscillators.length;
+    expect(engine.playAggregatedTrade('grand:BTC', {
+      side: 'buy', tier: 'minor', notionalUsd: 5_000,
+    })).toBe(true);
+    expect(internals.activeTradeVoices.size).toBe(1);
+    for (const source of fake.oscillators.slice(naturalStart)) source.emitEnded?.();
+    expect(internals.activeTradeVoices.size).toBe(0);
+    expect(internals.scheduledSources.size).toBe(scheduledBaseline);
+    expect(internals.finiteNodes.size).toBe(finiteBaseline);
+
+    const preemptionStart = fake.oscillators.length;
+    for (let index = 0; index < 8; index += 1) {
+      expect(engine.playAggregatedTrade('grand:BTC', {
+        side: index % 2 === 0 ? 'buy' : 'sell',
+        tier: 'minor',
+        notionalUsd: 1_100 + index,
+      })).toBe(true);
+    }
+    expect(engine.playAggregatedTrade('grand:BTC', {
+      side: 'buy', tier: 'whale', notionalUsd: 2_000_000,
+    })).toBe(true);
+    for (const source of fake.oscillators.slice(preemptionStart)) source.emitEnded?.();
+    expect(internals.activeTradeVoices.size).toBe(0);
+    expect(internals.scheduledSources.size).toBe(scheduledBaseline);
+    expect(internals.finiteNodes.size).toBe(finiteBaseline);
+    engine.dispose();
+    vi.useRealTimers();
+  });
+
+  it('plays hologram shimmer at its own bounded position and honors the trade mute', async () => {
+    vi.useFakeTimers();
+    const fake = makeFakeContext();
+    const engine = new AudioEngine({ contextFactory: () => fake.context, storage: null, random: () => 0.5 });
+    engine.updateProximityPosition({ x: 0, y: 0, z: 0 });
+    await engine.unlock();
+    const baseline = fake.oscillators.length;
+
+    engine.toggleTradeMuted(true);
+    expect(engine.playHologramShimmer({ x: 2, y: 5, z: 1 }, {
+      side: 'buy', tier: 'big',
+    })).toBe(false);
+    expect(fake.oscillators).toHaveLength(baseline);
+    engine.toggleTradeMuted(false);
+    expect(engine.playHologramShimmer({ x: 2, y: 5, z: 1 }, {
+      side: 'sell', tier: 'whale',
+    })).toBe(true);
+    expect(fake.oscillators.length - baseline).toBe(2);
+    expect(engine.playHologramShimmer({ x: MARKET_AUDIO_MAX_RADIUS + 1, y: 5, z: 0 }, {
+      side: 'buy', tier: 'big',
+    })).toBe(false);
     engine.dispose();
     vi.useRealTimers();
   });

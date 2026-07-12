@@ -99,14 +99,20 @@ export interface MonumentChartOcclusionBounds {
   readonly depth: number;
 }
 
+/** Shared semantic colours for candles and live-order projections. */
+export const MONUMENT_CANDLE_COLORS = Object.freeze({
+  up: 0x8fd8a3,
+  down: 0xefa09a,
+} as const);
+
 const COLORS = {
   stone: 0xb8aea0,
   stoneLight: 0xd7cec0,
   stoneDark: 0x81796f,
   cream: 0xfff1cf,
   ink: 0x31373d,
-  green: 0x8fd8a3,
-  red: 0xefa09a,
+  green: MONUMENT_CANDLE_COLORS.up,
+  red: MONUMENT_CANDLE_COLORS.down,
   teal: 0x5f9b91,
   bush: 0x789b72,
   flower: 0xe6a3a8,
@@ -470,6 +476,28 @@ export class Monument {
       1.5,
     );
     return this.chartGroup.localToWorld(target);
+  }
+
+  /**
+   * Presentation-aware orbital slots for pooled order projections. All three
+   * sit beyond the candle lane, above player height and below the price card.
+   */
+  getBigOrderHologramAnchor(slot: number, target = new Vector3()): Vector3 {
+    switch (((Math.floor(slot) % 3) + 3) % 3) {
+      case 0:
+        // The default transparent chat occupies the lower-left safe area, so
+        // the first (and therefore most common) projection uses the open right
+        // shoulder. Later concurrent events alternate and stack vertically.
+        target.set(10.8, 2.55, MONUMENT_PRESENTATION_FORWARD_OFFSET + 0.46);
+        break;
+      case 1:
+        target.set(-10.2, 2.55, MONUMENT_PRESENTATION_FORWARD_OFFSET + 0.42);
+        break;
+      default:
+        target.set(10.8, 5.05, MONUMENT_PRESENTATION_FORWARD_OFFSET - 0.36);
+        break;
+    }
+    return this.presentationGroup.localToWorld(target);
   }
 
   /** Camera-projected chart/price bounds used only by social overlay fading. */

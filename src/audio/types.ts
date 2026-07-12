@@ -45,6 +45,9 @@ export interface AudioEngineState {
   readonly sfxMuted: boolean;
   readonly marketVolume: number;
   readonly marketMuted: boolean;
+  /** Independent live trade-tape mix beneath the existing FX master. */
+  readonly tradeVolume: number;
+  readonly tradeMuted: boolean;
   readonly weatherVolume: number;
   readonly weatherMuted: boolean;
   readonly movementVolume: number;
@@ -53,7 +56,7 @@ export interface AudioEngineState {
 }
 
 /** Independent submixes that remain under the existing FX master. */
-export type AudioSubmixKind = 'market' | 'weather' | 'movement';
+export type AudioSubmixKind = 'market' | 'trade' | 'weather' | 'movement';
 
 export type MarketMoveClass = 'small' | 'medium' | 'large' | 'exceptional';
 
@@ -80,6 +83,29 @@ export interface TradePulseSoundOptions {
   readonly direction: TickDirection;
   /** Signed or absolute current one-minute return. For example, 0.001 means 0.1%. */
   readonly moveRatio?: number;
+}
+
+export type AggregatedTradeAudioSide = 'buy' | 'sell';
+export type AggregatedTradeAudioTier = 'dust' | 'minor' | 'notable' | 'big' | 'whale';
+
+/**
+ * A normalized live-tape order. Tier classification stays in the trade
+ * aggregation layer; audio only interprets its calm 0..1 within-tier weight.
+ */
+export interface AggregatedTradeSoundOptions {
+  readonly side: AggregatedTradeAudioSide;
+  readonly tier: AggregatedTradeAudioTier;
+  readonly notionalUsd: number;
+  /** Normalized position within the configured tier, from its floor to ceiling. */
+  readonly tierProgress?: number;
+  /** Number of raw prints represented by the aggregation window. */
+  readonly tradeCount?: number;
+}
+
+export interface HologramShimmerSoundOptions {
+  readonly side: AggregatedTradeAudioSide;
+  readonly tier: 'big' | 'whale';
+  readonly intensity?: number;
 }
 
 /** @deprecated Use TradePulseSoundOptions. */

@@ -1,5 +1,6 @@
 export {
   Monument,
+  MONUMENT_CANDLE_COLORS,
   type MonumentChartOcclusionBounds,
   type MonumentKind,
   type MonumentNewsOverlayState,
@@ -7,6 +8,17 @@ export {
   type MonumentPosition,
   type MonumentScreenViewport,
 } from './Monument';
+export {
+  BigOrderHologramSystem,
+  formatHologramNotional,
+  type BigOrderHologramAnchorProvider,
+  type BigOrderHologramDebugStats,
+  type BigOrderHologramEvent,
+  type BigOrderHologramSlotDebugState,
+  type BigOrderHologramShowResult,
+  type BigOrderHologramSystemOptions,
+  type BigOrderHologramTier,
+} from './BigOrderHologramSystem';
 export { HorizonBadgePanel } from './HorizonBadgePanel';
 export {
   MONUMENT_MARKET_LABEL_LAYOUT,

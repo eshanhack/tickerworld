@@ -3,6 +3,7 @@ import nunitoFontUrl from '@fontsource/nunito/files/nunito-latin-700-normal.woff
 import { AudioEngine, MARKET_AUDIO_MAX_RADIUS, MARKET_MOVE_THRESHOLDS } from './audio';
 import {
   DEBUG_MODE,
+  FORCE_SIMULATION,
   GRAND_MONUMENTS,
   LAUNCH_CAPTURE_MODE,
   MULTIPLAYER_ALLOWED,
@@ -35,6 +36,15 @@ import {
   type MarketRouteHistory,
 } from './routing';
 import type { AssetState, AssetSymbol } from './types';
+import {
+  MARKET_TRADE_CONFIG,
+  TradeTapeFeed,
+  coalesceTradeAudioOrders,
+  tradeTierProgress,
+  type TradeTapeBatch,
+  type TradeTapeSnapshot,
+  type TradeTier,
+} from './trades';
 import { TelemetrySystem } from './telemetry';
 import {
   allocateSpawnAssignment,
@@ -61,6 +71,7 @@ import {
   chooseQualityTier,
   Hud,
   ParkourHudView,
+  TradeDebugPanel,
   createParkourRunResult,
   parseStoredQualityTier,
   qualityProfile,
@@ -129,6 +140,7 @@ export class Game {
   private readonly player: FoxPlayer;
   private readonly cameraRig: ThirdPersonCamera;
   private readonly market = new HyperliquidMarketFeed();
+  private readonly tradeTape: TradeTapeFeed;
   private readonly news = new BrowserNewsFeed();
   private readonly telemetry = new TelemetrySystem();
   private readonly monuments: MonumentSystem;
@@ -137,6 +149,7 @@ export class Game {
   private readonly oilEffects: OilWorldEffects;
   private readonly parkour: ParkourParkSystem;
   private parkourHud?: ParkourHudView;
+  private tradeDebugPanel?: TradeDebugPanel;
   private readonly celebrationGate = new MarketCelebrationGate();
   private readonly worldGuard = new WorldGuard();
   private readonly uiInteractionLock = new UiInteractionLock();
@@ -184,6 +197,12 @@ export class Game {
   private runtimeCapabilities: RuntimeCapabilities = OFFLINE_RUNTIME_CAPABILITIES;
   private latestRelayMids: readonly CompactMarketMid[] = [];
   private readonly launchCaptureTimers: number[] = [];
+  private latestTradeTapeSnapshot?: TradeTapeSnapshot;
+  private readonly tradeTierTimes: Record<Exclude<TradeTier, 'dust'>, number[]> = {
+    minor: [], notable: [], big: [], whale: [],
+  };
+  private lastTapeImbalanceSurgeAt = Number.NEGATIVE_INFINITY;
+  private lastMinuteMoveSurgeAt = Number.NEGATIVE_INFINITY;
 
   constructor(container: HTMLElement, options: GameOptions = {}) {
     this.container = container;
@@ -191,6 +210,14 @@ export class Game {
     this.guestAppearance = readGuestAppearance();
     this.activeDisplayUsername = this.guestAppearance.username;
     this.activeMarket = options.activeMarket ?? 'BTC';
+    this.tradeTape = new TradeTapeFeed({
+      activeMarket: this.activeMarket,
+      // The feed itself forces TEST into simulation. Keeping the constructor
+      // override QA-only lets a session that starts in TEST recover to genuine
+      // venue data after travelling to a live market.
+      simulation: FORCE_SIMULATION,
+      seed: `${WORLD_SEED}:trade-tape`,
+    });
     this.routeHistory = options.routeHistory;
     document.title = `${this.activeMarket} World · Tickerworld`;
     const partyToken = parsePartyToken(location.hash);
@@ -245,6 +272,7 @@ export class Game {
       camera: this.camera,
       domElement: this.renderer.domElement,
       fontUrl: nunitoFontUrl,
+      reducedMotion: this.reducedMotion,
       attachInteractionListeners: false,
     });
     this.world = new WorldSystem(this.scene, {
@@ -381,6 +409,8 @@ export class Game {
       onSfxVolumeChange: (value) => this.audio.setSfxVolume(value),
       onMarketMuteToggle: () => this.audio.toggleMarketMuted(),
       onMarketVolumeChange: (value) => this.audio.setMarketVolume(value),
+      onTradeMuteToggle: () => this.audio.toggleTradeMuted(),
+      onTradeVolumeChange: (value) => this.audio.setTradeVolume(value),
       onWeatherMuteToggle: () => this.audio.toggleWeatherMuted(),
       onWeatherVolumeChange: (value) => this.audio.setWeatherVolume(value),
       onMovementMuteToggle: () => this.audio.toggleMovementMuted(),
@@ -426,6 +456,7 @@ export class Game {
         this.parkour.setReducedMotion(enabled);
         this.emotes?.setReducedMotion(enabled);
         this.portalSystem?.setReducedMotion(enabled);
+        this.monuments.setReducedMotion(enabled);
         safeWrite(REDUCED_MOTION_KEY, String(enabled));
       },
       onVirtualInput: (x, forward, sprint) => this.player.setVirtualInput(x, forward, sprint),
@@ -448,6 +479,15 @@ export class Game {
     this.parkourHud = new ParkourHudView(this.hud.mountLayer('tickerworld-parkour-layer'), {
       onQuit: () => this.parkour.quitRun(),
     });
+    if (DEBUG_MODE) {
+      this.tradeDebugPanel = new TradeDebugPanel(
+        this.hud.mountLayer('tickerworld-trade-debug-layer'),
+        {
+          onOrder: (side, tier) => this.tradeTape.injectDebugOrder(side, tier),
+          onSurge: (side) => this.triggerDebugTradeSurge(side),
+        },
+      );
+    }
     this.portalSystem = new PortalSystem({
       parent: this.scene,
       activeMarket: this.activeMarket,
@@ -598,6 +638,8 @@ export class Game {
       this.hud.setSfxVolume(state.sfxVolume);
       this.hud.setMarketMuted(state.marketMuted);
       this.hud.setMarketVolume(state.marketVolume);
+      this.hud.setTradeMuted(state.tradeMuted);
+      this.hud.setTradeVolume(state.tradeVolume);
       this.hud.setWeatherMuted(state.weatherMuted);
       this.hud.setWeatherVolume(state.weatherVolume);
       this.hud.setMovementMuted(state.movementMuted);
@@ -606,6 +648,20 @@ export class Game {
     });
 
     this.market.subscribe((state) => this.onMarketState(state));
+    this.tradeTape.subscribe((batch) => this.onTradeTapeBatch(batch));
+    this.tradeTape.subscribeState((state) => {
+      const previous = this.latestTradeTapeSnapshot;
+      if (
+        previous
+        && (
+          previous.symbol !== state.symbol
+          || (previous.mode === 'simulated') !== (state.mode === 'simulated')
+        )
+      ) {
+        for (const history of Object.values(this.tradeTierTimes)) history.length = 0;
+      }
+      this.latestTradeTapeSnapshot = state;
+    });
     this.news.subscribe((update) => this.onNewsUpdate(update));
     this.refreshAudioSources();
     this.audio.updateProximityPosition(this.player.position);
@@ -628,6 +684,7 @@ export class Game {
     this.container.addEventListener('tickerworld:share-complete', this.shareCompleteEvent);
 
     void this.market.start();
+    this.tradeTape.start();
     void this.news.start();
     void this.roomClient.connect(marketSlugForSymbol(this.activeMarket));
     void this.refreshRuntimeCapabilities();
@@ -642,6 +699,7 @@ export class Game {
           player: this.player,
           world: this.world,
           market: this.market,
+          tradeTape: this.tradeTape,
           news: this.news,
           monuments: this.monuments,
           audio: this.audio,
@@ -652,6 +710,10 @@ export class Game {
           triggerExceptionalUp: () => this.triggerDebugMarketEvent('up', 'exceptional'),
           triggerLargeDown: () => this.triggerDebugMarketEvent('down', 'large'),
           triggerExceptionalDown: () => this.triggerDebugMarketEvent('down', 'exceptional'),
+          triggerTradeOrder: (side: 'buy' | 'sell', tier: Exclude<TradeTier, 'dust'>) => (
+            this.tradeTape.injectDebugOrder(side, tier)
+          ),
+          triggerTradeSurge: (side: 'buy' | 'sell') => this.triggerDebugTradeSurge(side),
         },
         configurable: true,
       });
@@ -736,8 +798,14 @@ export class Game {
         return true;
       }
       await this.market.setActiveMarket(destination);
+      this.tradeTape.setActiveMarket(destination);
+      this.lastTapeImbalanceSurgeAt = Number.NEGATIVE_INFINITY;
+      this.lastMinuteMoveSurgeAt = Number.NEGATIVE_INFINITY;
+      for (const history of Object.values(this.tradeTierTimes)) history.length = 0;
       this.news.setActiveMarket(destination);
       if (this.disposed || switchGeneration !== this.marketSwitchGeneration) return false;
+      this.monuments.clearBigOrders();
+      this.world.clearTradeSurge();
       this.monuments.remove(this.activeMonument, true);
       this.monumentIds.delete(this.activeMonument);
       this.activeMarket = destination;
@@ -1213,6 +1281,22 @@ export class Game {
     const minuteChange = state.horizonChanges.find((change) => change.horizon === '1m');
     const minuteMoveRatio = Math.abs(minuteChange?.changeRatio ?? 0);
     const minuteDirection = minuteChange?.direction ?? 'flat';
+    if (
+      this.entered
+      && this.visible
+      && state.symbol === this.activeMarket
+      && minuteDirection !== 'flat'
+    ) {
+      const tradeConfig = MARKET_TRADE_CONFIG[state.symbol];
+      const nowSeconds = performance.now() / 1_000;
+      if (
+        minuteMoveRatio >= tradeConfig.surge.minuteMoveRatio
+        && nowSeconds - this.lastMinuteMoveSurgeAt >= tradeConfig.surge.cooldownSeconds
+      ) {
+        this.lastMinuteMoveSurgeAt = nowSeconds;
+        this.world.triggerTradeSurge(minuteDirection, state.symbol);
+      }
+    }
     const moveRatio = Math.max(tickMoveRatio, minuteMoveRatio);
     // Calm updates rearm the authoritative event gate even when the fox is far
     // away; energetic distant updates are never consumed as local alerts.
@@ -1232,6 +1316,82 @@ export class Game {
     );
     if (!celebration) return;
     this.dispatchMarketAccent(nearbyMonument, sourceId, celebration);
+  }
+
+  private onTradeTapeBatch(batch: TradeTapeBatch): void {
+    if (batch.symbol !== this.activeMarket || this.disposed) return;
+    const cutoff = batch.publishedAt - 60_000;
+    for (const order of batch.orders) {
+      if (order.tier === 'dust') continue;
+      const history = this.tradeTierTimes[order.tier];
+      history.push(batch.publishedAt);
+      while (history[0] !== undefined && history[0] < cutoff) history.shift();
+    }
+
+    // Tier histories remain useful for debug readouts before entry, but no
+    // world/audio presentation may leak through the entry veil or a hidden tab.
+    if (!this.entered || !this.visible) return;
+    this.considerTapeImbalance(batch);
+
+    const focused = this.monuments.nearestTo(this.player.position, MARKET_AUDIO_MAX_RADIUS);
+    const sourceId = focused?.monument.symbol === batch.symbol
+      ? this.monumentIds.get(focused.monument)
+      : undefined;
+    const orders = [...batch.orders].sort((left, right) => right.notionalUsd - left.notionalUsd);
+    if (sourceId) {
+      const audioOrders = coalesceTradeAudioOrders(
+        orders,
+        MARKET_TRADE_CONFIG[batch.symbol].audio.maxVoices,
+      );
+      for (const order of audioOrders) {
+        const tierProgress = tradeTierProgress(order.symbol, order.tier, order.notionalUsd);
+        this.audio.playAggregatedTrade(sourceId, { ...order, tierProgress });
+      }
+    }
+    for (const order of orders) {
+      if (order.tier === 'dust') continue;
+      const tierProgress = tradeTierProgress(order.symbol, order.tier, order.notionalUsd);
+      if (order.tier !== 'big' && order.tier !== 'whale') continue;
+      const displayed = this.monuments.showBigOrder(order);
+      if ((displayed?.materialized || displayed?.promotedToWhale) && sourceId) {
+        const shimmerPosition = this.monuments.getBigOrderHologramAudioPosition(this.tempPosition)
+          ?? this.activeMonument.getFireworkOrigin(this.tempPosition);
+        this.audio.playHologramShimmer(
+          shimmerPosition,
+          {
+            side: order.side,
+            tier: displayed.tier,
+            intensity: displayed.promotedToWhale ? 1 : 0.55 + tierProgress * 0.45,
+          },
+        );
+      }
+      if (order.tier === 'whale' || displayed?.promotedToWhale) {
+        this.world.triggerTradeSurge(order.side, order.symbol);
+      }
+      if (DEBUG_MODE) {
+        console.info(
+          `[trade-tape] ${order.symbol} ${order.tier} ${order.side} $${Math.round(order.notionalUsd).toLocaleString()} across ${order.sourceCount} venue${order.sourceCount === 1 ? '' : 's'}${order.simulated ? ' (simulated)' : ''}`,
+        );
+      }
+    }
+  }
+
+  private considerTapeImbalance(batch: TradeTapeBatch): void {
+    const config = MARKET_TRADE_CONFIG[batch.symbol].surge;
+    const window = batch.stats.windows['10s'];
+    const total = window.buy.notionalUsd + window.sell.notionalUsd;
+    if (
+      total < config.minimumTenSecondNotionalUsd
+      || Math.abs(window.imbalance) < config.imbalanceRatio
+    ) return;
+    const nowSeconds = batch.publishedAt / 1_000;
+    if (nowSeconds - this.lastTapeImbalanceSurgeAt < config.cooldownSeconds) return;
+    this.lastTapeImbalanceSurgeAt = nowSeconds;
+    this.world.triggerTradeSurge(window.imbalance > 0 ? 'buy' : 'sell', batch.symbol);
+  }
+
+  private triggerDebugTradeSurge(side: 'buy' | 'sell'): void {
+    this.world.triggerTradeSurge(side, this.activeMarket);
   }
 
   private dispatchMarketAccent(
@@ -1318,6 +1478,9 @@ export class Game {
         mode: state.mode,
         distance: nearest.distance,
         ageMs: stateWithAge.ageMs,
+        tradeTapeMode: this.latestTradeTapeSnapshot?.symbol === state.symbol
+          ? this.latestTradeTapeSnapshot.mode
+          : undefined,
       });
     } else {
       this.hud.setNearby(null);
@@ -1450,6 +1613,7 @@ export class Game {
       const playerState = this.player.snapshot;
       const oil = this.oilEffects.getDebugStats();
       const parkour = this.parkour.getDebugStats();
+      this.updateTradeDebugPanel();
       this.hud.setDebug([
         `fps ${this.fps.toFixed(1)} · ${this.qualityTier} · dpr ${this.pixelRatio.toFixed(2)}`,
         `draws ${this.renderer.info.render.calls} · tris ${this.estimateTriangles()}`,
@@ -1466,6 +1630,33 @@ export class Game {
         `textures ${this.renderer.info.memory.textures} · geometries ${this.renderer.info.memory.geometries}`,
       ].join('\n'));
     }
+  }
+
+  private updateTradeDebugPanel(): void {
+    const snapshot = this.latestTradeTapeSnapshot;
+    if (!snapshot || !this.tradeDebugPanel) return;
+    const now = Date.now();
+    const cutoff = now - 60_000;
+    const tierRates: Partial<Record<Exclude<TradeTier, 'dust'>, number>> = {};
+    for (const tier of ['minor', 'notable', 'big', 'whale'] as const) {
+      const history = this.tradeTierTimes[tier];
+      while (history[0] !== undefined && history[0] < cutoff) history.shift();
+      tierRates[tier] = history.length;
+    }
+    const one = snapshot.stats.windows['1s'];
+    const ten = snapshot.stats.windows['10s'];
+    const minute = snapshot.stats.windows['1m'];
+    this.tradeDebugPanel.setSnapshot({
+      mode: snapshot.mode,
+      sources: snapshot.health.filter((item) => item.mode === 'live').map((item) => item.exchange),
+      buy1s: one.buy.notionalUsd,
+      sell1s: one.sell.notionalUsd,
+      buy10s: ten.buy.notionalUsd,
+      sell10s: ten.sell.notionalUsd,
+      buy60s: minute.buy.notionalUsd,
+      sell60s: minute.sell.notionalUsd,
+      tierRates,
+    });
   }
 
   private estimateTriangles(): string {
@@ -1504,10 +1695,12 @@ export class Game {
     if (!this.visible) {
       cancelAnimationFrame(this.frameHandle);
       this.market.pause();
+      this.tradeTape.pause();
       this.news.pause();
       return;
     }
     this.market.resume();
+    this.tradeTape.resume();
     // The resumed fetch still restores every active card and candle pin, but
     // posts published while the tab was hidden must not replay their chime.
     this.newsSoundCreatedAtCutoff = Date.now() - NEWS_RESUME_CLOCK_SKEW_GRACE_MS;
@@ -1559,6 +1752,7 @@ export class Game {
     for (const timer of this.launchCaptureTimers) window.clearTimeout(timer);
     this.launchCaptureTimers.length = 0;
     this.market.dispose();
+    this.tradeTape.dispose();
     this.news.dispose();
     this.telemetry.dispose();
     this.roomClient.dispose();
@@ -1570,6 +1764,7 @@ export class Game {
     this.remoteAvatars?.dispose();
     this.audio.dispose();
     this.parkourHud?.dispose();
+    this.tradeDebugPanel?.dispose();
     this.hud.dispose();
     this.monuments.dispose();
     this.fireworks.points.removeFromParent();

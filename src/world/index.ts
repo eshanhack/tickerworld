@@ -63,6 +63,7 @@ export type {
 export type {
   DropFlashTier,
   RiseFlashTier,
+  TradeSurgeDirection,
   VegetationContact,
   VegetationInteractionEvent,
   VegetationKind,
