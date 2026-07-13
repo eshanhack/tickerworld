@@ -449,7 +449,10 @@ export class BigOrderHologramSystem {
         : 1;
       const scaleIn = this.reducedMotion ? smoothstep(materialized) : materializeScale(materialized);
       const tierScale = slot.tier === 'whale' ? config.whaleScale : config.bigScale;
-      const slotScale = slot.index === 2 ? config.overflowScale : 1;
+      // Both shoulder cards are intentionally smaller than the primary one.
+      // Scaling only slot two left a full-sized first overflow plate able to
+      // clip beyond the chart frame on a real camera view.
+      const slotScale = slot.index === 0 ? 1 : config.overflowScale;
       slot.root.scale.setScalar(Math.max(0.001, scaleIn * tierScale * slotScale));
       const bob = this.reducedMotion
         ? 0
@@ -623,6 +626,14 @@ export class BigOrderHologramSystem {
     }
     crown.visible = false;
     root.add(crown);
+
+    // Billboard matrices change each frame to face the camera. Explicitly
+    // opt the tiny pooled card subtree out of stale bounding-sphere culling,
+    // which can otherwise reject an otherwise valid order card near the
+    // edge of a turning shrine presentation.
+    root.traverse((object) => {
+      object.frustumCulled = false;
+    });
 
     return {
       index,

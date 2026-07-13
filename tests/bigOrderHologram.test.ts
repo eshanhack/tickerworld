@@ -76,6 +76,18 @@ describe('BigOrderHologramSystem', () => {
     expect(sellTitle.color).toBe(MONUMENT_CANDLE_COLORS.down);
     expect(parent.getObjectByName('whale-order-crown-2')?.visible).toBe(true);
     expect(parent.getObjectByName('big-order-simulated-2')?.visible).toBe(true);
+    for (const name of [
+      'big-order-backplate-1',
+      'big-order-title-1',
+      'big-order-amount-1',
+      'big-order-projection-beam-1',
+      'big-order-scanline-1-1',
+      'whale-order-crown-2',
+    ]) {
+      // Billboard transforms are camera-driven. Their pooled renderables
+      // must never disappear from a stale frustum bound during shrine turns.
+      expect(parent.getObjectByName(name)?.frustumCulled).toBe(false);
+    }
 
     system.dispose();
     expect(parent.children).toHaveLength(0);
@@ -196,7 +208,7 @@ describe('BigOrderHologramSystem', () => {
     system.dispose();
   });
 
-  it('provides a primary chart-front anchor plus two clear shoulder anchors', () => {
+  it('provides a primary chart-front anchor plus two in-frame shoulder anchors', () => {
     const parent = new THREE.Group();
     const monument = new Monument({ symbol: 'BTC', position: { x: 4, y: 1, z: -3 } }).mount(parent);
     const points = [0, 1, 2].map((slot) => monument.getBigOrderHologramAnchor(slot));
@@ -205,15 +217,18 @@ describe('BigOrderHologramSystem', () => {
     ))).toBe(true);
     expect(new Set(points.map((point) => point.toArray().join(','))).size).toBe(3);
     // The default primary callout is intentionally centred in front of the
-    // chart's upper lane; concurrent overflow remains outside the 14.4-wide
-    // candle lane on opposite shoulders.
+    // chart's upper lane. Concurrent overflow remains in a safe shoulder
+    // gutter within the chart's frame so camera-facing rotation cannot push a
+    // real alert offscreen.
     expect(points[0]!.x).toBeCloseTo(4);
-    expect(Math.abs(points[1]!.x - 4)).toBeGreaterThan(7.2);
-    expect(Math.abs(points[2]!.x - 4)).toBeGreaterThan(7.2);
+    expect(Math.abs(points[1]!.x - 4)).toBeGreaterThan(4.8);
+    expect(Math.abs(points[1]!.x - 4)).toBeLessThan(5.3);
+    expect(Math.abs(points[2]!.x - 4)).toBeGreaterThan(4.8);
+    expect(Math.abs(points[2]!.x - 4)).toBeLessThan(5.3);
     monument.dispose();
   });
 
-  it('keeps all three projections above animals, outside chart bounds, separated, and in view', () => {
+  it('keeps all three projection cards inside the chart frame, separated, and in view', () => {
     const parent = new THREE.Group();
     const camera = new THREE.PerspectiveCamera(52, 16 / 9, 0.08, 360);
     const rig = new ThirdPersonCamera({ camera, yaw: 0, pitch: 0.28, distance: 9 });
@@ -236,20 +251,26 @@ describe('BigOrderHologramSystem', () => {
     });
     expect(chartBounds).not.toBeNull();
     const projectedCentres: THREE.Vector2[] = [];
+    const projectedBackplateWidths: number[] = [];
     for (let slot = 0; slot < 3; slot += 1) {
       const title = parent.getObjectByName(`big-order-title-${slot + 1}`);
       const amount = parent.getObjectByName(`big-order-amount-${slot + 1}`);
       const crown = parent.getObjectByName(`whale-order-crown-${slot + 1}`);
+      const backplate = parent.getObjectByName(`big-order-backplate-${slot + 1}`) as THREE.Mesh;
       expect(title).toBeDefined();
       expect(amount).toBeDefined();
       expect(crown).toBeDefined();
+      expect(backplate).toBeDefined();
       const titleWorld = title!.getWorldPosition(new THREE.Vector3());
       const amountWorld = amount!.getWorldPosition(new THREE.Vector3());
       const crownWorld = crown!.getWorldPosition(new THREE.Vector3());
       const titleProjected = titleWorld.clone().project(camera);
       const amountProjected = amountWorld.clone().project(camera);
       const crownProjected = crownWorld.clone().project(camera);
+      const backplateWorld = backplate.getWorldPosition(new THREE.Vector3());
+      const backplateProjected = backplateWorld.clone().project(camera);
       projectedCentres.push(new THREE.Vector2(titleProjected.x, titleProjected.y));
+      projectedBackplateWidths.push(backplate.getWorldScale(new THREE.Vector3()).x * 4.25);
       // Every readable component remains above even the largest animal rig.
       expect(titleWorld.y).toBeGreaterThan(2);
       expect(amountWorld.y).toBeGreaterThan(2);
@@ -269,15 +290,22 @@ describe('BigOrderHologramSystem', () => {
           expect(screenX).toBeGreaterThan(chartBounds!.left + 72);
           expect(screenX).toBeLessThan(chartBounds!.right - 72);
         } else {
-          // Overflow retains a full text gutter around the candle lane.
-          expect(
-            screenX < chartBounds!.left - 48 || screenX > chartBounds!.right + 48,
-          ).toBe(true);
+          // Overflow remains in the chart frame with enough horizontal
+          // breathing room to avoid the live-price rail, rather than relying
+          // on an off-frame shoulder that can clip on a real camera view.
+          expect(screenX).toBeGreaterThan(chartBounds!.left + 24);
+          expect(screenX).toBeLessThan(chartBounds!.right - 24);
         }
+        expect(backplateProjected.x).toBeGreaterThan(-1);
+        expect(backplateProjected.x).toBeLessThan(1);
         expect(screenY).toBeGreaterThanOrEqual(0);
         expect(screenY).toBeLessThanOrEqual(720);
       }
     }
+    // Both overflow cards use the same subordinate scale. This is the guard
+    // that prevents a single full-size shoulder card from escaping the view.
+    expect(projectedBackplateWidths[1]).toBeCloseTo(projectedBackplateWidths[2]!);
+    expect(projectedBackplateWidths[1]).toBeLessThan(projectedBackplateWidths[0]!);
     for (let left = 0; left < projectedCentres.length; left += 1) {
       for (let right = left + 1; right < projectedCentres.length; right += 1) {
         expect(projectedCentres[left]!.distanceTo(projectedCentres[right]!)).toBeGreaterThan(0.1);

@@ -481,22 +481,24 @@ export class Monument {
   /**
    * Presentation-aware positions for pooled order projections. The primary
    * slot sits just in front of the chart's upper lane, so the first big trade
-   * is visible from the spawn framing. Overflow slots remain on the shoulders
-   * to keep concurrent flow legible without crowding the primary callout.
+   * is visible from the spawn framing. The two smaller overflow slots form a
+   * compact high band inside the chart perimeter. Keeping that band above the
+   * chat/news safe areas avoids a valid market event looking absent simply
+   * because it landed under a screen overlay or outside a narrow viewport.
    */
   getBigOrderHologramAnchor(slot: number, target = new Vector3()): Vector3 {
     switch (((Math.floor(slot) % 3) + 3) % 3) {
       case 0:
-        // A short-lived, high-priority alert is allowed to sit over the upper
-        // candle lane. Keeping it front-most and centred makes it unmissable
-        // at the default fox spawn while preserving the live candle at right.
-        target.set(0, 5.2, MONUMENT_PRESENTATION_FORWARD_OFFSET + 0.8);
+        // The primary callout stays centred over the upper candle lane. Keep
+        // it beneath the top safe area: a whale-sized billboard otherwise
+        // puts its title above the viewport in the default spawn camera.
+        target.set(0, 3.15, MONUMENT_PRESENTATION_FORWARD_OFFSET + 0.72);
         break;
       case 1:
-        target.set(-10.2, 2.55, MONUMENT_PRESENTATION_FORWARD_OFFSET + 0.42);
+        target.set(-5.05, 3.55, MONUMENT_PRESENTATION_FORWARD_OFFSET + 0.56);
         break;
       default:
-        target.set(10.8, 5.05, MONUMENT_PRESENTATION_FORWARD_OFFSET - 0.36);
+        target.set(5.05, 3.55, MONUMENT_PRESENTATION_FORWARD_OFFSET + 0.56);
         break;
     }
     return this.presentationGroup.localToWorld(target);

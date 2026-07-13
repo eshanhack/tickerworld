@@ -90,8 +90,10 @@ const DEFAULT_HOLOGRAM: TradeHologramConfig = Object.freeze({
   dissolveSeconds: 1.1,
   coalesceSeconds: 1.2,
   bigScale: 1.16,
-  whaleScale: 1.5,
-  overflowScale: 0.92,
+  whaleScale: 1.35,
+  // Keep concurrent shoulder cards inside the chart's readable viewport even
+  // when a whale-sized projection is active.
+  overflowScale: 0.5,
   dissolveParticles: 16,
   dissolveCapacity: 48,
   minimumTier: 'big',
