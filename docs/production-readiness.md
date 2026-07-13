@@ -12,8 +12,9 @@ a developer `.env` file and never paste their values into issues or build logs.
   route failures; verify it with the post-deploy smoke below. Legal/support
   routes belong to the separate viral-launch pass and are not included here.
 - `https://tickerworld.io/api/news` reports `unconfigured` with no items.
-- `https://multiplayer.tickerworld.io/healthz` and `/readyz` return Vercel's
-  `DEPLOYMENT_NOT_FOUND`; the hostname is not connected to a Colyseus service.
+- The assigned Colyseus Cloud endpoint is
+  `https://us-lax-489a84b6.colyseus.cloud`; `/healthz`, `/readyz`, and
+  `/api/capabilities` must all be healthy before multiplayer is marked live.
 - Vercel ownership is verified: `game-tickerworld`
   (`prj_dmFp2hMnB7xNMZBrAjkIvI47HObM`) owns `tickerworld.io` and remains connected
   to `eshanhack/tickerworld` on `main`. The three domain-less duplicate projects
@@ -37,7 +38,7 @@ read-only and must pass before a public announcement.
   owner deliberately archives them. Do not detach their default domains or delete
   their deployments as part of this release.
 - Canonical production pages automatically probe
-  `wss://multiplayer.tickerworld.io`; `VITE_MULTIPLAYER_URL` is reserved for an
+  `wss://us-lax-489a84b6.colyseus.cloud`; `VITE_MULTIPLAYER_URL` is reserved for an
   explicitly allowlisted local/preview server. Do not mark multiplayer live
   until the canonical server is healthy. Configure `X_BEARER_TOKEN` only as a
   server-side secret; never use a `VITE_` prefix.
@@ -62,9 +63,8 @@ read-only and must pass before a public announcement.
   `--env production` flag. Confirm the value in `/readyz` deployment logs.
 - Do not commit the generated `.colyseus-cloud.json`; it contains deployment
   credentials and is ignored by Git.
-- Deploy the server and validate its provider URL before changing DNS. Then point
-  `multiplayer.tickerworld.io` to the exact CNAME/target supplied by Colyseus
-  Cloud, wait for TLS, and test HTTP plus WebSocket upgrades from `tickerworld.io`.
+- Deploy the server and validate its assigned Colyseus Cloud URL, then test HTTP
+  plus WebSocket upgrades from `tickerworld.io`. A custom domain remains optional.
 - Keep the process admission cap at 400 and the PM2 process count at one for the
   launch. Scaling to multiple processes requires shared Presence/Driver and
   distributed rate-limit/moderation state first.
@@ -119,7 +119,7 @@ read-only and must pass before a public announcement.
    backward-compatible server, and wait for healthy/readiness responses.
 4. Run a two-client/bot smoke against the provider URL; verify movement, chat,
    reconnect, room isolation, capacity fallback, and clean server logs.
-5. Move `multiplayer.tickerworld.io` to the healthy service and repeat the smoke.
+5. Point the client at the healthy assigned Cloud endpoint and repeat the smoke.
 6. Build one preview against the explicitly configured provider URL, then
    promote that exact artifact only after the multiplayer smoke passes. The
    canonical build itself needs no endpoint variable.

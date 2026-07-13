@@ -2,7 +2,9 @@ import {
   ACCEPTED_PROTOCOL_VERSIONS,
   MARKET_SLUGS,
   MAX_SPRINT_SPEED,
+  DEX_FIELD_PORTAL_RADIUS,
   PODIUM_EXCLUSION_RADIUS,
+  PORTAL_RADIUS,
   SPAWN_SLOT_COUNT,
   SPAWN_SLOT_SPACING,
   WORLD_RADIUS,
@@ -66,8 +68,8 @@ describe('shared multiplayer contracts', () => {
       expect(routes.every((route) => {
         const expectedRadius = route.to === 'pump' || route.to === 'ansem' || route.to === 'shfl'
           || (market !== 'btc' && (market === 'pump' || market === 'ansem' || market === 'shfl') && route.to === 'btc')
-          ? 47
-          : 24;
+          ? DEX_FIELD_PORTAL_RADIUS
+          : PORTAL_RADIUS;
         return Math.abs(Math.hypot(route.x, route.z) - expectedRadius) < 0.000001;
       })).toBe(true);
     }
@@ -100,6 +102,23 @@ describe('shared multiplayer contracts', () => {
     for (const slot of initial) {
       for (const portal of createPortalRoutes('btc')) {
         expect(Math.hypot(slot.x - portal.x, slot.z - portal.z)).toBeGreaterThan(3.2);
+      }
+    }
+
+    for (const market of MARKET_SLUGS) {
+      for (const fromMarket of MARKET_SLUGS) {
+        if (fromMarket === market) continue;
+        const routes = createPortalRoutes(market);
+        const arrivalRoute = routes.find(({ to }) => to === fromMarket);
+        expect(arrivalRoute).toBeDefined();
+        const arrivalRadius = Math.hypot(arrivalRoute!.x, arrivalRoute!.z);
+        for (const slot of createSpawnAssignments(market, fromMarket)) {
+          expect(Math.hypot(slot.x, slot.z)).toBeGreaterThan(arrivalRadius + 4.4);
+          expect(Math.hypot(slot.x, slot.z)).toBeLessThanOrEqual(WORLD_RADIUS);
+          for (const portal of routes) {
+            expect(Math.hypot(slot.x - portal.x, slot.z - portal.z)).toBeGreaterThan(3.2);
+          }
+        }
       }
     }
 

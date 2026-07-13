@@ -8,7 +8,7 @@ not evidence that multiplayer, news, DNS, moderation, or a human soft launch is 
 ## Production topology
 
 - Canonical client: `https://tickerworld.io`
-- Multiplayer/API: `https://multiplayer.tickerworld.io`
+- Multiplayer/API: `https://us-lax-489a84b6.colyseus.cloud`
 - Client hosting: the single `game-tickerworld` Vercel project
 - Multiplayer: one capped Colyseus process, maximum 400 connected players and 50 per shard
 - Market data: one process-wide Hyperliquid relay; direct browsers load only the active market when

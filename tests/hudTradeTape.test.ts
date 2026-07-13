@@ -1,16 +1,18 @@
 import { describe, expect, it } from 'vitest';
-import { tradeTapeStatusLabel } from '../src/ui/Hud';
+import { HELP_DISCLAIMER, nearbyMarketStatusLabel } from '../src/ui/Hud';
 
-describe('nearby trade-tape status', () => {
-  it('uses compact, truthful labels for every feed mode', () => {
-    expect(tradeTapeStatusLabel('live')).toBe('TAPE LIVE');
-    expect(tradeTapeStatusLabel('simulated')).toBe('TAPE SIM');
-    expect(tradeTapeStatusLabel('unavailable')).toBe('TAPE OFF');
-    expect(tradeTapeStatusLabel('connecting')).toBe('TAPE CONNECTING');
-    expect(tradeTapeStatusLabel('reconnecting')).toBe('TAPE RECONNECTING');
+describe('nearby market status', () => {
+  it('uses only the concise feed state without provider or tape labels', () => {
+    expect(nearbyMarketStatusLabel('live')).toBe('LIVE');
+    expect(nearbyMarketStatusLabel('simulated')).toBe('SIMULATED');
+    expect(nearbyMarketStatusLabel('connecting')).toBe('CONNECTING');
+    expect(nearbyMarketStatusLabel('reconnecting')).toBe('RECONNECTING');
   });
 
-  it('hides the badge when the game does not provide a tape state', () => {
-    expect(tradeTapeStatusLabel(undefined)).toBeNull();
+  it('keeps the offline-chart and financial-risk copy without naming a provider', () => {
+    expect(HELP_DISCLAIMER).toContain('If the chart goes offline, the chart will pause while we reconnect.');
+    expect(HELP_DISCLAIMER).toContain('For ambience, not financial advice.');
+    expect(HELP_DISCLAIMER).toContain('not responsible for trading losses');
+    expect(HELP_DISCLAIMER).not.toMatch(/Hyperliquid/i);
   });
 });

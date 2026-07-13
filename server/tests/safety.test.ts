@@ -100,6 +100,30 @@ describe('launch safety controls', () => {
     }).publicOrigins).toEqual(['https://tickerworld.io', 'https://preview.tickerworld.io']);
   });
 
+  it('boots a single anonymous Colyseus Cloud process without enabling sensitive features', () => {
+    const config = loadConfig({
+      NODE_ENV: 'production',
+      COLYSEUS_CLOUD: '1',
+    });
+    expect(config.databaseUrl).toBeNull();
+    expect(config.databaseSsl).toBe('disable');
+    expect(config.publicOrigins).toEqual([
+      'https://tickerworld.io',
+      'https://game-tickerworld.vercel.app',
+    ]);
+    expect(config.trustedProxyCidrs).toContain('127.0.0.0/8');
+    expect(config.serverHmacSecret).toHaveLength(64);
+    expect(config.ipHmacSecret).toHaveLength(64);
+    expect(config.serverHmacSecret).not.toBe(config.ipHmacSecret);
+    expect(config.launchSwitches).toMatchObject({
+      admissions: true,
+      chatSend: true,
+      publicWalletAuth: false,
+      purchases: false,
+      adminActions: false,
+    });
+  });
+
   it('keeps actor and IP chat buckets across reconnects and room travel', () => {
     const limiter = new SharedChatRateLimiter();
     expect(limiter.consume('actor-a', 'ip-a', 0).allowed).toBe(true);

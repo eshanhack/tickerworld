@@ -39,6 +39,7 @@ export {
   parseBinanceTrades,
   parseCoinbaseTrades,
   parseHyperliquidTapeTrades,
+  parseGeckoTerminalTapeTrades,
   parseOkxTrades,
 } from './adapters';
 export { TRADE_EXCHANGES } from './types';

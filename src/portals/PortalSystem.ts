@@ -352,7 +352,7 @@ export class PortalSystem implements GameSystem {
     const model = createPortalLabelModel(visual.route, data);
     for (const face of [visual.frontLabel, visual.backLabel]) {
       face.title.text = model.title;
-      face.status.text = model.marketText;
+      face.status.text = `${model.priceText} · ${model.marketText}`;
       face.population.text = model.populationText;
     }
     if (typeof self !== 'undefined') {

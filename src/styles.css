@@ -221,9 +221,27 @@ canvas {
 .parkour-run-card button:focus-visible { outline: 2px solid rgba(201, 116, 79, .3); background: rgba(231, 164, 170, .36); }
 
 .parkour-session-log { width: 17rem; margin: .45rem auto 0; padding: .7rem .78rem .75rem; }
-.parkour-session-log header { display: flex; align-items: baseline; justify-content: space-between; gap: .5rem; margin-bottom: .4rem; }
+.parkour-session-log header { display: flex; align-items: center; justify-content: space-between; gap: .5rem; margin-bottom: .4rem; }
+.parkour-session-log header > div { display: grid; }
 .parkour-session-log header small { color: rgba(49, 55, 61, .48); font-size: .48rem; font-weight: 900; letter-spacing: .11em; }
 .parkour-session-log header strong { font-size: .78rem; }
+.parkour-results-dismiss {
+  display: grid;
+  place-items: center;
+  width: 1.65rem;
+  height: 1.65rem;
+  padding: 0;
+  border: 1px solid rgba(78, 90, 86, .16);
+  border-radius: 50%;
+  color: #66736e;
+  background: rgba(255, 255, 255, .34);
+  cursor: pointer;
+  font-size: 1rem;
+  line-height: 1;
+  touch-action: manipulation;
+}
+.parkour-results-dismiss:hover,
+.parkour-results-dismiss:focus-visible { outline: 2px solid rgba(95, 155, 145, .28); background: rgba(255, 255, 255, .64); }
 .parkour-session-log ol { display: grid; gap: .18rem; max-height: 9.5rem; margin: 0; padding: 0; overflow: auto; list-style: none; }
 .parkour-session-log li { display: grid; grid-template-columns: 1.15rem minmax(0, 1fr) auto auto; align-items: center; gap: .38rem; min-height: 1.7rem; padding: .22rem .32rem; border-radius: .55rem; background: rgba(255, 255, 255, .36); }
 .parkour-session-log li span { display: grid; place-items: center; width: 1.05rem; height: 1.05rem; border-radius: 50%; color: #fff7e7; background: #7fc5b8; font-size: .55rem; font-weight: 900; }
@@ -398,7 +416,6 @@ canvas {
   transform: rotate(-3deg);
 }
 
-.nearby-label { color: rgba(49, 55, 61, 0.48); font-size: 0.63rem; letter-spacing: 0.08em; text-transform: uppercase; }
 .nearby-price {
   color: #31373d;
   font-size: 1.05rem;
@@ -431,13 +448,6 @@ canvas {
 .market-mode.simulated { background: rgba(201, 116, 79, 0.15); color: #9e5d43; }
 .market-mode.connecting,
 .market-mode.reconnecting { background: rgba(215, 189, 138, 0.32); color: #82663e; }
-.trade-tape-mode { padding-left: .4rem; border-left: 1px solid currentColor; opacity: .82; white-space: nowrap; }
-.trade-tape-mode.live { color: #477a57; }
-.trade-tape-mode.simulated { color: #a85638; }
-.trade-tape-mode.connecting,
-.trade-tape-mode.reconnecting { color: #82663e; }
-.trade-tape-mode.unavailable { color: #6f6b67; }
-.trade-tape-mode.is-hidden { display: none; }
 
 .world-clock {
   position: absolute;

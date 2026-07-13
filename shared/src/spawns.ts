@@ -5,15 +5,14 @@ import {
   WORLD_RADIUS,
 } from './constants.js';
 import type { MarketSlug, SpawnAssignment } from './contracts.js';
-import { createPortalRoutes } from './portals.js';
+import { PORTAL_ARRIVAL_OFFSET, createPortalRoutes } from './portals.js';
 import { sampleBoundedTerrainHeight } from './terrain.js';
 
 const SPAWN_COLUMNS = 10;
 const SPAWN_ROWS = 5;
-// Five outward rows end at 19.2 units, leaving a clear gap before the
-// 24-unit portal trigger rings while remaining outside the 10.6-unit podium.
+// Five outward initial rows end at 19.2 units, leaving a clear gap before the
+// portal rings while remaining outside the 10.6-unit podium.
 const INITIAL_BASE_RADIUS = 12;
-const PORTAL_BASE_RADIUS = 28.5;
 
 function stableHash(value: string): number {
   let hash = 0x811c9dc5;
@@ -47,8 +46,11 @@ export function createSpawnAssignments(
 ): readonly SpawnAssignment[] {
   const direction = arrivalDirection(market, fromMarket);
   const tangent = { x: -direction.z, z: direction.x };
-  const baseRadius = fromMarket && fromMarket !== market
-    ? PORTAL_BASE_RADIUS
+  const arrivalPortal = fromMarket && fromMarket !== market
+    ? createPortalRoutes(market).find(({ to }) => to === fromMarket)
+    : null;
+  const baseRadius = arrivalPortal
+    ? Math.hypot(arrivalPortal.x, arrivalPortal.z) + PORTAL_ARRIVAL_OFFSET
     : INITIAL_BASE_RADIUS;
   const assignments: SpawnAssignment[] = [];
 

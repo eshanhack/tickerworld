@@ -15,6 +15,7 @@ import {
   parseBinanceTrades,
   parseCoinbaseTrades,
   parseHyperliquidTapeTrades,
+  parseGeckoTerminalTapeTrades,
   parseOkxTrades,
   tradeTierProgress,
   type AggregatedOrder,
@@ -25,6 +26,7 @@ import {
   type TradeWorkerEvent,
   type TradeWorkerLike,
 } from '../src/trades';
+import { DEX_MARKETS } from '../src/markets';
 
 function trade(overrides: Partial<NormalizedTrade> = {}): NormalizedTrade {
   return {
@@ -71,6 +73,23 @@ function tapeBatch(
     },
     publishedAt: 2_000 + generation,
     droppedTrades: 0,
+  };
+}
+
+function dexTapePayload(id: string, time = Date.now(), price = 0.25): unknown {
+  return {
+    provider: 'geckoterminal',
+    market: DEX_MARKETS.PUMP,
+    checkedAt: time + 10,
+    trades: [{
+      id,
+      symbol: 'PUMP',
+      side: 'buy',
+      priceUsd: price,
+      baseAmount: 10_000,
+      volumeUsd: price * 10_000,
+      time,
+    }],
   };
 }
 
@@ -148,6 +167,15 @@ describe('trade exchange normalizers', () => {
       exchange: 'hyperliquid', side: 'buy', notionalUsd: 7_000,
     })]);
   });
+
+  it('normalizes identity-checked GeckoTerminal proxy trades as genuine prints', () => {
+    expect(parseGeckoTerminalTapeTrades(dexTapePayload('dex-1', 2_000), 'PUMP', 2_010)).toEqual([
+      expect.objectContaining({
+        id: 'geckoterminal:dex-1', exchange: 'geckoterminal', symbol: 'PUMP', simulated: false,
+      }),
+    ]);
+    expect(parseGeckoTerminalTapeTrades(dexTapePayload('dex-1', 2_000), 'ANSEM', 2_010)).toEqual([]);
+  });
 });
 
 describe('trade configuration', () => {
@@ -163,7 +191,7 @@ describe('trade configuration', () => {
       expect(config.surge.cooldownSeconds).toBeGreaterThanOrEqual(10);
     }
     expect(exchangesForMarket('BTC')).toEqual(['hyperliquid', 'binance', 'coinbase', 'okx']);
-    expect(exchangesForMarket('PUMP')).toEqual([]);
+    expect(exchangesForMarket('PUMP')).toEqual(['geckoterminal']);
   });
 
   it('classifies exact boundaries and provides monotonic in-tier progress', () => {
@@ -376,6 +404,37 @@ describe('MultiExchangeTradeStream', () => {
     expect(computeTradeReconnectDelay(20, () => 1)).toBe(30_000);
   });
 
+  it('polls active DEX prints, seeds without replay, then emits each new real trade once', async () => {
+    vi.useFakeTimers();
+    let payload = dexTapePayload('first', Date.now() - 100);
+    const fetcher = vi.fn(async () => Response.json(payload));
+    const stream = new MultiExchangeTradeStream({ fetcher, now: () => Date.now() });
+    stream.setActiveMarket('PUMP');
+    const received: NormalizedTrade[] = [];
+    stream.subscribe((trades) => received.push(...trades));
+    stream.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(stream.getHealth()).toEqual([
+      expect.objectContaining({ exchange: 'geckoterminal', mode: 'live' }),
+    ]);
+    expect(received).toEqual([]);
+
+    payload = {
+      ...(dexTapePayload('second', Date.now() + 2_400, 0.26) as Record<string, unknown>),
+      trades: [
+        ...(dexTapePayload('first', Date.now() - 100) as { trades: unknown[] }).trades,
+        ...(dexTapePayload('second', Date.now() + 2_400, 0.26) as { trades: unknown[] }).trades,
+      ],
+    };
+    await vi.advanceTimersByTimeAsync(2_500);
+    expect(received).toEqual([
+      expect.objectContaining({ id: 'geckoterminal:second', price: 0.26, simulated: false }),
+    ]);
+    await vi.advanceTimersByTimeAsync(2_500);
+    expect(received).toHaveLength(1);
+    stream.dispose();
+  });
+
   it('times out sockets that never open and resets the timeout for each fresh attempt', () => {
     vi.useFakeTimers();
     const sockets: FakeSocket[] = [];
@@ -523,20 +582,27 @@ describe('TradeTapeFeed simulation policy', () => {
     feed.dispose();
   });
 
-  it('falls back immediately for a market with no live adapters', () => {
+  it('never fabricates DEX flow while the real on-chain adapter connects', async () => {
     vi.useFakeTimers();
     const worker = new FakeWorker();
     const feed = new TradeTapeFeed({
       activeMarket: 'PUMP',
       workerFactory: () => worker,
-      streamOptions: { socketFactory: () => new FakeSocket() },
+      streamOptions: {
+        socketFactory: () => new FakeSocket(),
+        fetcher: async () => Response.json(dexTapePayload('initial')),
+      },
       seed: 'no-adapter',
     });
     feed.start();
-    expect(feed.getState().mode).toBe('simulated');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(feed.getState().mode).toBe('live');
+    expect(worker.sent.some((message) => message.type === 'trades')).toBe(false);
+    await vi.advanceTimersByTimeAsync(TRADE_AGGREGATION_CONFIG.fallbackAfterMs + 1);
+    expect(feed.getState().mode).toBe('live');
     expect(worker.sent.some((message) => (
-      message.type === 'trades' && message.trades.every((row) => row.simulated)
-    ))).toBe(true);
+      message.type === 'trades' && message.trades.some((row) => row.simulated)
+    ))).toBe(false);
     feed.dispose();
   });
 

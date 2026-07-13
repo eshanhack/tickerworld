@@ -42,11 +42,16 @@ function envString(env: NodeJS.ProcessEnv, key: string): string | null {
   return value ? value : null;
 }
 
-function parseSecret(env: NodeJS.ProcessEnv, key: string, production: boolean): string {
+function parseSecret(
+  env: NodeJS.ProcessEnv,
+  key: string,
+  production: boolean,
+  allowEphemeral = false,
+): string {
   const value = envString(env, key);
   const placeholder = value && /(?:replace[-_ ]?with|change[-_ ]?me|changeme|example[-_ ]?secret)/i.test(value);
   if (value && value.length >= 32 && !placeholder) return value;
-  if (production) throw new Error(`${key} must contain at least 32 characters in production`);
+  if (production && !allowEphemeral) throw new Error(`${key} must contain at least 32 characters in production`);
   return randomBytes(32).toString('hex');
 }
 
@@ -108,6 +113,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
       ? 'test'
       : 'development';
   const production = nodeEnv === 'production';
+  const managedCloudBootstrap = production && env.COLYSEUS_CLOUD !== undefined;
   const launchSwitches: RuntimeKillSwitches = {
     admissions: booleanValue(env, 'ENABLE_ADMISSIONS', true),
     chatSend: booleanValue(env, 'ENABLE_CHAT_SEND', true),
@@ -119,7 +125,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     adminActions: booleanValue(env, 'ENABLE_ADMIN_ACTIONS', false),
   };
   const databaseUrl = envString(env, 'DATABASE_URL');
-  if (production && !databaseUrl) {
+  const sensitiveFeaturesEnabled = launchSwitches.publicWalletAuth
+    || launchSwitches.purchases
+    || launchSwitches.adminActions;
+  if (production && !databaseUrl && (!managedCloudBootstrap || sensitiveFeaturesEnabled)) {
     throw new Error('DATABASE_URL is required in production; SQLite is development-only');
   }
   const databaseSslValue = envString(env, 'DATABASE_SSL');
@@ -130,7 +139,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     ?? (databaseUrl && !/^(?:postgres(?:ql)?:\/\/)?(?:[^@]+@)?(?:localhost|127\.0\.0\.1|\[::1\])(?::|\/)/i.test(databaseUrl)
       ? 'verify-full'
       : 'disable');
-  if (production && databaseSslValue !== 'verify-full') {
+  if (production && databaseUrl && databaseSslValue !== 'verify-full') {
     throw new Error('DATABASE_SSL=verify-full is required explicitly in production');
   }
 
@@ -172,7 +181,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
   const devSolUsdPrice = !production && Number.isFinite(devPrice) && devPrice > 0
     ? devPrice
     : null;
-  const publicOriginValue = envString(env, 'PUBLIC_ORIGIN');
+  const publicOriginValue = envString(env, 'PUBLIC_ORIGIN')
+    ?? (managedCloudBootstrap
+      ? 'https://tickerworld.io,https://game-tickerworld.vercel.app'
+      : null);
   if (production && !publicOriginValue) {
     throw new Error('PUBLIC_ORIGIN is required explicitly in production');
   }
@@ -192,7 +204,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
       }
       return url.origin;
     });
-  const trustedProxyCidrs = (envString(env, 'TRUSTED_PROXY_CIDRS') ?? '')
+  const managedCloudProxyDefaults = [
+    '127.0.0.0/8',
+    '10.0.0.0/8',
+    '172.16.0.0/12',
+    '192.168.0.0/16',
+    '::1/128',
+    'fc00::/7',
+  ].join(',');
+  const trustedProxyCidrs = (envString(env, 'TRUSTED_PROXY_CIDRS')
+    ?? (managedCloudBootstrap ? managedCloudProxyDefaults : ''))
     .split(',')
     .map((entry) => entry.trim())
     .filter(Boolean);
@@ -213,8 +234,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     sqlitePath: envString(env, 'SQLITE_PATH') ?? './data/tickerworld.sqlite',
     publicOrigins,
     trustedProxyCidrs,
-    serverHmacSecret: parseSecret(env, 'SERVER_HMAC_SECRET', production),
-    ipHmacSecret: parseSecret(env, 'IP_HMAC_SECRET', production),
+    serverHmacSecret: parseSecret(env, 'SERVER_HMAC_SECRET', production, managedCloudBootstrap),
+    ipHmacSecret: parseSecret(env, 'IP_HMAC_SECRET', production, managedCloudBootstrap),
     treasuryAddress,
     solanaCluster,
     solanaRpcUrl,

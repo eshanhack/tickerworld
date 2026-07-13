@@ -20,6 +20,7 @@ import {
   Vector3,
 } from 'three';
 import { Text } from 'troika-three-text';
+import { DEX_FIELD_PORTAL_RADIUS, PORTAL_RADIUS } from '../../shared/src/index.js';
 import { GRAND_MONUMENTS } from '../config';
 import type { AssetSymbol } from '../types';
 import { createRandom } from './random';
@@ -37,7 +38,6 @@ export type DexCyberpunkMarket = (typeof DEX_CYBERPUNK_MARKETS)[number];
 const DISTRICT_RADIUS = 82;
 const PLAZA_CLEAR_RADIUS = 29;
 const ROAD_HALF_WIDTH = 5.4;
-const PORTAL_RADIUS = 24;
 const PORTAL_CLEAR_RADIUS = 7.2;
 const BUILDING_COUNT = 18;
 const SIGN_COUNT = 6;
@@ -121,10 +121,22 @@ function distanceToRoad(x: number, z: number, dx: number, dz: number): number {
   return Math.abs(x * -dz + z * dx);
 }
 
-function canonicalRoadDirections(): readonly Readonly<{ x: number; z: number }>[] {
+function canonicalRoadDirections(): readonly Readonly<{
+  x: number;
+  z: number;
+  portalRadius: number;
+}>[] {
   return GRAND_MONUMENTS.filter((monument) => monument.symbol !== 'BTC').map((monument) => {
     const length = Math.hypot(monument.x, monument.z) || 1;
-    return { x: monument.x / length, z: monument.z / length };
+    return {
+      x: monument.x / length,
+      z: monument.z / length,
+      portalRadius: monument.symbol === 'PUMP'
+        || monument.symbol === 'ANSEM'
+        || monument.symbol === 'SHFL'
+        ? DEX_FIELD_PORTAL_RADIUS
+        : PORTAL_RADIUS,
+    };
   });
 }
 
@@ -142,8 +154,8 @@ export function isDexDistrictProtectedPoint(x: number, z: number, margin = 0): b
   ) return true;
   return ROAD_DIRECTIONS.some((direction) => {
     if (distanceToRoad(x, z, direction.x, direction.z) < ROAD_HALF_WIDTH + margin) return true;
-    const portalX = direction.x * PORTAL_RADIUS;
-    const portalZ = direction.z * PORTAL_RADIUS;
+    const portalX = direction.x * direction.portalRadius;
+    const portalZ = direction.z * direction.portalRadius;
     return Math.hypot(x - portalX, z - portalZ) < PORTAL_CLEAR_RADIUS + margin;
   });
 }

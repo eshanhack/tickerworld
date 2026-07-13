@@ -59,7 +59,7 @@ in truthful solo mode until the room service is ready. Follow
 One multiplayer server process ingests recent posts from configured headline accounts and stores
 only the ten-minute cache. Put the paid `X_BEARER_TOKEN` on that process with
 `ENABLE_NEWS_INGEST=true`, a bounded `X_DAILY_REQUEST_LIMIT`, and the provider-side spend controls.
-Vercel receives only `NEWS_CACHE_ORIGIN=https://multiplayer.tickerworld.io`; its `/api/news`
+Vercel receives only `NEWS_CACHE_ORIGIN=https://us-lax-489a84b6.colyseus.cloud`; its `/api/news`
 function reads the shared cache and never contacts X or holds an X credential.
 
 When the live X cache is unavailable, the client shows an unmistakably labelled fictional demo

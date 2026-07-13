@@ -3,7 +3,8 @@ import {
   type RuntimeCapabilities,
 } from '../../shared/src/index.js';
 
-export const CANONICAL_MULTIPLAYER_ENDPOINT = 'wss://multiplayer.tickerworld.io';
+/** Managed single-process launch endpoint supplied by the production Colyseus Cloud app. */
+export const CANONICAL_MULTIPLAYER_ENDPOINT = 'wss://us-lax-489a84b6.colyseus.cloud';
 
 interface BrowserLocationLike {
   readonly hostname: string;

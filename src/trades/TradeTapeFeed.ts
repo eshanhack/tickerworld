@@ -1,4 +1,5 @@
 import type { AssetSymbol } from '../types';
+import { isDexAssetSymbol } from '../markets/dexMarket';
 import { emptyRollingTradeStats } from './aggregation';
 import { MARKET_TRADE_CONFIG, TRADE_AGGREGATION_CONFIG } from './config';
 import {
@@ -288,7 +289,8 @@ export class TradeTapeFeed implements TradeTapeFeedLifecycle {
   }
 
   private scheduleAutomaticFallback(): void {
-    if (this.fallbackTimer || this.automaticFallback || this.usesForcedSimulation()) return;
+    if (this.fallbackTimer || this.automaticFallback || this.usesForcedSimulation()
+      || isDexAssetSymbol(this.symbol)) return;
     const generation = this.generation;
     const symbol = this.symbol;
     this.fallbackTimer = setTimeout(() => {
@@ -300,7 +302,8 @@ export class TradeTapeFeed implements TradeTapeFeedLifecycle {
   }
 
   private startAutomaticFallback(): void {
-    if (this.automaticFallback || this.usesForcedSimulation() || this.disposed || this.paused) return;
+    if (this.automaticFallback || this.usesForcedSimulation() || isDexAssetSymbol(this.symbol)
+      || this.disposed || this.paused) return;
     this.automaticFallback = true;
     this.clearFallbackTimer();
     // Synthetic fallback is a new provenance epoch. Clear genuine rolling

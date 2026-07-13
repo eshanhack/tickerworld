@@ -28,6 +28,34 @@ export interface ParkourRunResultInput {
   readonly completedAt?: number;
 }
 
+export const PARKOUR_RESULTS_VISIBLE_MS = 10_000;
+
+export interface ParkourResultDismissScheduler {
+  readonly setTimeout: (callback: () => void, delayMs: number) => ReturnType<typeof globalThis.setTimeout>;
+  readonly clearTimeout: (timer: ReturnType<typeof globalThis.setTimeout>) => void;
+}
+
+const DEFAULT_DISMISS_SCHEDULER: ParkourResultDismissScheduler = {
+  setTimeout: (callback, delayMs) => globalThis.setTimeout(callback, delayMs),
+  clearTimeout: (timer) => globalThis.clearTimeout(timer),
+};
+
+/** Schedules the transient result card and returns an idempotent cancellation callback. */
+export function scheduleParkourResultDismissal(
+  onDismiss: () => void,
+  scheduler: ParkourResultDismissScheduler = DEFAULT_DISMISS_SCHEDULER,
+): () => void {
+  let timer: ReturnType<typeof globalThis.setTimeout> | undefined = scheduler.setTimeout(
+    onDismiss,
+    PARKOUR_RESULTS_VISIBLE_MS,
+  );
+  return () => {
+    if (timer === undefined) return;
+    scheduler.clearTimeout(timer);
+    timer = undefined;
+  };
+}
+
 const ANONYMOUS_ADJECTIVES = [
   'Mossy',
   'Comet',
@@ -110,9 +138,11 @@ export class ParkourHudView {
   private readonly quitButton: HTMLButtonElement;
   private readonly resultsCard: HTMLElement;
   private readonly resultsList: HTMLOListElement;
+  private readonly dismissResultsButton: HTMLButtonElement;
   private readonly options: ParkourHudViewOptions;
   private readonly hudRoot: HTMLElement | null;
   private sessionResults: readonly ParkourRunResult[] = [];
+  private cancelResultDismissal: (() => void) | undefined;
   private renderKey = '';
   private disposed = false;
 
@@ -127,7 +157,7 @@ export class ParkourHudView {
           <button type="button" data-parkour-quit aria-label="Quit parkour run without moving your character">Quit</button>
         </div>
         <aside class="parkour-session-log is-hidden" data-parkour-results aria-label="Parkour session leaderboard" aria-live="polite">
-          <header><small>THIS SESSION</small><strong>Parkour times</strong></header>
+          <header><div><small>THIS SESSION</small><strong>Parkour times</strong></div><button class="parkour-results-dismiss" type="button" data-parkour-results-dismiss aria-label="Dismiss parkour times">&times;</button></header>
           <ol data-parkour-result-list></ol>
         </aside>
       </section>
@@ -139,8 +169,11 @@ export class ParkourHudView {
     this.quitButton = this.required<HTMLButtonElement>('[data-parkour-quit]');
     this.resultsCard = this.required('[data-parkour-results]');
     this.resultsList = this.required<HTMLOListElement>('[data-parkour-result-list]');
+    this.dismissResultsButton = this.required<HTMLButtonElement>('[data-parkour-results-dismiss]');
     this.quitButton.addEventListener('click', this.quit);
     this.quitButton.addEventListener('pointerdown', this.stopPointer);
+    this.dismissResultsButton.addEventListener('click', this.dismissResults);
+    this.dismissResultsButton.addEventListener('pointerdown', this.stopPointer);
   }
 
   public setRunState(state: ParkourRunHudState): void {
@@ -162,6 +195,8 @@ export class ParkourHudView {
     if (this.disposed) return;
     this.sessionResults = rankParkourResults([...this.sessionResults, result]);
     this.renderResults();
+    this.cancelResultDismissal?.();
+    this.cancelResultDismissal = scheduleParkourResultDismissal(this.dismissResults);
   }
 
   public get results(): readonly ParkourRunResult[] {
@@ -171,8 +206,12 @@ export class ParkourHudView {
   public dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.cancelResultDismissal?.();
+    this.cancelResultDismissal = undefined;
     this.quitButton.removeEventListener('click', this.quit);
     this.quitButton.removeEventListener('pointerdown', this.stopPointer);
+    this.dismissResultsButton.removeEventListener('click', this.dismissResults);
+    this.dismissResultsButton.removeEventListener('pointerdown', this.stopPointer);
     this.hudRoot?.classList.remove('is-parkour-running');
     this.root.remove();
   }
@@ -202,6 +241,12 @@ export class ParkourHudView {
   }
 
   private readonly quit = (): void => this.options.onQuit();
+
+  private readonly dismissResults = (): void => {
+    this.cancelResultDismissal?.();
+    this.cancelResultDismissal = undefined;
+    this.resultsCard.classList.add('is-hidden');
+  };
 
   private readonly stopPointer = (event: PointerEvent): void => event.stopPropagation();
 }

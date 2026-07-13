@@ -36,7 +36,10 @@ describe('delivery configuration', () => {
     expect(vercel.outputDirectory).toBe('dist');
     const packageJson = readJson('package.json');
     expect((packageJson.scripts as Record<string, string>).build)
-      .toContain('node scripts/verify-release-assets.mjs');
+      .toBe('node scripts/build-project.mjs');
+    const buildProject = readFileSync(join(ROOT, 'scripts/build-project.mjs'), 'utf8');
+    expect(buildProject).toContain("['scripts/verify-release-assets.mjs']");
+    expect(buildProject).toContain("process.env.COLYSEUS_CLOUD !== undefined");
     const rewrites = vercel.rewrites as Array<Record<string, unknown>>;
     for (const slug of ['btc', 'eth', 'sol', 'xrp', 'doge', 'bnb', 'link', 'avax', 'wti', 'test']) {
       expect(rewrites).toContainEqual({ source: `/${slug}`, destination: `/${slug}.html` });
@@ -99,6 +102,19 @@ describe('delivery configuration', () => {
       wait_ready: true,
       env: { NODE_ENV: 'production' },
       env_production: { NODE_ENV: 'production' },
+    });
+
+    const rootEcosystem = require(join(ROOT, 'ecosystem.config.cjs')) as {
+      apps?: Array<Record<string, unknown>>;
+    };
+    expect(rootEcosystem.apps).toHaveLength(1);
+    expect(rootEcosystem.apps?.[0]).toMatchObject({
+      cwd: ROOT,
+      script: 'server/dist/index.js',
+      instances: 1,
+      exec_mode: 'fork',
+      wait_ready: true,
+      env: { NODE_ENV: 'production' },
     });
   });
 

@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
+  PARKOUR_RESULTS_VISIBLE_MS,
   formatParkourTime,
   createParkourRunResult,
   parkourDisplayName,
   rankParkourResults,
+  scheduleParkourResultDismissal,
+  type ParkourResultDismissScheduler,
   type ParkourRunResult,
 } from '../src/ui';
 
@@ -51,5 +54,39 @@ describe('parkour session HUD', () => {
       { displayName: 'Quick Frog', elapsedSeconds: 18.2, market: 'TEST', completedAt: 2 },
     ]);
     expect(input).toEqual(before);
+  });
+
+  it('dismisses the finished-times tile after ten seconds and supports early cancellation', () => {
+    let pending: (() => void) | undefined;
+    let scheduledDelay = 0;
+    let clearCount = 0;
+    const timer = 42 as unknown as ReturnType<typeof globalThis.setTimeout>;
+    const scheduler: ParkourResultDismissScheduler = {
+      setTimeout: (callback, delayMs) => {
+        pending = callback;
+        scheduledDelay = delayMs;
+        return timer;
+      },
+      clearTimeout: (value) => {
+        expect(value).toBe(timer);
+        clearCount += 1;
+        pending = undefined;
+      },
+    };
+    let dismissed = false;
+    const cancel = scheduleParkourResultDismissal(() => { dismissed = true; }, scheduler);
+
+    expect(PARKOUR_RESULTS_VISIBLE_MS).toBe(10_000);
+    expect(scheduledDelay).toBe(10_000);
+    expect(dismissed).toBe(false);
+    cancel();
+    cancel();
+    expect(clearCount).toBe(1);
+    expect(pending).toBeUndefined();
+    expect(dismissed).toBe(false);
+
+    scheduleParkourResultDismissal(() => { dismissed = true; }, scheduler);
+    pending?.();
+    expect(dismissed).toBe(true);
   });
 });

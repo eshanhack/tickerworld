@@ -13,10 +13,13 @@ npm run dev
 ```
 
 Development uses SQLite by default. `docker compose up --build` uses Postgres.
-Production startup requires `DATABASE_URL` and independent HMAC secrets. Wallet
-and purchase APIs are disabled by default and do not require treasury/RPC/price
-credentials until their explicit positive switches are enabled. Wallet sign-in
-is verified locally with Ed25519.
+Production startup requires `DATABASE_URL` and independent HMAC secrets. The
+single-process Colyseus Cloud launch bootstrap is the narrow exception: without
+those values it uses local SQLite and per-process HMAC keys while wallet,
+purchase, and admin features remain disabled. Browser-local anonymous identity,
+username, character, skin, and settings still persist; durable accounts,
+moderation history, and payments require Postgres plus stable secrets. Wallet
+sign-in is verified locally with Ed25519.
 Production requires explicit `DATABASE_SSL=verify-full` and a non-empty
 `TRUSTED_PROXY_CIDRS`; there is no insecure production escape hatch. Forwarding
 headers remain ignored unless the immediate peer is in that trusted proxy set.
@@ -99,8 +102,8 @@ until shared Presence/Driver and distributed admission/moderation are implemente
    build and run `npm run migrate` as the pre-deploy migration.
 3. Deploy the compatible server first; wait for `/healthz` and `/readyz` to
    return `200`, then run a two-client room smoke test.
-4. Point `multiplayer.tickerworld.io` at that persistent WebSocket service and
-   verify TLS/WebSocket upgrades from the production origin.
+4. Verify TLS/WebSocket upgrades at the assigned Colyseus Cloud endpoint from
+   the production origin; a custom multiplayer domain can be added later.
 5. Deploy the Vercel client only after the server and solo fallback both pass.
 
 The `market` room filters by ticker and sorts by descending client count. Each

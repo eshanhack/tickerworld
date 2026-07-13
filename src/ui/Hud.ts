@@ -74,16 +74,16 @@ export interface NearbyView {
   tradeTapeMode?: TradeTapeMode;
 }
 
-export function tradeTapeStatusLabel(mode: TradeTapeMode | undefined): string | null {
+export function nearbyMarketStatusLabel(mode: FeedMode): string {
   switch (mode) {
-    case 'live': return 'TAPE LIVE';
-    case 'simulated': return 'TAPE SIM';
-    case 'unavailable': return 'TAPE OFF';
-    case 'connecting': return 'TAPE CONNECTING';
-    case 'reconnecting': return 'TAPE RECONNECTING';
-    default: return null;
+    case 'live': return 'LIVE';
+    case 'simulated': return 'SIMULATED';
+    case 'connecting': return 'CONNECTING';
+    case 'reconnecting': return 'RECONNECTING';
   }
 }
+
+export const HELP_DISCLAIMER = 'If the chart goes offline, the chart will pause while we reconnect. For ambience, not financial advice. Tickerworld is not responsible for trading losses.';
 
 const EMOTES: readonly { kind: UiEmoteKind; icon: string; label: string }[] = [
   { kind: 'wave', icon: '\u2191', label: 'Wave' },
@@ -142,7 +142,6 @@ export class Hud {
   private readonly nearbyPrice: HTMLElement;
   private readonly nearbyMode: HTMLElement;
   private readonly nearbyModeLabel: HTMLElement;
-  private readonly nearbyTapeMode: HTMLElement;
   private readonly worldClock: HTMLElement;
   private readonly worldClockIcon: HTMLElement;
   private readonly worldClockTime: HTMLElement;
@@ -228,8 +227,8 @@ export class Hud {
 
       <section class="nearby-panel is-hidden" aria-live="polite" data-nearby>
         <div class="nearby-symbol" data-nearby-symbol>BTC</div>
-        <div><div class="nearby-label">nearby market</div><div class="nearby-price" data-nearby-price>$&mdash;</div></div>
-        <div class="market-mode connecting" data-nearby-mode><span data-nearby-mode-label>CONNECTING</span><span class="trade-tape-mode is-hidden" data-nearby-tape-mode></span></div>
+        <div class="nearby-price" data-nearby-price>$&mdash;</div>
+        <div class="market-mode connecting" data-nearby-mode><span data-nearby-mode-label>CONNECTING</span></div>
       </section>
 
       <section class="world-clock" aria-label="World time, daylight" data-world-clock>
@@ -275,7 +274,7 @@ export class Hud {
         <button type="button" class="compass-setting wardrobe-setting" data-settings-wardrobe><span>Character wardrobe</span><strong>9 CHARACTERS</strong></button>
         <button type="button" class="compass-setting" data-compass-setting><span>Monument whisper</span><strong>ON</strong></button>
         <button type="button" class="compass-setting motion-setting" data-motion-setting><span>Gentle motion</span><strong>OFF</strong></button>
-        <p>Live prices use Hyperliquid perpetual market data. If the feed drops, genuine values pause while Tickerworld reconnects. For ambience, not financial advice.</p>
+        <p>${HELP_DISCLAIMER}</p>
         <nav class="settings-links" aria-label="Tickerworld help and policies"><a href="/support">Support</a><a href="/community">Community</a><a href="/status">Status</a><a href="/privacy">Privacy</a><a href="/terms">Terms</a></nav>
       </section>
 
@@ -298,7 +297,6 @@ export class Hud {
     this.nearbyPrice = this.required('[data-nearby-price]');
     this.nearbyMode = this.required('[data-nearby-mode]');
     this.nearbyModeLabel = this.required('[data-nearby-mode-label]');
-    this.nearbyTapeMode = this.required('[data-nearby-tape-mode]');
     this.worldClock = this.required('[data-world-clock]');
     this.worldClockIcon = this.required('[data-world-clock-icon]');
     this.worldClockTime = this.required('[data-world-clock-time]');
@@ -499,34 +497,8 @@ export class Hud {
       if (this.pricePulseTimer !== undefined) window.clearTimeout(this.pricePulseTimer);
       this.pricePulseTimer = window.setTimeout(() => this.nearbyPrice.classList.remove('is-ticking'), 420);
     }
-    const reconnectingAge = view.mode === 'reconnecting'
-      && view.price !== null
-      && view.ageMs !== null
-      && view.ageMs !== undefined
-      && Number.isFinite(view.ageMs)
-      ? `${Math.max(0, Math.round(view.ageMs / 1_000))}s old`
-      : null;
-    this.nearbyModeLabel.textContent = view.mode === 'live'
-      ? view.symbol === 'WTI'
-        ? 'LIVE · HYPERLIQUID · CL PERP'
-        : view.symbol === 'PUMP' || view.symbol === 'ANSEM'
-          ? 'LIVE · DEXSCREENER · SOLANA'
-          : view.symbol === 'SHFL'
-            ? 'LIVE · DEXSCREENER · ETHEREUM'
-            : 'LIVE · HYPERLIQUID'
-      : view.mode === 'connecting'
-        ? 'CONNECTING'
-        : view.mode === 'reconnecting'
-          ? view.price === null
-            ? 'CONNECTING · —'
-            : reconnectingAge
-              ? `RECONNECTING · ${reconnectingAge}`
-              : 'RECONNECTING'
-          : view.symbol === 'TEST' ? 'SIMULATED · TEST LAB' : 'SIMULATED · QA';
+    this.nearbyModeLabel.textContent = nearbyMarketStatusLabel(view.mode);
     this.nearbyMode.className = `market-mode ${view.mode === 'reconnecting' && view.price === null ? 'connecting' : view.mode}`;
-    const tapeLabel = tradeTapeStatusLabel(view.tradeTapeMode);
-    this.nearbyTapeMode.textContent = tapeLabel ?? '';
-    this.nearbyTapeMode.className = `trade-tape-mode ${view.tradeTapeMode ?? 'disabled'}${tapeLabel ? '' : ' is-hidden'}`;
     this.nearbyPanel.style.setProperty('--nearby-distance', `${Math.min(1, view.distance / 80)}`);
   }
 

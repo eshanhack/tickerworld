@@ -19,7 +19,7 @@ const jsonRequest = async (url, timeout = 3500) => {
 };
 
 await Promise.allSettled([
-  jsonRequest('https://multiplayer.tickerworld.io/api/capabilities').then((payload) => {
+  jsonRequest('https://us-lax-489a84b6.colyseus.cloud/api/capabilities').then((payload) => {
     const open = payload?.multiplayerAvailable === true && payload?.switches?.admissions === true;
     setStatus('multiplayer', open ? 'ok' : 'down', open ? 'Available' : 'Solo available');
   }).catch(() => setStatus('multiplayer', 'down', 'Solo available')),

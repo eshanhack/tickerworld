@@ -9,6 +9,8 @@ import {
 
 describe('runtime capabilities client', () => {
   it('auto-selects only the canonical production endpoint and keeps previews fail-closed', () => {
+    expect(CANONICAL_MULTIPLAYER_ENDPOINT)
+      .toBe('wss://us-lax-489a84b6.colyseus.cloud');
     expect(resolveMultiplayerEndpoint('', { hostname: 'tickerworld.io' }))
       .toBe(CANONICAL_MULTIPLAYER_ENDPOINT);
     expect(resolveMultiplayerEndpoint('', { hostname: 'www.tickerworld.io' }))

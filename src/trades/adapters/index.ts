@@ -10,3 +10,4 @@ export {
   parseHyperliquidTapeTrades,
 } from './hyperliquid';
 export { OKX_SOCKET_URL, okxSubscriptions, parseOkxTrades } from './okx';
+export { parseGeckoTerminalTapeTrades } from './geckoTerminal';

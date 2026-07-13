@@ -57,6 +57,24 @@ export interface DexHistoryResponse {
   readonly provider: 'geckoterminal';
   readonly market: DexMarketDefinition;
   readonly candles: readonly Candle[];
+  readonly dailyCandles: readonly Candle[];
+  readonly checkedAt: number;
+}
+
+export interface DexOnchainTrade {
+  readonly id: string;
+  readonly symbol: DexAssetSymbol;
+  readonly side: 'buy' | 'sell';
+  readonly priceUsd: number;
+  readonly baseAmount: number;
+  readonly volumeUsd: number;
+  readonly time: number;
+}
+
+export interface DexTradesResponse {
+  readonly provider: 'geckoterminal';
+  readonly market: DexMarketDefinition;
+  readonly trades: readonly DexOnchainTrade[];
   readonly checkedAt: number;
 }
 
@@ -67,6 +85,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function finitePositive(value: unknown): number | null {
   const number = typeof value === 'number' || typeof value === 'string' ? Number(value) : Number.NaN;
   return Number.isFinite(number) && number > 0 ? number : null;
+}
+
+function finiteNonNegative(value: unknown): number | null {
+  const number = typeof value === 'number' || typeof value === 'string' ? Number(value) : Number.NaN;
+  return Number.isFinite(number) && number >= 0 ? number : null;
 }
 
 function sameAddress(chain: DexMarketDefinition['chain'], left: string, right: string): boolean {
@@ -137,6 +160,59 @@ export function parseGeckoTerminalCandles(
   return candles;
 }
 
+/**
+ * Parses GeckoTerminal's exact-pool trade feed from the base token's point of
+ * view. Address matching is mandatory: trusting only `kind` or a ticker would
+ * allow an inverted quote or a similarly named token to move the chart.
+ */
+export function parseGeckoTerminalTrades(
+  payload: unknown,
+  market: DexMarketDefinition,
+  now = Date.now(),
+  maxCount = 300,
+): DexOnchainTrade[] {
+  if (!isRecord(payload) || !Array.isArray(payload.data)) return [];
+  const trades = new Map<string, DexOnchainTrade>();
+  for (const item of payload.data) {
+    if (!isRecord(item) || typeof item.id !== 'string' || item.id.length < 1 || item.id.length > 220
+      || !isRecord(item.attributes)) continue;
+    const attributes = item.attributes;
+    const fromAddress = typeof attributes.from_token_address === 'string'
+      ? attributes.from_token_address
+      : '';
+    const toAddress = typeof attributes.to_token_address === 'string'
+      ? attributes.to_token_address
+      : '';
+    const baseWasSold = sameAddress(market.chain, fromAddress, market.baseTokenAddress);
+    const baseWasBought = sameAddress(market.chain, toAddress, market.baseTokenAddress);
+    if (baseWasSold === baseWasBought) continue;
+    const priceUsd = finitePositive(baseWasSold
+      ? attributes.price_from_in_usd
+      : attributes.price_to_in_usd);
+    const baseAmount = finitePositive(baseWasSold
+      ? attributes.from_token_amount
+      : attributes.to_token_amount);
+    const volumeUsd = finiteNonNegative(attributes.volume_in_usd);
+    const time = typeof attributes.block_timestamp === 'string'
+      ? Date.parse(attributes.block_timestamp)
+      : Number.NaN;
+    if (priceUsd === null || baseAmount === null || volumeUsd === null
+      || !Number.isFinite(time) || time < 0 || time > now + 60_000) continue;
+    trades.set(item.id, {
+      id: item.id,
+      symbol: market.symbol,
+      side: baseWasSold ? 'sell' : 'buy',
+      priceUsd,
+      baseAmount,
+      volumeUsd,
+      time,
+    });
+  }
+  return [...trades.values()]
+    .sort((left, right) => left.time - right.time || left.id.localeCompare(right.id))
+    .slice(-Math.max(1, Math.floor(maxCount)));
+}
+
 export function parseDexQuotesResponse(payload: unknown): DexQuotesResponse | null {
   if (!isRecord(payload) || payload.provider !== 'dexscreener' || !Array.isArray(payload.markets)) return null;
   const checkedAt = finitePositive(payload.checkedAt);
@@ -181,8 +257,8 @@ export function parseDexHistoryResponse(payload: unknown, now = Date.now()): Dex
     || payload.market.geckoNetwork !== definition.geckoNetwork) return null;
   const checkedAt = finitePositive(payload.checkedAt);
   // The API returns normalized candle objects, so parse those separately.
-  const normalized = Array.isArray(payload.candles)
-    ? payload.candles.flatMap((item): Candle[] => {
+  const normalizeCandles = (value: unknown, maxCount: number): Candle[] => Array.isArray(value)
+    ? value.flatMap((item): Candle[] => {
       if (!isRecord(item)) return [];
       const openTime = finitePositive(item.openTime);
       const open = finitePositive(item.open);
@@ -192,9 +268,46 @@ export function parseDexHistoryResponse(payload: unknown, now = Date.now()): Dex
       if (openTime === null || open === null || high === null || low === null || close === null
         || openTime > now + 60_000 || high < Math.max(open, close) || low > Math.min(open, close)) return [];
       return [{ openTime, open, high, low, close, closed: item.closed === true }];
-    }).sort((left, right) => left.openTime - right.openTime).slice(-120)
+    }).sort((left, right) => left.openTime - right.openTime).slice(-maxCount)
     : [];
+  const normalized = normalizeCandles(payload.candles, 120);
+  const dailyCandles = normalizeCandles(payload.dailyCandles, 370);
   if (checkedAt === null || normalized.length < 2) return null;
   normalized.forEach((candle, index) => { candle.closed = index < normalized.length - 1; });
-  return { provider: 'geckoterminal', market: definition, candles: normalized, checkedAt };
+  dailyCandles.forEach((candle, index) => { candle.closed = index < dailyCandles.length - 1; });
+  return { provider: 'geckoterminal', market: definition, candles: normalized, dailyCandles, checkedAt };
+}
+
+export function parseDexTradesResponse(payload: unknown, now = Date.now()): DexTradesResponse | null {
+  if (!isRecord(payload) || payload.provider !== 'geckoterminal' || !isRecord(payload.market)
+    || !Array.isArray(payload.trades)) return null;
+  const symbol = payload.market.symbol;
+  if (typeof symbol !== 'string' || !(DEX_ASSET_SYMBOLS as readonly string[]).includes(symbol)) return null;
+  const definition = DEX_MARKETS[symbol as DexAssetSymbol];
+  if (payload.market.poolAddress !== definition.poolAddress
+    || payload.market.baseTokenAddress !== definition.baseTokenAddress
+    || payload.market.chain !== definition.chain
+    || payload.market.geckoNetwork !== definition.geckoNetwork) return null;
+  const checkedAt = finitePositive(payload.checkedAt);
+  if (checkedAt === null) return null;
+  const trades = payload.trades.flatMap((item): DexOnchainTrade[] => {
+    if (!isRecord(item) || typeof item.id !== 'string' || item.id.length < 1 || item.id.length > 220
+      || item.symbol !== definition.symbol || (item.side !== 'buy' && item.side !== 'sell')) return [];
+    const priceUsd = finitePositive(item.priceUsd);
+    const baseAmount = finitePositive(item.baseAmount);
+    const volumeUsd = finiteNonNegative(item.volumeUsd);
+    const time = finiteNonNegative(item.time);
+    if (priceUsd === null || baseAmount === null || volumeUsd === null || time === null
+      || time > now + 60_000) return [];
+    return [{
+      id: item.id,
+      symbol: definition.symbol,
+      side: item.side,
+      priceUsd,
+      baseAmount,
+      volumeUsd,
+      time,
+    }];
+  }).sort((left, right) => left.time - right.time || left.id.localeCompare(right.id)).slice(-300);
+  return { provider: 'geckoterminal', market: definition, trades, checkedAt };
 }

@@ -21,6 +21,8 @@ import {
   isDexAssetSymbol,
   parseDexHistoryResponse,
   parseDexQuotesResponse,
+  parseDexTradesResponse,
+  type DexOnchainTrade,
 } from './dexMarket';
 
 const REST_URL = 'https://api.hyperliquid.xyz/info';
@@ -330,6 +332,7 @@ export class HyperliquidMarketFeed implements MarketFeed {
   private heartbeatTimer: number | undefined;
   private dexPollTimer: number | undefined;
   private dexPollController: AbortController | undefined;
+  private dexTradePollController: AbortController | undefined;
   private reconnectTimer: number | undefined;
   private reconnectAttempt = 0;
   private syncGeneration = 0;
@@ -340,8 +343,12 @@ export class HyperliquidMarketFeed implements MarketFeed {
   private disposed = false;
   private started = false;
   private dexPollPending = false;
+  private dexTradePollPending = false;
   private lastDexPollAt = Number.NEGATIVE_INFINITY;
   private readonly lastDexQuoteTimes = new Map<AssetSymbol, number>();
+  private readonly dexTradeQueues = new Map<AssetSymbol, DexOnchainTrade[]>();
+  private readonly seenDexTradeIds = new Map<AssetSymbol, Set<string>>();
+  private readonly initializedDexTrades = new Set<AssetSymbol>();
 
   constructor() {
     const now = Date.now();
@@ -417,6 +424,7 @@ export class HyperliquidMarketFeed implements MarketFeed {
     if (this.disposed || symbol === this.activeSymbol) return;
     this.activeSymbol = symbol;
     this.pendingTrades.clear();
+    this.dexTradeQueues.delete(symbol);
     this.lastPresented.delete(symbol);
     this.lastTradeTime.set(symbol, 0);
     if (FORCE_SIMULATION || !this.started || this.paused) return;
@@ -536,6 +544,8 @@ export class HyperliquidMarketFeed implements MarketFeed {
     this.pendingTrades.clear();
     this.dexPollController?.abort();
     this.dexPollController = undefined;
+    this.dexTradePollController?.abort();
+    this.dexTradePollController = undefined;
     this.closeSocket(1000, 'Tickerworld hidden');
   }
 
@@ -572,8 +582,12 @@ export class HyperliquidMarketFeed implements MarketFeed {
     this.presentationTimer = window.setInterval(() => this.flushTrades(), PRESENTATION_POLL_MS);
     this.watchdogTimer = window.setInterval(() => this.watchdog(), 4_000);
     this.heartbeatTimer = window.setInterval(() => this.sendHeartbeat(), HEARTBEAT_INTERVAL_MS);
-    this.dexPollTimer = window.setInterval(() => { void this.pollDexMarkets(); }, DEX_POLL_INTERVAL_MS);
+    this.dexPollTimer = window.setInterval(() => {
+      void this.pollDexMarkets();
+      void this.pollActiveDexTrades();
+    }, DEX_POLL_INTERVAL_MS);
     void this.pollDexMarkets();
+    void this.pollActiveDexTrades();
   }
 
   private stepSimulations(): void {
@@ -643,7 +657,7 @@ export class HyperliquidMarketFeed implements MarketFeed {
       const state: AssetState = {
         ...previous,
         instrument: symbol,
-        provider: isDexAssetSymbol(symbol) ? 'dexscreener' : 'hyperliquid',
+        provider: isDexAssetSymbol(symbol) ? 'geckoterminal' : 'hyperliquid',
         candles: snapshot.chartCandles,
         price,
         previousPrice: price,
@@ -664,7 +678,7 @@ export class HyperliquidMarketFeed implements MarketFeed {
       if (isDexAssetSymbol(symbol)) {
         this.reconnectAttempt = 0;
         this.socketDebug = 'dex polling';
-        await this.pollDexMarkets();
+        await Promise.all([this.pollDexMarkets(), this.pollActiveDexTrades()]);
         return;
       }
       this.connect(generation);
@@ -746,7 +760,7 @@ export class HyperliquidMarketFeed implements MarketFeed {
       return {
         chartCandles: minuteHistory.slice(-SNAPSHOT_CANDLE_COUNT),
         minuteHistory,
-        dailyHistory: [],
+        dailyHistory: parsed.dailyCandles.map((candle) => ({ ...candle })),
       };
     } finally {
       window.clearTimeout(timeout);
@@ -829,9 +843,17 @@ export class HyperliquidMarketFeed implements MarketFeed {
   }
 
   private flushTrades(): void {
-    if (this.paused || this.disposed || !this.socket) return;
+    if (this.paused || this.disposed) return;
     const now = Date.now();
     const symbol = this.activeSymbol;
+    if (isDexAssetSymbol(symbol)) {
+      const queue = this.dexTradeQueues.get(symbol);
+      if (!queue || queue.length === 0 || now - (this.lastPresented.get(symbol) ?? 0) < PRESENTATION_INTERVAL_MS) return;
+      const trade = queue.shift();
+      if (trade) this.presentTrade(symbol, { price: trade.priceUsd, time: trade.time }, now);
+      return;
+    }
+    if (!this.socket) return;
     const pending = this.pendingTrades.get(symbol);
     if (!pending || now - (this.lastPresented.get(symbol) ?? 0) < PRESENTATION_INTERVAL_MS) return;
     this.pendingTrades.delete(symbol);
@@ -886,19 +908,42 @@ export class HyperliquidMarketFeed implements MarketFeed {
           const lastQuoteTime = this.lastDexQuoteTimes.get(quote.symbol) ?? Number.NEGATIVE_INFINITY;
           if (state.candles.length >= 2 && quote.checkedAt > lastQuoteTime) {
             this.lastDexQuoteTimes.set(quote.symbol, quote.checkedAt);
-            if (state.price === quote.priceUsd) {
-              const unchanged: AssetState = {
-                ...state,
-                mode: 'live',
-                updateKind: 'snapshot',
-                updatedAt: quote.checkedAt,
-                ageMs: 0,
-              };
-              this.states.set(quote.symbol, unchanged);
-              this.emit(unchanged);
-            } else {
-            this.presentTrade(quote.symbol, { price: quote.priceUsd, time: quote.checkedAt }, Date.now());
-            }
+            // DexScreener's pair quote is a truthful current snapshot, not an
+            // individual trade. Move the live candle silently; only exact
+            // GeckoTerminal prints below are allowed to trigger trade audio.
+            const candleUpdate = applyTradeToCandles(
+              this.minuteHistories.get(quote.symbol) ?? state.candles,
+              quote.priceUsd,
+              quote.checkedAt,
+              MINUTE_HISTORY_COUNT,
+            );
+            const minuteHistory = candleUpdate.accepted
+              ? candleUpdate.candles
+              : [...(this.minuteHistories.get(quote.symbol) ?? state.candles)];
+            this.minuteHistories.set(quote.symbol, minuteHistory);
+            const direction = state.price === null || quote.priceUsd === state.price
+              ? 'flat'
+              : quote.priceUsd > state.price ? 'up' : 'down';
+            const snapshot: AssetState = {
+              ...state,
+              provider: 'dexscreener',
+              candles: minuteHistory.slice(-SNAPSHOT_CANDLE_COUNT),
+              previousPrice: state.price ?? quote.priceUsd,
+              price: quote.priceUsd,
+              direction,
+              mode: 'live',
+              updateKind: 'snapshot',
+              updatedAt: quote.checkedAt,
+              ageMs: 0,
+              horizonChanges: computeHorizonChanges(
+                quote.priceUsd,
+                quote.checkedAt,
+                minuteHistory,
+                this.dailyHistories.get(quote.symbol) ?? [],
+              ),
+            };
+            this.states.set(quote.symbol, snapshot);
+            this.emit(snapshot);
           }
         } else {
           mids.push({
@@ -924,6 +969,99 @@ export class HyperliquidMarketFeed implements MarketFeed {
       window.clearTimeout(timeout);
       if (this.dexPollController === controller) this.dexPollController = undefined;
       this.dexPollPending = false;
+    }
+  }
+
+  /** Pulls exact on-chain prints for the active pool and deduplicates the
+   * provider's rolling 300-trade window. New prints are replayed at the same
+   * bounded 400 ms presentation cadence as socket trades. */
+  private async pollActiveDexTrades(): Promise<void> {
+    const symbol = this.activeSymbol;
+    if (!isDexAssetSymbol(symbol) || FORCE_SIMULATION || this.paused || this.disposed
+      || this.dexTradePollPending || !this.directFallbackAllowed) return;
+    this.dexTradePollPending = true;
+    const generation = this.syncGeneration;
+    const controller = new AbortController();
+    this.dexTradePollController = controller;
+    const timeout = window.setTimeout(() => controller.abort(), SNAPSHOT_TIMEOUT_MS);
+    try {
+      const response = await fetch(`/api/dex-market?trades=${encodeURIComponent(symbol)}`, {
+        headers: { Accept: 'application/json' },
+        cache: 'default',
+        signal: controller.signal,
+      });
+      if (!response.ok) throw new Error(`DEX trades returned ${response.status}`);
+      const parsed = parseDexTradesResponse(await response.json());
+      if (!parsed || parsed.market.symbol !== symbol || generation !== this.syncGeneration
+        || symbol !== this.activeSymbol || this.paused || this.disposed) return;
+      let seen = this.seenDexTradeIds.get(symbol);
+      if (!seen) {
+        seen = new Set<string>();
+        this.seenDexTradeIds.set(symbol, seen);
+      }
+      const unseen = parsed.trades.filter((trade) => !seen!.has(trade.id));
+      for (const trade of parsed.trades) seen.add(trade.id);
+      while (seen.size > 900) seen.delete(seen.values().next().value!);
+
+      if (!this.initializedDexTrades.has(symbol)) {
+        this.initializedDexTrades.add(symbol);
+        const latest = parsed.trades.at(-1);
+        if (latest) {
+          // Establish the real provenance epoch without replaying up to 300
+          // historical alerts on first entry.
+          const state = this.getState(symbol);
+          const candleUpdate = applyTradeToCandles(
+            this.minuteHistories.get(symbol) ?? state.candles,
+            latest.priceUsd,
+            latest.time,
+            MINUTE_HISTORY_COUNT,
+          );
+          if (candleUpdate.accepted) {
+            this.minuteHistories.set(symbol, candleUpdate.candles);
+            this.lastTradeTime.set(symbol, latest.time);
+            const oldPrice = state.price;
+            const snapshot: AssetState = {
+              ...state,
+              provider: 'geckoterminal',
+              candles: candleUpdate.candles.slice(-SNAPSHOT_CANDLE_COUNT),
+              previousPrice: oldPrice ?? latest.priceUsd,
+              price: latest.priceUsd,
+              direction: oldPrice === null || oldPrice === latest.priceUsd
+                ? 'flat'
+                : latest.priceUsd > oldPrice ? 'up' : 'down',
+              mode: 'live',
+              updateKind: 'snapshot',
+              updatedAt: latest.time,
+              ageMs: Math.max(0, parsed.checkedAt - latest.time),
+              horizonChanges: computeHorizonChanges(
+                latest.priceUsd,
+                latest.time,
+                candleUpdate.candles,
+                this.dailyHistories.get(symbol) ?? [],
+              ),
+            };
+            this.states.set(symbol, snapshot);
+            this.emit(snapshot);
+          }
+        }
+        return;
+      }
+
+      const lastTime = this.lastTradeTime.get(symbol) ?? 0;
+      const fresh = unseen.filter((trade) => trade.time >= lastTime).slice(-50);
+      if (fresh.length > 0) {
+        const queue = this.dexTradeQueues.get(symbol) ?? [];
+        queue.push(...fresh);
+        if (queue.length > 50) queue.splice(0, queue.length - 50);
+        this.dexTradeQueues.set(symbol, queue);
+      }
+    } catch {
+      // Pair quotes remain a genuine, lower-frequency source. Do not invent
+      // activity when the exact trade endpoint is temporarily rate-limited.
+    } finally {
+      window.clearTimeout(timeout);
+      if (this.dexTradePollController === controller) this.dexTradePollController = undefined;
+      this.dexTradePollPending = false;
     }
   }
 
@@ -975,6 +1113,7 @@ export class HyperliquidMarketFeed implements MarketFeed {
           : 'flat';
     const state: AssetState = {
       ...previous,
+      provider: isDexAssetSymbol(symbol) ? 'geckoterminal' : previous.provider,
       candles: candleUpdate.candles.slice(-SNAPSHOT_CANDLE_COUNT),
       previousPrice: oldPrice ?? trade.price,
       price: trade.price,

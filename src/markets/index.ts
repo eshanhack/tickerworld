@@ -39,12 +39,16 @@ export {
   parseDexHistoryResponse,
   parseDexQuotesResponse,
   parseDexScreenerQuote,
+  parseDexTradesResponse,
   parseGeckoTerminalCandles,
+  parseGeckoTerminalTrades,
 } from './dexMarket';
 export type {
   DexAssetSymbol,
   DexHistoryResponse,
   DexMarketDefinition,
   DexMarketQuote,
+  DexOnchainTrade,
   DexQuotesResponse,
+  DexTradesResponse,
 } from './dexMarket';

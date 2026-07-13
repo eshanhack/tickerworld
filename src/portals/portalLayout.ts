@@ -3,14 +3,17 @@ import { formatPrice } from '../monuments/chartMath';
 import { marketPath } from '../routing';
 import type { AssetSymbol, FeedMode } from '../types';
 import {
+  DEX_FIELD_PORTAL_RADIUS,
+  PORTAL_ARRIVAL_OFFSET,
+  PORTAL_RADIUS,
+} from '../../shared/src/portals.js';
+import {
   createCanonicalRoadDescriptors,
   type CanonicalRoadDescriptor,
   type RoadVector,
 } from '../world/RoadSignLayout';
 
-export const PORTAL_RADIUS = 24;
-export const DEX_FIELD_PORTAL_RADIUS = 47;
-export const PORTAL_ARRIVAL_OFFSET = 4.5;
+export { DEX_FIELD_PORTAL_RADIUS, PORTAL_ARRIVAL_OFFSET, PORTAL_RADIUS };
 
 const DEX_FIELD_PORTALS = new Set<AssetSymbol>(['PUMP', 'ANSEM', 'SHFL']);
 
@@ -126,7 +129,7 @@ export function createPortalLabelModel(
     populationText,
     marketText,
     connectionMode,
-    text: `${route.destination}\n${marketText}\n${populationText}`,
+    text: `${route.destination}\n${priceText} · ${marketText}\n${populationText}`,
   };
 }
 

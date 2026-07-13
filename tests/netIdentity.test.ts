@@ -83,7 +83,7 @@ describe('signed room identity', () => {
     });
   });
 
-  it('persists a signed anonymous token only for its live browser session', () => {
+  it('persists a signed anonymous token across browser restarts until it expires', () => {
     const storage = new MemoryStorage();
     const identity = {
       actorId: 'anon_12345678901234567890123456789012',

@@ -1,6 +1,6 @@
 import type { AssetSymbol } from '../types';
 
-export const TRADE_EXCHANGES = ['hyperliquid', 'binance', 'coinbase', 'okx', 'simulation'] as const;
+export const TRADE_EXCHANGES = ['hyperliquid', 'binance', 'coinbase', 'okx', 'geckoterminal', 'simulation'] as const;
 export type TradeExchange = (typeof TRADE_EXCHANGES)[number];
 export type LiveTradeExchange = Exclude<TradeExchange, 'simulation'>;
 export type TradeSide = 'buy' | 'sell';

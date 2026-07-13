@@ -60,10 +60,13 @@ export {
 export { worldClockPresentation, type WorldClockPresentation } from './worldClock';
 export {
   ParkourHudView,
+  PARKOUR_RESULTS_VISIBLE_MS,
   createParkourRunResult,
   formatParkourTime,
   parkourDisplayName,
   rankParkourResults,
+  scheduleParkourResultDismissal,
+  type ParkourResultDismissScheduler,
   type ParkourHudViewOptions,
   type ParkourRunHudState,
   type ParkourRunResultInput,

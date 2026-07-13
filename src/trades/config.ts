@@ -172,9 +172,9 @@ export const MARKET_TRADE_CONFIG: Readonly<Record<AssetSymbol, MarketTradeConfig
   }, 0.2, 0.009, 75_000),
   WTI: market(74, { hyperliquid: 'xyz:CL' }, 0.5, 0.006, 150_000),
   TEST: market(100, {}, 0.05, 0.02, 5_000),
-  PUMP: market(0.0015, {}, 0.025, 0.02, 2_500),
-  ANSEM: market(0.24, {}, 0.025, 0.025, 2_500),
-  SHFL: market(0.26, {}, 0.025, 0.018, 2_500),
+  PUMP: market(0.0015, { geckoterminal: 'PUMP' }, 0.025, 0.02, 2_500),
+  ANSEM: market(0.24, { geckoterminal: 'ANSEM' }, 0.025, 0.025, 2_500),
+  SHFL: market(0.26, { geckoterminal: 'SHFL' }, 0.025, 0.018, 2_500),
 });
 
 export function classifyTradeTier(symbol: AssetSymbol, notionalUsd: number): TradeTier {
@@ -211,6 +211,6 @@ export function tradeTierProgress(
 
 export function exchangesForMarket(symbol: AssetSymbol): readonly LiveTradeExchange[] {
   const pairs = MARKET_TRADE_CONFIG[symbol].pairs;
-  return (['hyperliquid', 'binance', 'coinbase', 'okx'] as const)
+  return (['hyperliquid', 'binance', 'coinbase', 'okx', 'geckoterminal'] as const)
     .filter((exchange) => Boolean(pairs[exchange]));
 }

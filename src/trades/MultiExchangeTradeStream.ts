@@ -11,6 +11,7 @@ import {
   parseBinanceTrades,
   parseCoinbaseTrades,
   parseHyperliquidTapeTrades,
+  parseGeckoTerminalTapeTrades,
   parseOkxTrades,
 } from './adapters';
 import type {
@@ -33,6 +34,7 @@ export type TradeSocketFactory = (url: string) => TradeSocketLike;
 
 export interface MultiExchangeTradeStreamOptions {
   readonly socketFactory?: TradeSocketFactory;
+  readonly fetcher?: typeof fetch;
   readonly now?: () => number;
   readonly random?: () => number;
 }
@@ -44,6 +46,10 @@ interface Session {
   reconnectTimer: ReturnType<typeof setTimeout> | null;
   heartbeatTimer: ReturnType<typeof setInterval> | null;
   reconnectAttempt: number;
+  pollTimer: ReturnType<typeof setInterval> | null;
+  pollController: AbortController | null;
+  initialized: boolean;
+  readonly seenIds: Set<string>;
   createdAt: number;
   openedAt: number | null;
   lastMessageAt: number | null;
@@ -67,6 +73,7 @@ function endpoint(exchange: LiveTradeExchange, pair: string): string {
     case 'coinbase': return COINBASE_SOCKET_URL;
     case 'okx': return OKX_SOCKET_URL;
     case 'hyperliquid': return HYPERLIQUID_SOCKET_URL;
+    case 'geckoterminal': return '';
   }
 }
 
@@ -76,6 +83,7 @@ function subscriptions(exchange: LiveTradeExchange, pair: string): readonly unkn
     case 'coinbase': return coinbaseSubscriptions(pair);
     case 'okx': return okxSubscriptions(pair);
     case 'hyperliquid': return hyperliquidSubscriptions(pair);
+    case 'geckoterminal': return [];
   }
 }
 
@@ -91,6 +99,7 @@ function parseTrades(
     case 'coinbase': return parseCoinbaseTrades(payload, symbol, pair, receivedAt);
     case 'okx': return parseOkxTrades(payload, symbol, pair, receivedAt);
     case 'hyperliquid': return parseHyperliquidTapeTrades(payload, symbol, pair, receivedAt);
+    case 'geckoterminal': return parseGeckoTerminalTapeTrades(payload, symbol, receivedAt);
   }
 }
 
@@ -104,6 +113,7 @@ export class MultiExchangeTradeStream {
   private readonly socketFactory: TradeSocketFactory;
   private readonly now: () => number;
   private readonly random: () => number;
+  private readonly fetcher: typeof fetch;
   private readonly tradeListeners = new Set<(trades: readonly NormalizedTrade[]) => void>();
   private readonly healthListeners = new Set<(health: readonly TradeTapeHealth[]) => void>();
   private readonly sessions = new Map<LiveTradeExchange, Session>();
@@ -116,6 +126,7 @@ export class MultiExchangeTradeStream {
 
   constructor(options: MultiExchangeTradeStreamOptions = {}) {
     this.socketFactory = options.socketFactory ?? ((url) => new WebSocket(url));
+    this.fetcher = options.fetcher ?? fetch;
     this.now = options.now ?? Date.now;
     this.random = options.random ?? Math.random;
   }
@@ -200,6 +211,10 @@ export class MultiExchangeTradeStream {
         socket: null,
         reconnectTimer: null,
         heartbeatTimer: null,
+        pollTimer: null,
+        pollController: null,
+        initialized: false,
+        seenIds: new Set<string>(),
         reconnectAttempt: 0,
         createdAt: this.now(),
         openedAt: null,
@@ -207,13 +222,14 @@ export class MultiExchangeTradeStream {
         health: 'connecting',
       };
       this.sessions.set(exchange, session);
-      this.openSession(session);
+      if (exchange === 'geckoterminal') this.openDexSession(session);
+      else this.openSession(session);
     }
     this.emitHealth();
   }
 
   private openSession(session: Session): void {
-    if (!this.isCurrent(session) || session.socket || session.reconnectTimer) return;
+    if (session.exchange === 'geckoterminal' || !this.isCurrent(session) || session.socket || session.reconnectTimer) return;
     const pair = MARKET_TRADE_CONFIG[this.symbol].pairs[session.exchange];
     if (!pair) return;
     // Session objects survive reconnects, but these timestamps describe one
@@ -289,6 +305,58 @@ export class MultiExchangeTradeStream {
     this.emitHealth();
   }
 
+  private openDexSession(session: Session): void {
+    if (session.exchange !== 'geckoterminal' || !this.isCurrent(session) || session.pollTimer) return;
+    const pair = MARKET_TRADE_CONFIG[this.symbol].pairs.geckoterminal;
+    if (!pair) return;
+    const poll = async (): Promise<void> => {
+      if (!this.isCurrent(session) || session.pollController) return;
+      const controller = new AbortController();
+      session.pollController = controller;
+      const timeout = setTimeout(() => controller.abort(), TRADE_AGGREGATION_CONFIG.socketOpenTimeoutMs);
+      try {
+        const response = await this.fetcher(`/api/dex-market?trades=${encodeURIComponent(pair)}`, {
+          headers: { Accept: 'application/json' },
+          cache: 'default',
+          signal: controller.signal,
+        });
+        if (!response.ok) throw new Error(`http ${response.status}`);
+        const receivedAt = this.now();
+        const trades = parseGeckoTerminalTapeTrades(await response.json(), this.symbol, receivedAt);
+        if (!this.isCurrent(session)) return;
+        const becameLive = session.health !== 'live';
+        session.health = 'live';
+        session.reason = undefined;
+        session.reconnectAttempt = 0;
+        session.lastMessageAt = receivedAt;
+        const fresh = trades.filter((trade) => !session.seenIds.has(trade.id));
+        for (const trade of trades) session.seenIds.add(trade.id);
+        while (session.seenIds.size > 900) session.seenIds.delete(session.seenIds.values().next().value!);
+        if (!session.initialized) {
+          session.initialized = true;
+        } else if (fresh.length > 0) {
+          for (const listener of this.tradeListeners) {
+            listener(fresh.slice(-TRADE_AGGREGATION_CONFIG.maxInputBatch));
+          }
+        }
+        if (becameLive) this.emitHealth();
+      } catch (error) {
+        if (!this.isCurrent(session)) return;
+        session.health = 'reconnecting';
+        session.reconnectAttempt += 1;
+        session.reason = error instanceof Error ? error.message.slice(0, 80) : 'poll failed';
+        this.emitHealth();
+      } finally {
+        clearTimeout(timeout);
+        if (session.pollController === controller) session.pollController = null;
+      }
+    };
+    session.health = 'connecting';
+    void poll();
+    session.pollTimer = setInterval(() => { void poll(); }, 2_500);
+    this.emitHealth();
+  }
+
   private scheduleReconnect(session: Session): void {
     if (!this.isCurrent(session) || session.reconnectTimer) return;
     session.health = 'reconnecting';
@@ -327,6 +395,10 @@ export class MultiExchangeTradeStream {
       if (session.heartbeatTimer) clearInterval(session.heartbeatTimer);
       session.reconnectTimer = null;
       session.heartbeatTimer = null;
+      if (session.pollTimer) clearInterval(session.pollTimer);
+      session.pollController?.abort();
+      session.pollTimer = null;
+      session.pollController = null;
       const socket = session.socket;
       session.socket = null;
       if (socket) {

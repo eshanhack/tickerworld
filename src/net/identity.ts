@@ -57,7 +57,7 @@ function randomId(): string {
 }
 
 export function readGuestIdentity(
-  storage: Storage | null = safeSessionStorage(),
+  storage: Storage | null = safeLocalStorage(),
   appearanceStorage: Storage | null = safeLocalStorage(),
 ): GuestIdentity {
   let actorId = '';
@@ -119,7 +119,7 @@ export function writeGuestAppearance(
 }
 
 export function readSignedGuestIdentity(
-  storage: Storage | null = safeSessionStorage(),
+  storage: Storage | null = safeLocalStorage(),
   now = Date.now(),
 ): SignedGuestIdentity | null {
   try {
@@ -147,7 +147,7 @@ export function readSignedGuestIdentity(
 
 export function writeSignedGuestIdentity(
   identity: SignedGuestIdentity,
-  storage: Storage | null = safeSessionStorage(),
+  storage: Storage | null = safeLocalStorage(),
 ): void {
   try {
     storage?.setItem(SIGNED_IDENTITY_KEY, JSON.stringify(identity));
@@ -157,19 +157,11 @@ export function writeSignedGuestIdentity(
   }
 }
 
-export function clearSignedGuestIdentity(storage: Storage | null = safeSessionStorage()): void {
+export function clearSignedGuestIdentity(storage: Storage | null = safeLocalStorage()): void {
   try {
     storage?.removeItem(SIGNED_IDENTITY_KEY);
   } catch {
     // A failed cleanup still allows the in-memory refresh to proceed.
-  }
-}
-
-function safeSessionStorage(): Storage | null {
-  try {
-    return typeof sessionStorage === 'undefined' ? null : sessionStorage;
-  } catch {
-    return null;
   }
 }
 

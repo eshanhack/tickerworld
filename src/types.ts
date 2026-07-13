@@ -2,7 +2,7 @@ export { ASSET_SYMBOLS } from '../shared/src/index.js';
 export type { AssetSymbol } from '../shared/src/index.js';
 import type { AssetSymbol } from '../shared/src/index.js';
 export type FeedMode = 'connecting' | 'live' | 'reconnecting' | 'simulated';
-export type MarketProvider = 'hyperliquid' | 'dexscreener' | 'simulation';
+export type MarketProvider = 'hyperliquid' | 'dexscreener' | 'geckoterminal' | 'simulation';
 export type MarketUpdateKind = 'snapshot' | 'trade' | 'candle' | 'simulation';
 export type TickDirection = 'up' | 'down' | 'flat';
 export type SurfaceKind = 'grass' | 'sand' | 'stone';

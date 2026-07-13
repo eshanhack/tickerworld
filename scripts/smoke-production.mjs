@@ -43,7 +43,7 @@ const clientOrigin = normalizeOrigin(
 );
 const serverOrigin = normalizeOrigin(
   process.env.TICKERWORLD_SERVER_ORIGIN,
-  'https://multiplayer.tickerworld.io',
+  'https://us-lax-489a84b6.colyseus.cloud',
 );
 const expectLiveNews = process.env.SMOKE_EXPECT_NEWS_LIVE === '1';
 const expectMultiplayerLive = process.env.SMOKE_EXPECT_MULTIPLAYER_LIVE === '1';

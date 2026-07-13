@@ -8,6 +8,7 @@ import {
 } from '../shared/src/index.js';
 import {
   PORTAL_ARRIVAL_OFFSET,
+  DEX_FIELD_PORTAL_RADIUS,
   PORTAL_DWELL_SECONDS,
   PORTAL_RADIUS,
   PortalDwellController,
@@ -73,6 +74,18 @@ describe('fixed portal routes', () => {
     expect(facing.z).toBeCloseTo(inward.y, 8);
   });
 
+  it('keeps DEX arrivals on the outer field ring and inside the world boundary', () => {
+    const spawn = portalArrivalSpawn('PUMP', 'BTC');
+    expect(spawn).not.toBeNull();
+    if (!spawn) return;
+    expect(spawn.returnPortal.radius).toBe(DEX_FIELD_PORTAL_RADIUS);
+    expect(Math.hypot(spawn.x, spawn.z)).toBeCloseTo(
+      DEX_FIELD_PORTAL_RADIUS + PORTAL_ARRIVAL_OFFSET,
+      8,
+    );
+    expect(Math.hypot(spawn.x, spawn.z)).toBeLessThan(84);
+  });
+
   it('formats live price and aggregate population without inventing offline counts', () => {
     const route = createPortalRoutes('BTC')[0];
     expect(route).toBeDefined();
@@ -86,7 +99,7 @@ describe('fixed portal routes', () => {
       priceText: '$1,234.5',
       populationText: '1,204 ONLINE',
       marketText: 'LIVE',
-      text: `${route.destination}\nLIVE\n1,204 ONLINE`,
+      text: `${route.destination}\n$1,234.5 · LIVE\n1,204 ONLINE`,
     });
     expect(createPortalLabelModel(route, {
       price: null,
@@ -96,7 +109,7 @@ describe('fixed portal routes', () => {
     })).toMatchObject({
       priceText: '$—',
       populationText: 'SOLO WORLD',
-      text: `${route.destination}\nLIVE\nSOLO WORLD`,
+      text: `${route.destination}\n$— · LIVE\nSOLO WORLD`,
     });
     expect(formatPortalPopulation(0, 'online')).toBe('0 ONLINE');
     expect(formatPortalPopulation(1, 'online')).toBe('1 ONLINE');
@@ -123,7 +136,7 @@ describe('fixed portal routes', () => {
     }
   });
 
-  it('assigns non-overlapping label cards and line bands in all ten worlds', () => {
+  it('assigns non-overlapping label cards and line bands in every world', () => {
     const lines = portalLabelLineBounds();
     expect(lines.title.bottom - lines.status.top).toBeGreaterThanOrEqual(
       PORTAL_LABEL_LAYOUT.minimumLineGap,
@@ -139,6 +152,9 @@ describe('fixed portal routes', () => {
       expect([...rows.values()].every((row) => row >= 0 && Number.isInteger(row))).toBe(true);
       for (let firstIndex = 0; firstIndex < routes.length; firstIndex += 1) {
         const first = routes[firstIndex]!;
+        // Portals and their cards sit beyond the central chart/plaza sightline.
+        expect(Math.hypot(first.x, first.z) - 2.05).toBeGreaterThan(31);
+        expect(Math.hypot(first.x, first.z)).toBeLessThan(62);
         const firstRow = rows.get(first.id) ?? 0;
         expect(portalLabelCenterY(firstRow) - PORTAL_LABEL_LAYOUT.cardHeight * 0.5)
           .toBeGreaterThan(2.22 + 2.05);
@@ -225,7 +241,7 @@ describe('PortalSystem presentation', () => {
     ))).toBe(true);
     expect(texts.filter(({ text }) => text === route.destination)).toHaveLength(2);
     expect(texts.filter(({ text }) => text === '18 ONLINE')).toHaveLength(2);
-    expect(texts.every(({ text }) => !text.includes('$42.25'))).toBe(true);
+    expect(texts.filter(({ text }) => text === '$42.25 · LIVE')).toHaveLength(2);
 
     system.setPlayerProbe({ x: route.x, z: route.z, grounded: true });
     for (let frame = 0; frame < 31; frame += 1) system.update(0.1, frame * 0.1);

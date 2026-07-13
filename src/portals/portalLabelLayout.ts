@@ -10,20 +10,20 @@ export interface PortalLabelLineBounds {
 }
 
 export const PORTAL_LABEL_LAYOUT = {
-  cardWidth: 5,
-  cardHeight: 2,
+  cardWidth: 5.6,
+  cardHeight: 2.06,
   baseCenterY: 5.4,
   rowStep: 2.16,
-  rowCollisionDistance: 5.34,
+  rowCollisionDistance: 5.94,
   minimumCardGap: 0.12,
   titleY: 0.45,
   titleFontSize: 0.6,
   statusY: -0.14,
-  statusFontSize: 0.34,
+  statusFontSize: 0.31,
   populationY: -0.55,
-  populationFontSize: 0.3,
+  populationFontSize: 0.28,
   minimumLineGap: 0.08,
-  textMaxWidth: 4.5,
+  textMaxWidth: 5.12,
 } as const;
 
 function lineBounds(centerY: number, fontSize: number): PortalLabelLineBounds {
@@ -45,7 +45,7 @@ export function portalLabelLineBounds(): Readonly<{
 /**
  * Assigns the lowest deterministic vertical row that clears nearby portal
  * cards. This is needed for the ETH/DOGE spokes, whose inherited road bearings
- * are closer than one full label width at the 24-unit portal radius.
+ * remain closer than one full label width at the inner portal radius.
  */
 export function assignPortalLabelRows(
   anchors: readonly PortalLabelAnchor[],
