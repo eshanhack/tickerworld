@@ -230,6 +230,25 @@ describe('/api/dex-market', () => {
     )).resolves.toMatchObject({ status: 400 });
   });
 
+  it('retains only previously verified on-chain trades through a brief upstream outage', async () => {
+    const healthy = vi.fn(async () => Response.json(tradesPayload()));
+    const first = await handleDexMarketRequest(
+      new Request('https://tickerworld.test/api/dex-market?trades=ANSEM'),
+      NOW + 10_000,
+      healthy,
+    );
+    expect(first.status).toBe(200);
+    const unavailable = vi.fn(async () => new Response('upstream unavailable', { status: 503 }));
+    const fallback = await handleDexMarketRequest(
+      new Request('https://tickerworld.test/api/dex-market?trades=ANSEM'),
+      NOW + 10_001,
+      unavailable,
+    );
+    expect(fallback.status).toBe(200);
+    expect(fallback.headers.get('X-Tickerworld-Data')).toBe('stale-onchain-trades');
+    expect(parseDexTradesResponse(await fallback.json(), NOW + 10_001)?.trades).toHaveLength(2);
+  });
+
   it('never returns a similarly named pair when the configured pool identity fails', async () => {
     const fetcher = vi.fn(async () => Response.json({
       pairs: [{
@@ -250,6 +269,62 @@ describe('/api/dex-market', () => {
 });
 
 describe('DEX chart presentation', () => {
+  it('uses a changed genuine DEX quote as a labelled pulse only while exact prints are stale', async () => {
+    const activeOpen = Math.floor(NOW / 60_000) * 60_000;
+    const candles: Candle[] = [
+      { openTime: activeOpen - 60_000, open: 2, high: 2, low: 2, close: 2, closed: true },
+      { openTime: activeOpen, open: 2, high: 2, low: 2, close: 2, closed: false },
+    ];
+    const state: AssetState = {
+      symbol: 'ANSEM', instrument: 'ANSEM', provider: 'dexscreener', candles, price: 2, previousPrice: 2,
+      direction: 'flat', mode: 'live', updateKind: 'snapshot', updatedAt: NOW - 2_000,
+      presentationTick: 0, horizonChanges: createEmptyHorizonChanges(),
+    };
+    const quote = (priceUsd: number, checkedAt: number) => Response.json({
+      provider: 'dexscreener',
+      markets: [{
+        symbol: 'ANSEM', chain: 'solana', poolAddress: DEX_MARKETS.ANSEM.poolAddress, priceUsd, checkedAt,
+      }],
+      checkedAt,
+    });
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(quote(2.1, NOW))
+      .mockResolvedValueOnce(quote(2.2, NOW + 3_000));
+    vi.stubGlobal('fetch', fetcher);
+    vi.stubGlobal('window', { setTimeout, clearTimeout });
+    vi.spyOn(Date, 'now').mockReturnValue(NOW);
+    const feed = new HyperliquidMarketFeed();
+    const internals = feed as unknown as {
+      activeSymbol: 'ANSEM';
+      states: Map<string, AssetState>;
+      minuteHistories: Map<string, Candle[]>;
+      initializedDexQuotes: Set<string>;
+      lastExactDexFeedAt: Map<string, number>;
+      lastDexPollAt: number;
+      pollDexMarkets(): Promise<void>;
+    };
+    internals.activeSymbol = 'ANSEM';
+    internals.states.set('ANSEM', state);
+    internals.minuteHistories.set('ANSEM', candles);
+    internals.initializedDexQuotes.add('ANSEM');
+
+    await internals.pollDexMarkets();
+    expect(feed.getState('ANSEM')).toMatchObject({
+      price: 2.1, direction: 'up', updateKind: 'quote', presentationTick: 1,
+    });
+
+    internals.lastExactDexFeedAt.set('ANSEM', NOW + 3_000);
+    internals.lastDexPollAt = Number.NEGATIVE_INFINITY;
+    vi.spyOn(Date, 'now').mockReturnValue(NOW + 3_000);
+    await internals.pollDexMarkets();
+    expect(feed.getState('ANSEM')).toMatchObject({
+      price: 2.2, direction: 'up', updateKind: 'snapshot', presentationTick: 1,
+    });
+    feed.dispose();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
   it('seeds silently, then turns each newly observed on-chain print into a real trade pulse', async () => {
     const activeOpen = Math.floor(NOW / 60_000) * 60_000;
     const candle: Candle = {

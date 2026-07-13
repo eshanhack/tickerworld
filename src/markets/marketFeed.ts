@@ -38,6 +38,7 @@ const PRESENTATION_POLL_MS = 50;
 const SOCKET_STALE_MS = 45_000;
 const DEX_POLL_INTERVAL_MS = 2_500;
 const DEX_PASSIVE_POLL_INTERVAL_MS = 15_000;
+const DEX_EXACT_TRADE_FRESH_MS = 7_500;
 
 export const HEARTBEAT_INTERVAL_MS = 25_000;
 
@@ -349,6 +350,9 @@ export class HyperliquidMarketFeed implements MarketFeed {
   private readonly dexTradeQueues = new Map<AssetSymbol, DexOnchainTrade[]>();
   private readonly seenDexTradeIds = new Map<AssetSymbol, Set<string>>();
   private readonly initializedDexTrades = new Set<AssetSymbol>();
+  private readonly initializedDexQuotes = new Set<AssetSymbol>();
+  /** Last fresh exact-pool response; quote pulses are only a fallback. */
+  private readonly lastExactDexFeedAt = new Map<AssetSymbol, number>();
 
   constructor() {
     const now = Date.now();
@@ -917,9 +921,12 @@ export class HyperliquidMarketFeed implements MarketFeed {
           const lastQuoteTime = this.lastDexQuoteTimes.get(quote.symbol) ?? Number.NEGATIVE_INFINITY;
           if (state.candles.length >= 2 && quote.checkedAt > lastQuoteTime) {
             this.lastDexQuoteTimes.set(quote.symbol, quote.checkedAt);
-            // DexScreener's pair quote is a truthful current snapshot, not an
-            // individual trade. Move the live candle silently; only exact
-            // GeckoTerminal prints below are allowed to trigger trade audio.
+            // DexScreener's pair quote is a truthful current observation, not
+            // necessarily an individual trade. Exact GeckoTerminal prints
+            // normally own presentation. If that endpoint is temporarily
+            // unavailable, a changed quote becomes an explicitly-labelled
+            // fallback presentation so the chart remains genuinely live
+            // without inventing any activity.
             const candleUpdate = applyTradeToCandles(
               this.minuteHistories.get(quote.symbol) ?? state.candles,
               quote.priceUsd,
@@ -933,6 +940,12 @@ export class HyperliquidMarketFeed implements MarketFeed {
             const direction = state.price === null || quote.priceUsd === state.price
               ? 'flat'
               : quote.priceUsd > state.price ? 'up' : 'down';
+            const exactFeedFresh = quote.checkedAt - (this.lastExactDexFeedAt.get(quote.symbol) ?? Number.NEGATIVE_INFINITY)
+              < DEX_EXACT_TRADE_FRESH_MS;
+            const quotePresentation = this.initializedDexQuotes.has(quote.symbol)
+              && state.price !== null
+              && quote.priceUsd !== state.price
+              && !exactFeedFresh;
             const snapshot: AssetState = {
               ...state,
               provider: 'dexscreener',
@@ -941,9 +954,10 @@ export class HyperliquidMarketFeed implements MarketFeed {
               price: quote.priceUsd,
               direction,
               mode: 'live',
-              updateKind: 'snapshot',
+              updateKind: quotePresentation ? 'quote' : 'snapshot',
               updatedAt: quote.checkedAt,
               ageMs: 0,
+              presentationTick: quotePresentation ? state.presentationTick + 1 : state.presentationTick,
               horizonChanges: computeHorizonChanges(
                 quote.priceUsd,
                 quote.checkedAt,
@@ -953,6 +967,7 @@ export class HyperliquidMarketFeed implements MarketFeed {
             };
             this.states.set(quote.symbol, snapshot);
             this.emit(snapshot);
+            this.initializedDexQuotes.add(quote.symbol);
           }
         } else {
           mids.push({
@@ -1003,6 +1018,12 @@ export class HyperliquidMarketFeed implements MarketFeed {
       const parsed = parseDexTradesResponse(await response.json());
       if (!parsed || parsed.market.symbol !== symbol || generation !== this.syncGeneration
         || symbol !== this.activeSymbol || this.paused || this.disposed) return;
+      // A response is only considered fresh when its server observation is
+      // recent. Cached genuine prints remain useful for deduplication but must
+      // not suppress the truthful quote-pulse fallback indefinitely.
+      if (Date.now() - parsed.checkedAt < DEX_EXACT_TRADE_FRESH_MS) {
+        this.lastExactDexFeedAt.set(symbol, Date.now());
+      }
       let seen = this.seenDexTradeIds.get(symbol);
       if (!seen) {
         seen = new Set<string>();

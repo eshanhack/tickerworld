@@ -3,7 +3,11 @@ export type { AssetSymbol } from '../shared/src/index.js';
 import type { AssetSymbol } from '../shared/src/index.js';
 export type FeedMode = 'connecting' | 'live' | 'reconnecting' | 'simulated';
 export type MarketProvider = 'hyperliquid' | 'dexscreener' | 'geckoterminal' | 'simulation';
-export type MarketUpdateKind = 'snapshot' | 'trade' | 'candle' | 'simulation';
+/**
+ * `quote` is a genuine price observation used only as a graceful DEX
+ * presentation fallback while the exact on-chain print endpoint is stale.
+ */
+export type MarketUpdateKind = 'snapshot' | 'quote' | 'trade' | 'candle' | 'simulation';
 export type TickDirection = 'up' | 'down' | 'flat';
 export type SurfaceKind = 'grass' | 'sand' | 'stone';
 

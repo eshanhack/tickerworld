@@ -1298,7 +1298,9 @@ export class Game {
     }
     const previousOpen = previous?.candles.at(-1)?.openTime;
     const currentOpen = state.candles.at(-1)?.openTime;
-    const isTradePresentation = state.updateKind === 'trade' || state.updateKind === 'simulation';
+    const isTradePresentation = state.updateKind === 'trade'
+      || state.updateKind === 'quote'
+      || state.updateKind === 'simulation';
     const focusedMarket = this.monuments.nearestTo(this.player.position, MARKET_AUDIO_MAX_RADIUS);
     const isFocusedSymbol = focusedMarket?.monument.symbol === state.symbol;
     if (

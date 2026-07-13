@@ -16,9 +16,11 @@ type ServerFetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<R
 
 const REQUEST_TIMEOUT_MS = 7_000;
 const FAILURE_CIRCUIT_MS = 2_000;
+const UPSTREAM_USER_AGENT = 'Tickerworld/1.0 (+https://tickerworld.io)';
 let quoteFailureUntil = 0;
 const historyFailureUntil = new Map<DexAssetSymbol, number>();
 const tradeFailureUntil = new Map<DexAssetSymbol, number>();
+const lastGoodTrades = new Map<DexAssetSymbol, DexTradesResponse>();
 
 function headers(cacheControl: string): HeadersInit {
   return {
@@ -51,13 +53,29 @@ function unavailable(checkedAt: number): Response {
   });
 }
 
+/** Retain only real, previously verified prints when an upstream has a brief outage. */
+function staleTrades(symbol: DexAssetSymbol): Response | null {
+  const cached = lastGoodTrades.get(symbol);
+  if (!cached) return null;
+  return Response.json(cached, {
+    headers: {
+      ...headers('public, s-maxage=1, stale-while-revalidate=5'),
+      'X-Tickerworld-Data': 'stale-onchain-trades',
+    },
+  });
+}
+
 async function fetchJson(
   url: string,
   fetcher: ServerFetcher,
   extraHeaders: Readonly<Record<string, string>> = {},
 ): Promise<unknown> {
   const response = await fetcher(url, {
-    headers: { Accept: 'application/json', ...extraHeaders },
+    headers: {
+      Accept: 'application/json',
+      'User-Agent': UPSTREAM_USER_AGENT,
+      ...extraHeaders,
+    },
     cache: 'no-store',
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
@@ -139,6 +157,7 @@ async function recentTrades(
   const url = `${apiRoot}/networks/${market.geckoNetwork}/pools/${encodeURIComponent(market.poolAddress)}/trades`;
   const trades = parseGeckoTerminalTrades(await fetchJson(url, fetcher, apiHeaders), market, checkedAt);
   const body: DexTradesResponse = { provider: 'geckoterminal', market, trades, checkedAt };
+  lastGoodTrades.set(symbol, body);
   return Response.json(body, { headers: headers('public, s-maxage=2, stale-while-revalidate=2') });
 }
 
@@ -164,7 +183,7 @@ export async function handleDexMarketRequest(
     if (checkedAt < retryAt) return unavailable(checkedAt);
   } else if (trades) {
     const retryAt = tradeFailureUntil.get(trades as DexAssetSymbol) ?? 0;
-    if (checkedAt < retryAt) return unavailable(checkedAt);
+    if (checkedAt < retryAt) return staleTrades(trades as DexAssetSymbol) ?? unavailable(checkedAt);
   } else if (checkedAt < quoteFailureUntil) {
     return unavailable(checkedAt);
   }
@@ -180,7 +199,10 @@ export async function handleDexMarketRequest(
     return response;
   } catch {
     if (history) historyFailureUntil.set(history as DexAssetSymbol, checkedAt + FAILURE_CIRCUIT_MS);
-    else if (trades) tradeFailureUntil.set(trades as DexAssetSymbol, checkedAt + FAILURE_CIRCUIT_MS);
+    else if (trades) {
+      tradeFailureUntil.set(trades as DexAssetSymbol, checkedAt + FAILURE_CIRCUIT_MS);
+      return staleTrades(trades as DexAssetSymbol) ?? unavailable(checkedAt);
+    }
     else quoteFailureUntil = checkedAt + FAILURE_CIRCUIT_MS;
     return unavailable(checkedAt);
   }
