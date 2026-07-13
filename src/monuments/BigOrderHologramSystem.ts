@@ -24,7 +24,10 @@ import {
 } from '../trades/config';
 import type { AggregatedOrder, TradeSide, TradeTier } from '../trades/types';
 import type { AssetSymbol } from '../types';
-import { MONUMENT_CANDLE_COLORS } from './Monument';
+import {
+  MONUMENT_CANDLE_COLORS,
+  MONUMENT_OVERLAY_RENDER_ORDER,
+} from './Monument';
 
 export type BigOrderHologramTier = 'big' | 'whale';
 
@@ -94,6 +97,7 @@ interface HologramSlot {
   readonly amount: Text;
   readonly simulatedMark: Text;
   readonly crown: Group;
+  readonly backplateMaterial: MeshBasicMaterial;
   readonly beamMaterial: MeshBasicMaterial;
   readonly scanlineMaterial: MeshBasicMaterial;
   readonly anchorPoint: Vector3;
@@ -127,6 +131,13 @@ interface DissolveParticle {
 
 const EMPTY_SIDE: TradeSide = 'buy';
 const EMPTY_TIER: BigOrderHologramTier = 'big';
+// Monument charts deliberately render as a depth-test-free presentation
+// overlay. Order projections are presentation too: rendering below that layer
+// made an otherwise valid projection disappear whenever the chart crossed its
+// screen-space position. Keep this above the chart, while anchors preserve a
+// clear physical gutter around the candles.
+const HOLOGRAM_RENDER_ORDER = MONUMENT_OVERLAY_RENDER_ORDER + 16;
+const HOLOGRAM_OUTLINE_COLOR = 0x24283b;
 
 function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value));
@@ -303,7 +314,8 @@ export class BigOrderHologramSystem {
   private readonly slots: HologramSlot[];
   private readonly dissolvePool: HologramDissolvePool;
   private readonly scanlineGeometry = new BoxGeometry(1, 0.025, 0.012);
-  private readonly beamGeometry = new ConeGeometry(0.75, 3.2, 10, 1, true);
+  private readonly beamGeometry = new ConeGeometry(0.88, 3.75, 10, 1, true);
+  private readonly backplateGeometry = new BoxGeometry(4.25, 1.82, 0.018);
   private readonly crownBaseGeometry = new BoxGeometry(0.68, 0.12, 0.09);
   private readonly crownPointGeometry = new ConeGeometry(0.13, 0.34, 5);
   private currentElapsedSeconds = 0;
@@ -447,8 +459,8 @@ export class BigOrderHologramSystem {
         slot.root.rotateY(Math.sin(this.currentElapsedSeconds * 0.42 + slot.index) * 0.025);
       }
       const openingFlicker = !this.reducedMotion && age < 0.18
-        ? 0.68 + (Math.floor(age / 0.045) % 2) * 0.28
-        : 0.9 + Math.sin(this.currentElapsedSeconds * 8.4 + slot.index) * 0.035;
+        ? 0.84 + (Math.floor(age / 0.045) % 2) * 0.16
+        : 0.96 + Math.sin(this.currentElapsedSeconds * 8.4 + slot.index) * 0.025;
       this.setSlotOpacity(slot, dissolve * openingFlicker);
       slot.scanlineMaterial.opacity *= 0.68 + 0.22 * Math.sin(this.currentElapsedSeconds * 5.2);
     }
@@ -498,6 +510,7 @@ export class BigOrderHologramSystem {
       slot.title.dispose();
       slot.amount.dispose();
       slot.simulatedMark.dispose();
+      slot.backplateMaterial.dispose();
       slot.beamMaterial.dispose();
       slot.scanlineMaterial.dispose();
       const crownMaterial = (slot.crown.children[0] as Mesh | undefined)?.material;
@@ -509,6 +522,7 @@ export class BigOrderHologramSystem {
     this.dissolvePool.dispose();
     this.scanlineGeometry.dispose();
     this.beamGeometry.dispose();
+    this.backplateGeometry.dispose();
     this.crownBaseGeometry.dispose();
     this.crownPointGeometry.dispose();
     this.root.removeFromParent();
@@ -519,11 +533,30 @@ export class BigOrderHologramSystem {
     const root = new Group();
     root.name = `big-order-hologram-${index + 1}`;
     root.visible = false;
-    root.renderOrder = 16;
+    root.renderOrder = HOLOGRAM_RENDER_ORDER;
 
-    const title = this.createText('BIG BUY', 0.72, 0.58, fontUrl);
+    // A softly coloured backing makes the pastel type readable against bright
+    // sky, stone, and the shrine itself. It is one pooled primitive per slot.
+    const backplateMaterial = new MeshBasicMaterial({
+      // A neutral dark plate gives both pastel directions enough contrast;
+      // the beam, scanlines and type retain their directional colour.
+      color: HOLOGRAM_OUTLINE_COLOR,
+      transparent: true,
+      opacity: 0,
+      side: DoubleSide,
+      depthTest: false,
+      depthWrite: false,
+      toneMapped: false,
+    });
+    const backplate = new Mesh(this.backplateGeometry, backplateMaterial);
+    backplate.name = `big-order-backplate-${index + 1}`;
+    backplate.position.z = -0.08;
+    backplate.renderOrder = HOLOGRAM_RENDER_ORDER;
+    root.add(backplate);
+
+    const title = this.createText('BIG BUY', 0.92, 0.58, fontUrl);
     title.name = `big-order-title-${index + 1}`;
-    const amount = this.createText('$0', 0.46, -0.12, fontUrl);
+    const amount = this.createText('$0', 0.62, -0.12, fontUrl);
     amount.name = `big-order-amount-${index + 1}`;
     const simulatedMark = this.createText('SIM', 0.18, -0.48, fontUrl);
     simulatedMark.name = `big-order-simulated-${index + 1}`;
@@ -537,20 +570,22 @@ export class BigOrderHologramSystem {
       transparent: true,
       opacity: 0,
       side: DoubleSide,
+      depthTest: false,
       depthWrite: false,
       blending: AdditiveBlending,
       toneMapped: false,
     });
     const beam = new Mesh(this.beamGeometry, beamMaterial);
     beam.name = `big-order-projection-beam-${index + 1}`;
-    beam.position.set(0, -2.0, -0.04);
-    beam.renderOrder = 14;
+    beam.position.set(0, -2.28, -0.11);
+    beam.renderOrder = HOLOGRAM_RENDER_ORDER + 1;
     root.add(beam);
 
     const scanlineMaterial = new MeshBasicMaterial({
       color: MONUMENT_CANDLE_COLORS.up,
       transparent: true,
       opacity: 0,
+      depthTest: false,
       depthWrite: false,
       blending: AdditiveBlending,
       toneMapped: false,
@@ -559,8 +594,8 @@ export class BigOrderHologramSystem {
       const scanline = new Mesh(this.scanlineGeometry, scanlineMaterial);
       scanline.name = `big-order-scanline-${index + 1}-${line + 1}`;
       scanline.scale.x = 3.6 - line * 0.34;
-      scanline.position.set(0, 0.62 - line * 0.38, -0.025);
-      scanline.renderOrder = 15;
+      scanline.position.set(0, 0.62 - line * 0.38, -0.04);
+      scanline.renderOrder = HOLOGRAM_RENDER_ORDER + 2;
       root.add(scanline);
     }
 
@@ -568,6 +603,7 @@ export class BigOrderHologramSystem {
       color: 0xfff1cf,
       transparent: true,
       opacity: 0,
+      depthTest: false,
       depthWrite: false,
       blending: AdditiveBlending,
       toneMapped: false,
@@ -575,11 +611,14 @@ export class BigOrderHologramSystem {
     const crown = new Group();
     crown.name = `whale-order-crown-${index + 1}`;
     crown.position.y = 1.18;
+    crown.renderOrder = HOLOGRAM_RENDER_ORDER + 5;
     const crownBase = new Mesh(this.crownBaseGeometry, crownMaterial);
+    crownBase.renderOrder = HOLOGRAM_RENDER_ORDER + 5;
     crown.add(crownBase);
     for (const x of [-0.24, 0, 0.24]) {
       const point = new Mesh(this.crownPointGeometry, crownMaterial);
       point.position.set(x, 0.21 + (x === 0 ? 0.08 : 0), 0);
+      point.renderOrder = HOLOGRAM_RENDER_ORDER + 5;
       crown.add(point);
     }
     crown.visible = false;
@@ -592,6 +631,7 @@ export class BigOrderHologramSystem {
       amount,
       simulatedMark,
       crown,
+      backplateMaterial,
       beamMaterial,
       scanlineMaterial,
       anchorPoint: new Vector3(),
@@ -618,11 +658,11 @@ export class BigOrderHologramSystem {
     text.anchorY = 'middle';
     text.textAlign = 'center';
     text.whiteSpace = 'nowrap';
-    text.outlineWidth = '7%';
-    text.outlineColor = MONUMENT_CANDLE_COLORS.up;
-    text.outlineOpacity = 0.34;
+    text.outlineWidth = '9%';
+    text.outlineColor = HOLOGRAM_OUTLINE_COLOR;
+    text.outlineOpacity = 0.58;
     text.depthOffset = -3;
-    text.renderOrder = 17;
+    text.renderOrder = HOLOGRAM_RENDER_ORDER + 4;
     text.position.set(0, y, 0);
     if (fontUrl) text.font = fontUrl;
     return text;
@@ -682,9 +722,9 @@ export class BigOrderHologramSystem {
     slot.title.text = `BIG ${slot.side === 'buy' ? 'BUY' : 'SELL'}`;
     slot.amount.text = formatHologramNotional(slot.notionalUsd);
     slot.title.color = color;
-    slot.title.outlineColor = color;
+    slot.title.outlineColor = HOLOGRAM_OUTLINE_COLOR;
     slot.amount.color = color;
-    slot.amount.outlineColor = color;
+    slot.amount.outlineColor = HOLOGRAM_OUTLINE_COLOR;
     slot.beamMaterial.color.setHex(color);
     slot.scanlineMaterial.color.setHex(color);
     slot.crown.visible = slot.tier === 'whale';
@@ -698,14 +738,15 @@ export class BigOrderHologramSystem {
 
   private setSlotOpacity(slot: HologramSlot, opacity: number): void {
     const visible = clamp01(opacity);
-    this.setTextOpacity(slot.title, visible * 0.9);
-    slot.title.outlineOpacity = visible * 0.34;
-    this.setTextOpacity(slot.amount, visible * 0.86);
-    slot.amount.outlineOpacity = visible * 0.3;
-    this.setTextOpacity(slot.simulatedMark, visible * 0.72);
-    slot.simulatedMark.outlineOpacity = visible * 0.24;
-    slot.beamMaterial.opacity = visible * 0.055;
-    slot.scanlineMaterial.opacity = visible * 0.11;
+    this.setTextOpacity(slot.title, visible * 0.98);
+    slot.title.outlineOpacity = visible * 0.72;
+    this.setTextOpacity(slot.amount, visible * 0.96);
+    slot.amount.outlineOpacity = visible * 0.64;
+    this.setTextOpacity(slot.simulatedMark, visible * 0.82);
+    slot.simulatedMark.outlineOpacity = visible * 0.5;
+    slot.backplateMaterial.opacity = visible * (slot.tier === 'whale' ? 0.72 : 0.62);
+    slot.beamMaterial.opacity = visible * (slot.tier === 'whale' ? 0.21 : 0.15);
+    slot.scanlineMaterial.opacity = visible * (slot.tier === 'whale' ? 0.38 : 0.29);
     const crownMaterial = (slot.crown.children[0] as Mesh | undefined)?.material;
     if (crownMaterial instanceof MeshBasicMaterial) crownMaterial.opacity = visible * 0.76;
   }
@@ -713,6 +754,8 @@ export class BigOrderHologramSystem {
   private setTextOpacity(text: Text, opacity: number): void {
     const material = text.material as Material;
     material.transparent = true;
+    material.depthTest = false;
+    material.depthWrite = false;
     material.opacity = opacity;
   }
 

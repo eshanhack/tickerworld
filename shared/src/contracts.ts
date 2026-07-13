@@ -97,6 +97,21 @@ export interface RoomPopulation {
   updatedAt: number;
 }
 
+/**
+ * Server-authored room timeline. Weather, rain, thunder, cloud drift, and
+ * lighting are deterministic functions of this timeline and the canonical
+ * world seed, so a room experiences one shared sky rather than a per-browser
+ * session clock.
+ */
+export interface SharedWorldEnvironment {
+  /** Seconds since this room's authoritative world timeline began. */
+  elapsedSeconds: number;
+  /** Server wall-clock timestamp when elapsedSeconds was sampled. */
+  updatedAt: number;
+  /** Kept in the protocol so clients never silently disagree on cycle length. */
+  dayDurationSeconds: number;
+}
+
 export interface ChatMessage {
   id: string;
   actorId: string;

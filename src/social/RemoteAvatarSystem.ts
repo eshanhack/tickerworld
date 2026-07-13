@@ -28,6 +28,12 @@ const BUBBLE_RENDER_ORDER = 39;
 const SPEECH_LIFETIME_MS = 5_000;
 const SAMPLE_LIMIT = 6;
 const HIDDEN_SCALE = new THREE.Vector3(0, 0, 0);
+/**
+ * Remote creatures retain their complete species read while they can actually
+ * be inspected. Beyond this range we keep only the animated silhouette. This
+ * is an LOD choice, not a separate low-quality renderer for nearby friends.
+ */
+const DEFAULT_DETAIL_DISTANCE = 34;
 
 interface AnimalProfile {
   readonly body: number;
@@ -97,6 +103,7 @@ interface RemoteSlot {
   gaitPhase: number;
   active: boolean;
   rendered: boolean;
+  detailVisible: boolean;
   lastSourceUpdate: number;
 }
 
@@ -119,6 +126,8 @@ export interface RemoteAvatarSystemOptions {
   readonly maxPlayers?: number;
   readonly interpolationDelayMs?: number;
   readonly cullDistance?: number;
+  /** Distance at which the accessory pools collapse to the animated silhouette. */
+  readonly detailDistance?: number;
   readonly localPosition?: () => Readonly<THREE.Vector3>;
   /**
    * Opts the local player into the same camera-facing, chart-aware nameplate
@@ -137,6 +146,8 @@ export interface RemoteAvatarSystemOptions {
 export interface RemoteAvatarDebugStats {
   readonly active: number;
   readonly rendered: number;
+  /** Rendered creatures currently using their complete species feature set. */
+  readonly detailed: number;
   readonly capacity: number;
   readonly drawCalls: number;
   readonly geometries: number;
@@ -234,6 +245,7 @@ export class RemoteAvatarSystem implements GameSystem {
   private readonly capacity: number;
   private readonly interpolationDelayMs: number;
   private readonly cullDistanceSquared: number;
+  private readonly detailDistanceSquared: number;
   private readonly localPosition: () => Readonly<THREE.Vector3>;
   private readonly viewport: () => RemoteAvatarViewport;
   private readonly occlusionBounds: () => readonly ScreenBounds[];
@@ -265,6 +277,20 @@ export class RemoteAvatarSystem implements GameSystem {
   private readonly legHindRight: PartPool;
   private readonly tail: PartPool;
   private readonly crest: PartPool;
+  // Detail pools are still shared InstancedMeshes. They restore eyes, muzzles,
+  // bellies, wings, gills and tail tips at conversational distance without
+  // allocating an Object3D rig (or materials) per remote player.
+  private readonly muzzle: PartPool;
+  private readonly belly: PartPool;
+  private readonly eyeLeft: PartPool;
+  private readonly eyeRight: PartPool;
+  private readonly nose: PartPool;
+  private readonly wingLeft: PartPool;
+  private readonly wingRight: PartPool;
+  private readonly accentLeft: PartPool;
+  private readonly accentRight: PartPool;
+  private readonly tailTip: PartPool;
+  private readonly detailPools: readonly PartPool[];
   private readonly allPools: readonly PartPool[];
   private readonly raycaster = new THREE.Raycaster();
   private readonly pointer = new THREE.Vector2();
@@ -288,16 +314,25 @@ export class RemoteAvatarSystem implements GameSystem {
     this.interpolationDelayMs = Math.max(0, options.interpolationDelayMs ?? REMOTE_INTERPOLATION_DELAY_MS);
     const cullDistance = Math.max(8, options.cullDistance ?? 68);
     this.cullDistanceSquared = cullDistance * cullDistance;
+    const detailDistance = Math.min(
+      cullDistance,
+      Math.max(6, options.detailDistance ?? DEFAULT_DETAIL_DISTANCE),
+    );
+    this.detailDistanceSquared = detailDistance * detailDistance;
     this.localPosition = options.localPosition ?? (() => this.camera.position);
     this.viewport = options.viewport ?? (() => ({ left: 0, top: 0, width: innerWidth, height: innerHeight }));
     this.occlusionBounds = options.occlusionBounds ?? (() => []);
     this.now = options.now ?? (() => performance.now());
     this.root.name = 'tickerworld-remote-avatars';
 
-    const sphere = new THREE.SphereGeometry(1, 7, 5);
-    const legGeometry = new THREE.CapsuleGeometry(0.5, 0.75, 2, 5);
-    const earGeometry = new THREE.ConeGeometry(0.5, 1, 5);
-    const tailGeometry = new THREE.CapsuleGeometry(0.5, 1.15, 2, 5);
+    // The old seven-by-five spheres made close friends look like placeholder
+    // blobs. These remain intentionally toy-like/flat-shaded, but have enough
+    // facets to read as the same creatures as the local character rigs.
+    const sphere = new THREE.SphereGeometry(1, 12, 8);
+    const smallSphere = new THREE.SphereGeometry(1, 8, 6);
+    const legGeometry = new THREE.CapsuleGeometry(0.5, 0.75, 4, 8);
+    const earGeometry = new THREE.ConeGeometry(0.5, 1, 7);
+    const tailGeometry = new THREE.CapsuleGeometry(0.5, 1.15, 4, 8);
     this.body = createPool(sphere, this.material, this.capacity, 'remote-body-pool');
     this.head = createPool(sphere, this.material, this.capacity, 'remote-head-pool');
     this.earLeft = createPool(earGeometry, this.material, this.capacity, 'remote-left-ear-pool');
@@ -308,10 +343,24 @@ export class RemoteAvatarSystem implements GameSystem {
     this.legHindRight = createPool(legGeometry, this.material, this.capacity, 'remote-hind-right-leg-pool');
     this.tail = createPool(tailGeometry, this.material, this.capacity, 'remote-tail-pool');
     this.crest = createPool(earGeometry, this.material, this.capacity, 'remote-crest-pool');
+    this.muzzle = createPool(sphere, this.material, this.capacity, 'remote-muzzle-pool');
+    this.belly = createPool(sphere, this.material, this.capacity, 'remote-belly-pool');
+    this.eyeLeft = createPool(smallSphere, this.material, this.capacity, 'remote-left-eye-pool');
+    this.eyeRight = createPool(smallSphere, this.material, this.capacity, 'remote-right-eye-pool');
+    this.nose = createPool(smallSphere, this.material, this.capacity, 'remote-nose-pool');
+    this.wingLeft = createPool(sphere, this.material, this.capacity, 'remote-left-wing-pool');
+    this.wingRight = createPool(sphere, this.material, this.capacity, 'remote-right-wing-pool');
+    this.accentLeft = createPool(earGeometry, this.material, this.capacity, 'remote-left-accent-pool');
+    this.accentRight = createPool(earGeometry, this.material, this.capacity, 'remote-right-accent-pool');
+    this.tailTip = createPool(smallSphere, this.material, this.capacity, 'remote-tail-tip-pool');
+    this.detailPools = [
+      this.muzzle, this.belly, this.eyeLeft, this.eyeRight, this.nose,
+      this.wingLeft, this.wingRight, this.accentLeft, this.accentRight, this.tailTip,
+    ];
     this.allPools = [
       this.body, this.head, this.earLeft, this.earRight,
       this.legFrontLeft, this.legFrontRight, this.legHindLeft, this.legHindRight,
-      this.tail, this.crest,
+      this.tail, this.crest, ...this.detailPools,
     ];
     for (const pool of this.allPools) this.root.add(pool.mesh);
 
@@ -335,6 +384,7 @@ export class RemoteAvatarSystem implements GameSystem {
         gaitPhase: 0,
         active: false,
         rendered: false,
+        detailVisible: false,
         lastSourceUpdate: Number.NEGATIVE_INFINITY,
       });
       this.hideMatrices(index);
@@ -448,6 +498,7 @@ export class RemoteAvatarSystem implements GameSystem {
       const distanceSquared = (pose.x - local.x) ** 2 + (pose.z - local.z) ** 2;
       const shouldRender = distanceSquared <= this.cullDistanceSquared;
       slot.rendered = shouldRender;
+      slot.detailVisible = shouldRender && distanceSquared <= this.detailDistanceSquared;
       slot.nameplate.visible = shouldRender && this.labelsVisible;
       slot.speech.visible = shouldRender && this.labelsVisible && slot.speechExpiresAt > now;
       if (!shouldRender) {
@@ -457,7 +508,7 @@ export class RemoteAvatarSystem implements GameSystem {
       slot.gaitPhase += Math.max(0, deltaSeconds)
         * (2.4 + Math.min(8, pose.speed) * 1.18)
         * animalMotionProfile(slot.animal).gaitScale;
-      this.writeAvatar(slot, pose, occlusions);
+      this.writeAvatar(slot, pose, occlusions, slot.detailVisible);
       if (slot.speechExpiresAt <= now && slot.speech.text) {
         slot.speech.text = '';
         this.syncText(slot.speech);
@@ -487,6 +538,7 @@ export class RemoteAvatarSystem implements GameSystem {
     return {
       active: this.slots.filter((slot) => slot.active).length,
       rendered: this.slots.filter((slot) => slot.rendered).length,
+      detailed: this.slots.filter((slot) => slot.detailVisible).length,
       capacity: this.capacity,
       drawCalls: this.allPools.length,
       geometries: new Set(this.allPools.map((pool) => pool.geometry)).size,
@@ -523,6 +575,7 @@ export class RemoteAvatarSystem implements GameSystem {
     slot.actorId = actorId;
     slot.active = true;
     slot.rendered = false;
+    slot.detailVisible = false;
     slot.lastSourceUpdate = Number.NEGATIVE_INFINITY;
     slot.gaitPhase = 0;
     slot.samples.length = 0;
@@ -537,6 +590,7 @@ export class RemoteAvatarSystem implements GameSystem {
     this.slotByActor.delete(slot.actorId);
     slot.active = false;
     slot.rendered = false;
+    slot.detailVisible = false;
     slot.actorId = '';
     slot.samples.length = 0;
     slot.nameplate.visible = false;
@@ -558,31 +612,49 @@ export class RemoteAvatarSystem implements GameSystem {
     slot.premium = appearance.premium;
     const bodyColor = new THREE.Color(appearance.palette.primary ?? profile.body);
     const creamColor = new THREE.Color(appearance.palette.secondary ?? profile.cream);
-    const tailColor = new THREE.Color(appearance.palette.highlight ?? appearance.palette.primary);
+    const darkColor = new THREE.Color(appearance.palette.dark);
+    const accentColor = new THREE.Color(appearance.palette.accent);
+    const highlightColor = new THREE.Color(appearance.palette.highlight ?? appearance.palette.primary);
+    const limbColor = slot.animal === 'penguin' || slot.animal === 'duck'
+      ? accentColor
+      : slot.animal === 'fox' || slot.animal === 'cat' || slot.animal === 'bear'
+        ? darkColor
+        : bodyColor;
+    const wingColor = slot.animal === 'penguin'
+      ? darkColor
+      : slot.animal === 'duck'
+        ? highlightColor
+        : bodyColor;
+
+    // Set every pool's colour before it can be drawn. All meshes share one
+    // material and stable instance-color buffers; this avoids the historical
+    // first-remote black shader path while keeping the material count fixed.
+    this.body.mesh.setColorAt(slot.index, bodyColor);
+    this.head.mesh.setColorAt(slot.index, slot.animal === 'saylor' ? creamColor : bodyColor);
+    this.earLeft.mesh.setColorAt(slot.index, slot.animal === 'saylor' ? darkColor : bodyColor);
+    this.earRight.mesh.setColorAt(slot.index, slot.animal === 'saylor' ? darkColor : bodyColor);
+    this.legFrontLeft.mesh.setColorAt(slot.index, slot.animal === 'saylor' ? bodyColor : limbColor);
+    this.legFrontRight.mesh.setColorAt(slot.index, slot.animal === 'saylor' ? bodyColor : limbColor);
+    this.legHindLeft.mesh.setColorAt(slot.index, slot.animal === 'saylor' ? bodyColor : limbColor);
+    this.legHindRight.mesh.setColorAt(slot.index, slot.animal === 'saylor' ? bodyColor : limbColor);
+    this.tail.mesh.setColorAt(slot.index, slot.animal === 'saylor' ? darkColor : bodyColor);
+    this.crest.mesh.setColorAt(slot.index, accentColor);
+    this.muzzle.mesh.setColorAt(slot.index, creamColor);
+    this.belly.mesh.setColorAt(slot.index, creamColor);
+    this.eyeLeft.mesh.setColorAt(slot.index, darkColor);
+    this.eyeRight.mesh.setColorAt(slot.index, darkColor);
+    this.nose.mesh.setColorAt(slot.index, darkColor);
+    this.wingLeft.mesh.setColorAt(slot.index, wingColor);
+    this.wingRight.mesh.setColorAt(slot.index, wingColor);
+    this.accentLeft.mesh.setColorAt(slot.index, accentColor);
+    this.accentRight.mesh.setColorAt(slot.index, accentColor);
+    this.tailTip.mesh.setColorAt(slot.index, highlightColor);
+
     if (slot.animal === 'saylor') {
-      const hairColor = new THREE.Color(appearance.palette.dark);
-      const accentColor = new THREE.Color(appearance.palette.accent);
-      this.body.mesh.setColorAt(slot.index, bodyColor);
-      this.head.mesh.setColorAt(slot.index, creamColor);
-      this.earLeft.mesh.setColorAt(slot.index, hairColor);
-      this.earRight.mesh.setColorAt(slot.index, hairColor);
-      this.legFrontLeft.mesh.setColorAt(slot.index, bodyColor);
-      this.legFrontRight.mesh.setColorAt(slot.index, bodyColor);
-      this.legHindLeft.mesh.setColorAt(slot.index, bodyColor);
-      this.legHindRight.mesh.setColorAt(slot.index, bodyColor);
-      this.tail.mesh.setColorAt(slot.index, hairColor);
-      this.crest.mesh.setColorAt(slot.index, accentColor);
-    } else {
-      this.body.mesh.setColorAt(slot.index, bodyColor);
-      this.head.mesh.setColorAt(slot.index, bodyColor);
-      this.earLeft.mesh.setColorAt(slot.index, bodyColor);
-      this.earRight.mesh.setColorAt(slot.index, bodyColor);
-      this.legFrontLeft.mesh.setColorAt(slot.index, creamColor);
-      this.legFrontRight.mesh.setColorAt(slot.index, creamColor);
-      this.legHindLeft.mesh.setColorAt(slot.index, creamColor);
-      this.legHindRight.mesh.setColorAt(slot.index, creamColor);
-      this.tail.mesh.setColorAt(slot.index, tailColor);
-      this.crest.mesh.setColorAt(slot.index, tailColor);
+      // Suit lapel/pin details read better with a warm face and dark trim.
+      this.belly.mesh.setColorAt(slot.index, bodyColor);
+      this.muzzle.mesh.setColorAt(slot.index, creamColor);
+      this.tailTip.mesh.setColorAt(slot.index, accentColor);
     }
     for (const pool of this.allPools) {
       if (pool.mesh.instanceColor) pool.mesh.instanceColor.needsUpdate = true;
@@ -616,7 +688,12 @@ export class RemoteAvatarSystem implements GameSystem {
     this.setTextOpacity(nameplate, this.labelOpacity(nameplate.position, 2.6, occlusions));
   }
 
-  private writeAvatar(slot: RemoteSlot, pose: RemotePose, occlusions: readonly ScreenBounds[]): void {
+  private writeAvatar(
+    slot: RemoteSlot,
+    pose: RemotePose,
+    occlusions: readonly ScreenBounds[],
+    detailed: boolean,
+  ): void {
     const profile = ANIMAL_PROFILES[slot.animal];
     this.position.set(pose.x, pose.y, pose.z);
     this.quaternion.setFromAxisAngle(THREE.Object3D.DEFAULT_UP, pose.yaw);
@@ -652,18 +729,46 @@ export class RemoteAvatarSystem implements GameSystem {
     } else {
       this.writePart(this.body.mesh, slot.index, [0, 1.02 + bob, 0], [0, 0, 0], profile.bodyScale);
       this.writePart(this.head.mesh, slot.index, [0, 1.36 + profile.height * 0.13 + bob, -0.62], [0.03, 0, 0], profile.headScale);
-      this.writePart(this.earLeft.mesh, slot.index, [-0.25, 1.74 + bob, -0.65], [0, 0, -0.08], profile.earScale);
-      this.writePart(this.earRight.mesh, slot.index, [0.25, 1.74 + bob, -0.65], [0, 0, 0.08], profile.earScale);
-      this.writePart(this.legFrontLeft.mesh, slot.index, [-0.34, 0.48 + legLift, -0.45], [swing * 0.5, 0, 0], [0.19, 0.43, 0.19]);
-      this.writePart(this.legFrontRight.mesh, slot.index, [0.34, 0.48, -0.45], [opposite * 0.5, 0, 0], [0.19, 0.43, 0.19]);
-      this.writePart(this.legHindLeft.mesh, slot.index, [-0.34, 0.48, 0.45], [opposite * 0.5, 0, 0], [0.2, 0.45, 0.2]);
-      this.writePart(this.legHindRight.mesh, slot.index, [0.34, 0.48 + legLift, 0.45], [swing * 0.5, 0, 0], [0.2, 0.45, 0.2]);
-      this.writePart(this.tail.mesh, slot.index, [0, 1.05 + bob, 0.78], [0.72, 0, 0], profile.tailScale);
-      if (slot.premium) {
-        this.writePart(this.crest.mesh, slot.index, [0, 1.96 + bob, -0.6], [0, 0, Math.PI], [0.15, 0.18, 0.15]);
+      const wingedBiped = slot.animal === 'penguin' || slot.animal === 'duck';
+      const gilled = slot.animal === 'axolotl';
+      if (wingedBiped || gilled) {
+        this.hidePart(this.earLeft.mesh, slot.index);
+        this.hidePart(this.earRight.mesh, slot.index);
+      } else {
+        this.writePart(this.earLeft.mesh, slot.index, [-0.25, 1.74 + bob, -0.65], [0, 0, -0.08], profile.earScale);
+        this.writePart(this.earRight.mesh, slot.index, [0.25, 1.74 + bob, -0.65], [0, 0, 0.08], profile.earScale);
+      }
+      if (wingedBiped) {
+        // Birds use their visible feet instead of an accidental four-legged
+        // fox silhouette. Their animated wings are restored by detail pools.
+        this.hidePart(this.legFrontLeft.mesh, slot.index);
+        this.hidePart(this.legFrontRight.mesh, slot.index);
+        this.writePart(this.legHindLeft.mesh, slot.index, [-0.22, 0.31 + legLift * 0.55, -0.02], [opposite * 0.26, 0, 0], [0.15, 0.29, 0.19]);
+        this.writePart(this.legHindRight.mesh, slot.index, [0.22, 0.31, -0.02], [swing * 0.26, 0, 0], [0.15, 0.29, 0.19]);
+      } else {
+        this.writePart(this.legFrontLeft.mesh, slot.index, [-0.34, 0.48 + legLift, -0.45], [swing * 0.5, 0, 0], [0.19, 0.43, 0.19]);
+        this.writePart(this.legFrontRight.mesh, slot.index, [0.34, 0.48, -0.45], [opposite * 0.5, 0, 0], [0.19, 0.43, 0.19]);
+        this.writePart(this.legHindLeft.mesh, slot.index, [-0.34, 0.48, 0.45], [opposite * 0.5, 0, 0], [0.2, 0.45, 0.2]);
+        this.writePart(this.legHindRight.mesh, slot.index, [0.34, 0.48 + legLift, 0.45], [swing * 0.5, 0, 0], [0.2, 0.45, 0.2]);
+      }
+      if (slot.animal === 'frog') {
+        this.hidePart(this.tail.mesh, slot.index);
+      } else {
+        this.writePart(this.tail.mesh, slot.index, [0, 1.05 + bob, 0.78], [0.72, 0, 0], profile.tailScale);
+      }
+      if (slot.animal === 'penguin') {
+        this.writePart(this.crest.mesh, slot.index, [0, 1.54 + bob, -1.06], [Math.PI * 0.5, 0, 0], [0.15, 0.23, 0.17]);
+      } else if (slot.animal === 'duck') {
+        this.writePart(this.crest.mesh, slot.index, [0, 1.44 + bob, -1.06], [Math.PI * 0.5, 0, 0], [0.25, 0.28, 0.22]);
       } else {
         this.hidePart(this.crest.mesh, slot.index);
       }
+    }
+
+    if (detailed) {
+      this.writeDetailFeatures(slot, bob, swing, movement);
+    } else {
+      this.hideDetailParts(slot.index);
     }
 
     const labelY = pose.y
@@ -676,6 +781,98 @@ export class RemoteAvatarSystem implements GameSystem {
     const opacity = this.labelOpacity(slot.nameplate.position, slot.speech.visible ? 3.2 : 2.6, occlusions);
     this.setTextOpacity(slot.nameplate, opacity);
     this.setTextOpacity(slot.speech, opacity);
+  }
+
+  /**
+   * The detail pool is deliberately feature-oriented rather than avatar-
+   * oriented: all fifty slots share these geometries/materials. This lets a
+   * nearby penguin read as a penguin and a nearby axolotl read as an axolotl,
+   * without the old "all animals are a fox-shaped proxy" failure mode.
+   */
+  private writeDetailFeatures(
+    slot: RemoteSlot,
+    bob: number,
+    swing: number,
+    movement: number,
+  ): void {
+    const index = slot.index;
+    const wingSwing = swing * (0.16 + movement * 0.48);
+    this.hideDetailParts(index);
+    switch (slot.animal) {
+      case 'fox':
+        this.writePart(this.belly.mesh, index, [0, 1.0 + bob, -0.5], [0, 0, 0], [0.34, 0.34, 0.11]);
+        this.writePart(this.muzzle.mesh, index, [0, 1.53 + bob, -1.05], [0, 0, 0], [0.26, 0.14, 0.28]);
+        this.writePart(this.eyeLeft.mesh, index, [-0.18, 1.69 + bob, -1.02], [0, 0, 0], [0.058, 0.07, 0.034]);
+        this.writePart(this.eyeRight.mesh, index, [0.18, 1.69 + bob, -1.02], [0, 0, 0], [0.058, 0.07, 0.034]);
+        this.writePart(this.nose.mesh, index, [0, 1.5 + bob, -1.31], [0, 0, 0], [0.082, 0.06, 0.072]);
+        this.writePart(this.tailTip.mesh, index, [0, 1.1 + bob, 1.67], [0.72, 0, 0], [0.16, 0.13, 0.23]);
+        break;
+      case 'penguin':
+        this.writePart(this.belly.mesh, index, [0, 0.98 + bob, -0.52], [0, 0, 0], [0.37, 0.58, 0.085]);
+        this.writePart(this.eyeLeft.mesh, index, [-0.16, 1.67 + bob, -1.0], [0, 0, 0], [0.055, 0.065, 0.03]);
+        this.writePart(this.eyeRight.mesh, index, [0.16, 1.67 + bob, -1.0], [0, 0, 0], [0.055, 0.065, 0.03]);
+        this.writePart(this.wingLeft.mesh, index, [-0.59, 1.08 + bob, 0], [0, 0, -0.24 - wingSwing], [0.11, 0.43, 0.24]);
+        this.writePart(this.wingRight.mesh, index, [0.59, 1.08 + bob, 0], [0, 0, 0.24 + wingSwing], [0.11, 0.43, 0.24]);
+        break;
+      case 'frog':
+        this.writePart(this.belly.mesh, index, [0, 1.0 + bob, -0.57], [0, 0, 0], [0.42, 0.17, 0.22]);
+        this.writePart(this.eyeLeft.mesh, index, [-0.3, 1.8 + bob, -0.97], [0, 0, 0], [0.13, 0.14, 0.075]);
+        this.writePart(this.eyeRight.mesh, index, [0.3, 1.8 + bob, -0.97], [0, 0, 0], [0.13, 0.14, 0.075]);
+        this.writePart(this.accentLeft.mesh, index, [-0.48, 1.06 + bob, -0.18], [0, 0, Math.PI * 0.48], [0.055, 0.19, 0.055]);
+        this.writePart(this.accentRight.mesh, index, [0.48, 1.06 + bob, -0.18], [0, 0, -Math.PI * 0.48], [0.055, 0.19, 0.055]);
+        break;
+      case 'duck':
+        this.writePart(this.belly.mesh, index, [0, 0.99 + bob, -0.51], [0, 0, 0], [0.33, 0.39, 0.08]);
+        this.writePart(this.eyeLeft.mesh, index, [-0.15, 1.58 + bob, -0.98], [0, 0, 0], [0.052, 0.062, 0.03]);
+        this.writePart(this.eyeRight.mesh, index, [0.15, 1.58 + bob, -0.98], [0, 0, 0], [0.052, 0.062, 0.03]);
+        this.writePart(this.wingLeft.mesh, index, [-0.62, 1.0 + bob, 0.06], [0, 0, -0.2 - wingSwing], [0.12, 0.31, 0.4]);
+        this.writePart(this.wingRight.mesh, index, [0.62, 1.0 + bob, 0.06], [0, 0, 0.2 + wingSwing], [0.12, 0.31, 0.4]);
+        break;
+      case 'bear':
+        this.writePart(this.belly.mesh, index, [0, 0.94 + bob, -0.57], [0, 0, 0], [0.39, 0.43, 0.12]);
+        this.writePart(this.muzzle.mesh, index, [0, 1.56 + bob, -1.14], [0, 0, 0], [0.28, 0.19, 0.22]);
+        this.writePart(this.eyeLeft.mesh, index, [-0.2, 1.76 + bob, -1.03], [0, 0, 0], [0.055, 0.065, 0.03]);
+        this.writePart(this.eyeRight.mesh, index, [0.2, 1.76 + bob, -1.03], [0, 0, 0], [0.055, 0.065, 0.03]);
+        this.writePart(this.nose.mesh, index, [0, 1.59 + bob, -1.35], [0, 0, 0], [0.09, 0.065, 0.07]);
+        this.writePart(this.tailTip.mesh, index, [0, 1.06 + bob, 1.02], [0, 0, 0], [0.15, 0.15, 0.15]);
+        break;
+      case 'rabbit':
+        this.writePart(this.muzzle.mesh, index, [0, 1.53 + bob, -1.03], [0, 0, 0], [0.23, 0.14, 0.19]);
+        this.writePart(this.eyeLeft.mesh, index, [-0.18, 1.72 + bob, -0.99], [0, 0, 0], [0.055, 0.07, 0.03]);
+        this.writePart(this.eyeRight.mesh, index, [0.18, 1.72 + bob, -0.99], [0, 0, 0], [0.055, 0.07, 0.03]);
+        this.writePart(this.nose.mesh, index, [0, 1.55 + bob, -1.22], [0, 0, 0], [0.055, 0.045, 0.05]);
+        this.writePart(this.tailTip.mesh, index, [0, 1.08 + bob, 1.09], [0, 0, 0], [0.22, 0.22, 0.22]);
+        break;
+      case 'cat':
+        this.writePart(this.belly.mesh, index, [0, 1.0 + bob, -0.54], [0, 0, 0], [0.26, 0.31, 0.1]);
+        this.writePart(this.muzzle.mesh, index, [0, 1.51 + bob, -1.08], [0, 0, 0], [0.23, 0.13, 0.17]);
+        this.writePart(this.eyeLeft.mesh, index, [-0.17, 1.7 + bob, -1.03], [0, 0, 0], [0.057, 0.067, 0.03]);
+        this.writePart(this.eyeRight.mesh, index, [0.17, 1.7 + bob, -1.03], [0, 0, 0], [0.057, 0.067, 0.03]);
+        this.writePart(this.nose.mesh, index, [0, 1.53 + bob, -1.25], [0, 0, 0], [0.06, 0.045, 0.05]);
+        this.writePart(this.accentLeft.mesh, index, [-0.34, 1.52 + bob, -1.1], [0, 0, Math.PI * 0.5], [0.018, 0.23, 0.018]);
+        this.writePart(this.accentRight.mesh, index, [0.34, 1.52 + bob, -1.1], [0, 0, -Math.PI * 0.5], [0.018, 0.23, 0.018]);
+        break;
+      case 'axolotl':
+        this.writePart(this.belly.mesh, index, [0, 0.98 + bob, -0.49], [0, 0, 0], [0.31, 0.13, 0.4]);
+        this.writePart(this.eyeLeft.mesh, index, [-0.24, 1.55 + bob, -1.08], [0, 0, 0], [0.07, 0.085, 0.04]);
+        this.writePart(this.eyeRight.mesh, index, [0.24, 1.55 + bob, -1.08], [0, 0, 0], [0.07, 0.085, 0.04]);
+        this.writePart(this.accentLeft.mesh, index, [-0.62, 1.5 + bob, -0.73], [0, 0, Math.PI * 0.48], [0.055, 0.29, 0.055]);
+        this.writePart(this.accentRight.mesh, index, [0.62, 1.5 + bob, -0.73], [0, 0, -Math.PI * 0.48], [0.055, 0.29, 0.055]);
+        this.writePart(this.tailTip.mesh, index, [0, 1.04 + bob, 1.42], [0.14, 0, 0], [0.1, 0.31, 0.55]);
+        break;
+      case 'saylor': {
+        const humanBob = bob * 0.42;
+        this.writePart(this.belly.mesh, index, [0, 1.25 + humanBob, -0.31], [0, 0, 0], [0.19, 0.34, 0.035]);
+        this.writePart(this.muzzle.mesh, index, [0, 1.94 + humanBob, -0.31], [0, 0, 0], [0.075, 0.07, 0.055]);
+        this.writePart(this.eyeLeft.mesh, index, [-0.11, 2.01 + humanBob, -0.32], [0, 0, 0], [0.035, 0.046, 0.017]);
+        this.writePart(this.eyeRight.mesh, index, [0.11, 2.01 + humanBob, -0.32], [0, 0, 0], [0.035, 0.046, 0.017]);
+        break;
+      }
+    }
+  }
+
+  private hideDetailParts(index: number): void {
+    for (const pool of this.detailPools) this.hidePart(pool.mesh, index);
   }
 
   private writePart(

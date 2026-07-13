@@ -10,7 +10,7 @@ import {
 } from 'three';
 import { Text } from 'troika-three-text';
 import { describe, expect, it } from 'vitest';
-import type { NetPlayerState } from '../shared/src/index.js';
+import { ANIMAL_KINDS, type NetPlayerState } from '../shared/src/index.js';
 import {
   RemoteAvatarSystem,
   clipSpeech,
@@ -110,7 +110,10 @@ describe('pooled remote avatar renderer', () => {
     });
 
     const pools = system.root.children.filter((child): child is InstancedMesh => child instanceof InstancedMesh);
-    expect(pools).toHaveLength(10);
+    // Ten animated silhouette pools plus ten feature pools stay shared across
+    // the whole room. Nearby creatures get readable species detail without a
+    // per-player FoxPlayer allocation.
+    expect(pools).toHaveLength(20);
     expect(pools.every((pool) => pool.instanceColor !== null)).toBe(true);
     expect(pools.every((pool) => pool.material instanceof MeshStandardMaterial
       && pool.material.vertexColors === false)).toBe(true);
@@ -121,9 +124,10 @@ describe('pooled remote avatar renderer', () => {
     expect(system.getDebugStats()).toMatchObject({
       active: 2,
       rendered: 2,
+      detailed: 2,
       capacity: 2,
-      drawCalls: 10,
-      geometries: 4,
+      drawCalls: 20,
+      geometries: 5,
       materials: 1,
       labels: 4,
     });
@@ -144,6 +148,122 @@ describe('pooled remote avatar renderer', () => {
     expect(system.getDebugStats().active).toBe(1);
     system.dispose();
     expect(parent.children).toHaveLength(0);
+  });
+
+  it('uses complete, initialized species features nearby and only collapses them at distance', () => {
+    const parent = new Group();
+    const camera = new PerspectiveCamera(52, 1, 0.1, 100);
+    camera.position.set(0, 3, 8);
+    camera.lookAt(0, 1, 0);
+    camera.updateMatrixWorld(true);
+    let now = 500;
+    const system = new RemoteAvatarSystem({
+      parent,
+      camera,
+      maxPlayers: 1,
+      detailDistance: 12,
+      cullDistance: 42,
+      now: () => now,
+      localPosition: () => new Vector3(),
+      viewport: () => ({ left: 0, top: 0, width: 800, height: 600 }),
+    });
+
+    system.setPlayers([remote('near-penguin', 8, 1, 'base', 'penguin')], now);
+    now += 200;
+    system.update(1 / 60);
+    expect(system.getDebugStats()).toMatchObject({ rendered: 1, detailed: 1, drawCalls: 20, materials: 1 });
+
+    const belly = pool(system, 'remote-belly-pool');
+    const wingLeft = pool(system, 'remote-left-wing-pool');
+    const frontLeg = pool(system, 'remote-front-left-leg-pool');
+    const bellyColor = new Color();
+    belly.getColorAt(0, bellyColor);
+    expect(bellyColor.getHex()).toBe(0xfff1cf);
+    expect(Math.abs(instanceTransform(belly).scale.x * instanceTransform(belly).scale.y * instanceTransform(belly).scale.z)).toBeGreaterThan(0);
+    expect(Math.abs(instanceTransform(wingLeft).scale.x * instanceTransform(wingLeft).scale.y * instanceTransform(wingLeft).scale.z)).toBeGreaterThan(0);
+    // A penguin is a biped even in the inexpensive far silhouette.
+    expect(Math.abs(instanceTransform(frontLeg).scale.x * instanceTransform(frontLeg).scale.y * instanceTransform(frontLeg).scale.z)).toBe(0);
+
+    system.setPlayers([remote('near-penguin', 28, 2, 'base', 'penguin')], now);
+    now += 200;
+    system.update(1 / 60);
+    expect(system.getDebugStats()).toMatchObject({ rendered: 1, detailed: 0 });
+    expect(Math.abs(instanceTransform(belly).scale.x * instanceTransform(belly).scale.y * instanceTransform(belly).scale.z)).toBe(0);
+    const body = pool(system, 'remote-body-pool');
+    expect(Math.abs(instanceTransform(body).scale.x * instanceTransform(body).scale.y * instanceTransform(body).scale.z)).toBeGreaterThan(0);
+
+    system.dispose();
+  });
+
+  it('gives nearby species their own feature silhouettes instead of recolored fox proxies', () => {
+    const parent = new Group();
+    const camera = new PerspectiveCamera(52, 1, 0.1, 100);
+    camera.position.set(0, 3, 8);
+    camera.lookAt(0, 1, 0);
+    camera.updateMatrixWorld(true);
+    let now = 500;
+    const system = new RemoteAvatarSystem({
+      parent,
+      camera,
+      maxPlayers: 2,
+      now: () => now,
+      localPosition: () => new Vector3(),
+      viewport: () => ({ left: 0, top: 0, width: 800, height: 600 }),
+    });
+
+    system.setPlayers([
+      remote('near-fox', 4, 1, 'base', 'fox'),
+      remote('near-axolotl', 9, 1, 'base', 'axolotl'),
+    ], now);
+    now += 200;
+    system.update(1 / 60);
+
+    const foxMuzzle = instanceTransform(pool(system, 'remote-muzzle-pool'), 0);
+    const axolotlGill = instanceTransform(pool(system, 'remote-left-accent-pool'), 1);
+    const axolotlEar = instanceTransform(pool(system, 'remote-left-ear-pool'), 1);
+    expect(Math.abs(foxMuzzle.scale.x * foxMuzzle.scale.y * foxMuzzle.scale.z)).toBeGreaterThan(0);
+    expect(Math.abs(axolotlGill.scale.x * axolotlGill.scale.y * axolotlGill.scale.z)).toBeGreaterThan(0);
+    expect(Math.abs(axolotlEar.scale.x * axolotlEar.scale.y * axolotlEar.scale.z)).toBe(0);
+    expect(system.getDebugStats()).toMatchObject({ active: 2, detailed: 2, drawCalls: 20, materials: 1 });
+
+    system.dispose();
+  });
+
+  it('keeps every supported animal finite and full-detail at conversation range', () => {
+    const parent = new Group();
+    const camera = new PerspectiveCamera(52, 1, 0.1, 100);
+    camera.position.set(0, 3, 8);
+    camera.lookAt(0, 1, 0);
+    camera.updateMatrixWorld(true);
+    let now = 500;
+    const system = new RemoteAvatarSystem({
+      parent,
+      camera,
+      maxPlayers: ANIMAL_KINDS.length,
+      now: () => now,
+      localPosition: () => new Vector3(),
+      viewport: () => ({ left: 0, top: 0, width: 800, height: 600 }),
+    });
+    system.setPlayers(ANIMAL_KINDS.map((animal, index) => (
+      remote(`animal-${animal}`, 2 + index * 2, 1, 'base', animal)
+    )), now);
+    now += 200;
+    system.update(1 / 60);
+    expect(system.getDebugStats()).toMatchObject({
+      active: ANIMAL_KINDS.length,
+      rendered: ANIMAL_KINDS.length,
+      detailed: ANIMAL_KINDS.length,
+      drawCalls: 20,
+      materials: 1,
+    });
+    const body = pool(system, 'remote-body-pool');
+    for (let index = 0; index < ANIMAL_KINDS.length; index += 1) {
+      const { position, scale } = instanceTransform(body, index);
+      expect(position.toArray().every(Number.isFinite)).toBe(true);
+      expect(scale.toArray().every(Number.isFinite)).toBe(true);
+      expect(Math.abs(scale.x * scale.y * scale.z)).toBeGreaterThan(0);
+    }
+    system.dispose();
   });
 
   it('renders a saved local username immediately and keeps it attached to the player', () => {
@@ -194,7 +314,7 @@ describe('pooled remote avatar renderer', () => {
     expect(parent.children).toHaveLength(0);
   });
 
-  it('renders remote Saylor as an upright suited biped within the fixed ten pools', () => {
+  it('renders remote Saylor as an upright suited biped within the shared pool budget', () => {
     const parent = new Group();
     const camera = new PerspectiveCamera(52, 1, 0.1, 100);
     camera.position.set(0, 3, 8);
@@ -217,8 +337,9 @@ describe('pooled remote avatar renderer', () => {
     expect(system.getDebugStats()).toMatchObject({
       active: 1,
       rendered: 1,
-      drawCalls: 10,
-      geometries: 4,
+      detailed: 1,
+      drawCalls: 20,
+      geometries: 5,
       materials: 1,
     });
     const body = pool(system, 'remote-body-pool');

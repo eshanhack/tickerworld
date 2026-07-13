@@ -1163,17 +1163,18 @@ export class Game {
     }
     if (this.entered && this.player.isGliding) this.hud.recordOnboardingAction('glide');
     this.roomClient.update(delta);
-    this.world.update(this.player.position, this.worldElapsed);
-    this.dexDistrict.update(delta, this.worldElapsed, {
+    const worldTimelineElapsed = this.roomClient.getWorldElapsedSeconds(this.worldElapsed);
+    this.world.update(this.player.position, worldTimelineElapsed);
+    this.dexDistrict.update(delta, worldTimelineElapsed, {
       nightFactor: this.world.nightFactor,
       rainIntensity: this.world.rainLevel,
       playerPosition: this.player.position,
     });
-    this.desertDistrict.update(delta, this.worldElapsed, {
+    this.desertDistrict.update(delta, worldTimelineElapsed, {
       nightFactor: this.world.nightFactor,
       playerPosition: this.player.position,
     });
-    this.oilEffects.update(delta, this.worldElapsed, this.player.position);
+    this.oilEffects.update(delta, worldTimelineElapsed, this.player.position);
     this.audio.setRainIntensity(this.world.rainLevel);
     this.portalSystem.setPlayerProbe({
       x: this.player.position.x,
@@ -1668,6 +1669,7 @@ export class Game {
       const playerState = this.player.snapshot;
       const oil = this.oilEffects.getDebugStats();
       const parkour = this.parkour.getDebugStats();
+      const holograms = this.monuments.bigOrderHolograms.getDebugStats();
       this.updateTradeDebugPanel();
       this.hud.setDebug([
         `fps ${this.fps.toFixed(1)} · ${this.qualityTier} · dpr ${this.pixelRatio.toFixed(2)}`,
@@ -1676,7 +1678,7 @@ export class Game {
         `props ${world.propInstances} · portals ${this.portalSystem.getDebugStats().portals}`,
         `market ${this.activeMarket} ${activeMarketState.mode} · tick ${activeMarketState.presentationTick} · candles ${activeMarketState.candles.length} · ${this.market.getDebugStatus()}`,
         `room ${this.roomClient.state.connection} · remotes ${this.roomClient.state.remotes.length}${this.roomClient.state.lastError ? ` · ${this.roomClient.state.lastError.slice(0, 72)}` : ''}`,
-        `news ${this.newsMode} · posts ${this.activeNewsCount} · fireworks ${this.fireworks.getDebugStats().activeParticles}`,
+        `news ${this.newsMode} · posts ${this.activeNewsCount} · fireworks ${this.fireworks.getDebugStats().activeParticles} · holograms ${holograms.visible}/${holograms.capacity}`,
         `weather rain ${world.rainIntensity.toFixed(2)} · oil jets ${oil.jets} · blasts ${oil.blasts}`,
         `parkour ${parkour.active ? `${parkour.elapsedSeconds.toFixed(1)}s` : 'idle'} · checkpoint ${parkour.checkpointId}`,
         `audio ${audioState.status} · music ${Math.round(audioState.musicVolume * 100)}${audioState.musicMuted ? 'x' : ''} · fx ${Math.round(audioState.sfxVolume * 100)}${audioState.sfxMuted ? 'x' : ''}`,

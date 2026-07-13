@@ -16,6 +16,8 @@ export {
   createIdentityRefreshMessage,
   classifyIdentityTransition,
   parseRoomPopulations,
+  parseSharedWorldEnvironment,
+  projectSharedWorldElapsed,
   RoomClientSystem,
   type AccountRoomSession,
   type IdentityTransitionMode,

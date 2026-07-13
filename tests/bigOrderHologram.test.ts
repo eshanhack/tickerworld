@@ -9,6 +9,7 @@ import {
   type BigOrderHologramEvent,
 } from '../src/monuments';
 import { ThirdPersonCamera } from '../src/player';
+import { MARKET_TRADE_CONFIG } from '../src/trades';
 
 const anchor: BigOrderHologramAnchorProvider = {
   getBigOrderHologramAnchor(slot, target = new THREE.Vector3()) {
@@ -149,8 +150,10 @@ describe('BigOrderHologramSystem', () => {
     const geometryDispose = vi.spyOn(dissolve.geometry, 'dispose');
     const materialDispose = vi.spyOn(dissolve.material as THREE.Material, 'dispose');
     system.show(order('buy', 'big', 150_000), anchor);
-    system.update(0.1, 4);
-    system.update(0.02, 4.02);
+    const config = MARKET_TRADE_CONFIG.BTC.hologram;
+    const expiresAt = config.materializeSeconds + config.holdSeconds + config.dissolveSeconds;
+    system.update(0.1, expiresAt + 0.04);
+    system.update(0.02, expiresAt + 0.06);
     expect(system.getDebugStats().visible).toBe(0);
     expect(system.getDebugStats().activeDissolveParticles).toBeGreaterThan(0);
     expect(system.getDebugStats().activeDissolveParticles).toBeLessThanOrEqual(48);
@@ -160,7 +163,40 @@ describe('BigOrderHologramSystem', () => {
     expect(materialDispose).toHaveBeenCalledOnce();
   });
 
-  it('provides three chart-safe presentation-aware monument anchors', () => {
+  it('keeps qualifying aggregate projections prominent above the chart overlay', () => {
+    const parent = new THREE.Group();
+    const system = new BigOrderHologramSystem({
+      parent,
+      camera: new THREE.PerspectiveCamera(),
+    });
+    const config = MARKET_TRADE_CONFIG.BTC.hologram;
+    system.show(order('sell', 'whale', 1_800_000), anchor);
+    system.update(0.3, 0.3);
+
+    const backplate = parent.getObjectByName('big-order-backplate-1') as THREE.Mesh<
+      THREE.BoxGeometry,
+      THREE.MeshBasicMaterial
+    >;
+    const title = parent.getObjectByName('big-order-title-1') as THREE.Object3D & {
+      material: THREE.Material;
+    };
+    expect(backplate.visible).toBe(true);
+    // Monument chart UI deliberately draws at 40+, so the hologram must sit
+    // over it even when a camera-facing chart overlaps in screen space.
+    expect(backplate.renderOrder).toBeGreaterThan(40);
+    expect(backplate.material.depthTest).toBe(false);
+    expect(backplate.material.depthWrite).toBe(false);
+    expect(backplate.material.opacity).toBeGreaterThan(0.2);
+    expect(title.renderOrder).toBeGreaterThan(backplate.renderOrder);
+
+    system.update(0.1, config.materializeSeconds + config.holdSeconds - 0.05);
+    expect(system.getDebugStats().visible).toBe(1);
+    system.update(0.1, config.materializeSeconds + config.holdSeconds + config.dissolveSeconds + 0.05);
+    expect(system.getDebugStats().visible).toBe(0);
+    system.dispose();
+  });
+
+  it('provides a primary chart-front anchor plus two clear shoulder anchors', () => {
     const parent = new THREE.Group();
     const monument = new Monument({ symbol: 'BTC', position: { x: 4, y: 1, z: -3 } }).mount(parent);
     const points = [0, 1, 2].map((slot) => monument.getBigOrderHologramAnchor(slot));
@@ -168,8 +204,12 @@ describe('BigOrderHologramSystem', () => {
       Number.isFinite(point.x) && Number.isFinite(point.y) && Number.isFinite(point.z)
     ))).toBe(true);
     expect(new Set(points.map((point) => point.toArray().join(','))).size).toBe(3);
-    // Lateral placement leaves the existing 14.4-wide candle lane untouched.
-    expect(points.every((point) => Math.abs(point.x - 4) > 7.2)).toBe(true);
+    // The default primary callout is intentionally centred in front of the
+    // chart's upper lane; concurrent overflow remains outside the 14.4-wide
+    // candle lane on opposite shoulders.
+    expect(points[0]!.x).toBeCloseTo(4);
+    expect(Math.abs(points[1]!.x - 4)).toBeGreaterThan(7.2);
+    expect(Math.abs(points[2]!.x - 4)).toBeGreaterThan(7.2);
     monument.dispose();
   });
 
@@ -223,10 +263,17 @@ describe('BigOrderHologramSystem', () => {
         expect(projected.z).toBeLessThan(1);
         const screenX = (projected.x * 0.5 + 0.5) * 1280;
         const screenY = (-projected.y * 0.5 + 0.5) * 720;
-        // Keep a gutter for the full text glyphs, not just the anchor centre.
-        expect(
-          screenX < chartBounds!.left - 48 || screenX > chartBounds!.right + 48,
-        ).toBe(true);
+        if (slot === 0) {
+          // The first alert is deliberately front-and-centre for the default
+          // spawn camera, not relegated to a peripheral shoulder.
+          expect(screenX).toBeGreaterThan(chartBounds!.left + 72);
+          expect(screenX).toBeLessThan(chartBounds!.right - 72);
+        } else {
+          // Overflow retains a full text gutter around the candle lane.
+          expect(
+            screenX < chartBounds!.left - 48 || screenX > chartBounds!.right + 48,
+          ).toBe(true);
+        }
         expect(screenY).toBeGreaterThanOrEqual(0);
         expect(screenY).toBeLessThanOrEqual(720);
       }

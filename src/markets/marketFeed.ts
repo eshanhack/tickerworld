@@ -344,6 +344,8 @@ export class HyperliquidMarketFeed implements MarketFeed {
   private disposed = false;
   private started = false;
   private dexPollPending = false;
+  /** A room-relay handoff can happen while the shared DEX quote fetch is in flight. */
+  private dexQuoteRefreshQueued = false;
   private dexTradePollPending = false;
   private lastDexPollAt = Number.NEGATIVE_INFINITY;
   private readonly lastDexQuoteTimes = new Map<AssetSymbol, number>();
@@ -432,6 +434,10 @@ export class HyperliquidMarketFeed implements MarketFeed {
     this.lastPresented.delete(symbol);
     this.lastTradeTime.set(symbol, 0);
     if (FORCE_SIMULATION || !this.started || this.paused) return;
+    // The DEX portal quotes are global, not part of the active chart's socket
+    // generation. Refresh them immediately on a route switch so a late
+    // pre-switch request cannot leave a newly visible portal at CONNECTING.
+    if (this.directFallbackAllowed) this.requestDexQuoteRefresh();
     if (symbol === 'TEST' || isDexAssetSymbol(symbol)) this.relayActive = false;
     if (this.relayActive) {
       this.setAllModes('reconnecting');
@@ -485,6 +491,12 @@ export class HyperliquidMarketFeed implements MarketFeed {
       this.pendingTrades.clear();
       this.closeSocket(1_000, 'Tickerworld room relay active');
       this.setAllModes('reconnecting');
+      // The room relay owns CEX/xyz mids, while DEX field portals deliberately
+      // remain on their same-origin quote path. Start a fresh DEX pass after
+      // advancing the active chart generation.
+      if (this.started && !this.paused && this.directFallbackAllowed) {
+        this.requestDexQuoteRefresh();
+      }
       return;
     }
     const wasRelayed = this.relayActive;
@@ -886,14 +898,24 @@ export class HyperliquidMarketFeed implements MarketFeed {
    * socket. One same-origin, CDN-coalesced poll updates all three field portals;
    * only the active DEX chart receives presentation pulses.
    */
-  private async pollDexMarkets(): Promise<void> {
+  private requestDexQuoteRefresh(): void {
+    if (FORCE_SIMULATION || this.paused || this.disposed || !this.directFallbackAllowed) return;
+    this.lastDexPollAt = Number.NEGATIVE_INFINITY;
+    if (this.dexPollPending) {
+      this.dexQuoteRefreshQueued = true;
+      return;
+    }
+    void this.pollDexMarkets(true);
+  }
+
+  private async pollDexMarkets(force = false): Promise<void> {
     if (FORCE_SIMULATION || this.paused || this.disposed || this.dexPollPending
       || !this.directFallbackAllowed) return;
     const requestedAt = Date.now();
     const minimumInterval = isDexAssetSymbol(this.activeSymbol)
       ? DEX_POLL_INTERVAL_MS
       : DEX_PASSIVE_POLL_INTERVAL_MS;
-    if (requestedAt - this.lastDexPollAt < minimumInterval) return;
+    if (!force && requestedAt - this.lastDexPollAt < minimumInterval) return;
     this.lastDexPollAt = requestedAt;
     this.dexPollPending = true;
     const generation = this.syncGeneration;
@@ -909,13 +931,17 @@ export class HyperliquidMarketFeed implements MarketFeed {
       if (!response.ok) throw new Error(`DEX quotes returned ${response.status}`);
       const parsed = parseDexQuotesResponse(await response.json());
       if (!parsed) throw new Error('DEX quotes returned an invalid payload');
-      if (generation !== this.syncGeneration || this.paused || this.disposed
-        || !this.directFallbackAllowed) return;
+      if (this.paused || this.disposed || !this.directFallbackAllowed) return;
+      // A change to the active CEX chart (for example when the room relay
+      // becomes available) intentionally invalidates chart snapshots. It must
+      // not invalidate the independent global DEX quotes used by portals.
+      const canApplyActiveChart = generation === this.syncGeneration;
       const mids: CompactMarketMid[] = [];
       const receivedSymbols = new Set<AssetSymbol>();
       for (const quote of parsed.markets) {
         receivedSymbols.add(quote.symbol);
         if (quote.symbol === this.activeSymbol) {
+          if (!canApplyActiveChart) continue;
           const state = this.getState(quote.symbol);
           // Keep the truthful empty/connecting state until history succeeds.
           const lastQuoteTime = this.lastDexQuoteTimes.get(quote.symbol) ?? Number.NEGATIVE_INFINITY;
@@ -978,13 +1004,15 @@ export class HyperliquidMarketFeed implements MarketFeed {
         }
       }
       this.applyCompactMids(mids, parsed.checkedAt);
-      for (const symbol of DEX_ASSET_SYMBOLS) {
-        if (receivedSymbols.has(symbol)) continue;
-        const missing = this.getState(symbol);
-        if (missing.mode === 'reconnecting') continue;
-        const reconnecting: AssetState = { ...missing, mode: 'reconnecting', updateKind: 'snapshot' };
-        this.states.set(symbol, reconnecting);
-        this.emit(reconnecting);
+      if (canApplyActiveChart) {
+        for (const symbol of DEX_ASSET_SYMBOLS) {
+          if (receivedSymbols.has(symbol)) continue;
+          const missing = this.getState(symbol);
+          if (missing.mode === 'reconnecting') continue;
+          const reconnecting: AssetState = { ...missing, mode: 'reconnecting', updateKind: 'snapshot' };
+          this.states.set(symbol, reconnecting);
+          this.emit(reconnecting);
+        }
       }
     } catch {
       if (generation === this.syncGeneration && !this.paused && !this.disposed
@@ -993,6 +1021,12 @@ export class HyperliquidMarketFeed implements MarketFeed {
       window.clearTimeout(timeout);
       if (this.dexPollController === controller) this.dexPollController = undefined;
       this.dexPollPending = false;
+      if (this.dexQuoteRefreshQueued) {
+        this.dexQuoteRefreshQueued = false;
+        if (!this.paused && !this.disposed && this.directFallbackAllowed) {
+          void this.pollDexMarkets(true);
+        }
+      }
     }
   }
 

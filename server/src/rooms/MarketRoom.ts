@@ -6,6 +6,9 @@ import {
   PROTOCOL_VERSION,
   SERVER_MESSAGES,
   STATE_PATCH_RATE_MS,
+  WORLD_DAY_DURATION_SECONDS,
+  WORLD_ENVIRONMENT_EPOCH_MS,
+  WORLD_ENVIRONMENT_SYNC_MS,
   allocateSpawnAssignment,
   createPortalRoutes,
   resolveWorldXZ,
@@ -187,6 +190,8 @@ export class MarketRoom extends Room<{ state: MarketRoomState; client: MarketCli
   private readonly chatHistory: ChatMessage[] = [];
   private readonly occupiedSpawnSlots = new Set<number>();
   private stopMarketRelay: (() => void) | null = null;
+  /** Global epoch shared by every room, shard, and server process. */
+  private readonly worldTimelineEpochMs = WORLD_ENVIRONMENT_EPOCH_MS;
 
   override messages = {
     [CLIENT_MESSAGES.move]: validate(moveSchema, (client, message) => {
@@ -262,6 +267,12 @@ export class MarketRoom extends Room<{ state: MarketRoomState; client: MarketCli
     this.market = options.market;
     this.state.market = options.market;
     this.state.protocolVersion = PROTOCOL_VERSION;
+    this.state.environment.dayDurationSeconds = WORLD_DAY_DURATION_SECONDS;
+    this.syncWorldEnvironment();
+    // State patches are already sent at 10Hz. Sampling the server clock twice
+    // a second is precise enough for visual sync while avoiding needless
+    // schema churn between all players in a 50-seat room.
+    this.clock.setInterval(() => this.syncWorldEnvironment(), WORLD_ENVIRONMENT_SYNC_MS);
     this.maxMessagesPerSecond = 30;
     const services = getRoomServices();
     services.admissions.registerRoom(this.roomId, this.market);
@@ -402,6 +413,12 @@ export class MarketRoom extends Room<{ state: MarketRoomState; client: MarketCli
     player.gait = snapshot.gait;
     player.updatedAt = now;
     getRoomServices().admissions.updatePosition(`${this.roomId}:${client.sessionId}`, player.x, player.z);
+  }
+
+  private syncWorldEnvironment(): void {
+    const now = Date.now();
+    this.state.environment.elapsedSeconds = Math.max(0, (now - this.worldTimelineEpochMs) / 1_000);
+    this.state.environment.updatedAt = now;
   }
 
   private handleParkourRespawn(client: MarketClient, message: ParkourRespawnMessage): void {

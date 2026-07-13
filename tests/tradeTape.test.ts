@@ -194,6 +194,23 @@ describe('trade configuration', () => {
     expect(exchangesForMarket('PUMP')).toEqual(['geckoterminal']);
   });
 
+  it('keeps every supported CEX crypto world on the multi-venue aggregate tape', () => {
+    const cexSymbols = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'BNB', 'LINK', 'AVAX'] as const;
+    for (const symbol of cexSymbols) {
+      const venues = exchangesForMarket(symbol);
+      expect(venues).toContain('hyperliquid');
+      expect(venues).toContain('binance');
+      expect(venues).toContain('okx');
+      expect(venues).not.toContain('geckoterminal');
+      expect(venues as readonly string[]).not.toContain('simulation');
+    }
+    // Coinbase does not list a compatible BNB-USD product; all other listed
+    // crypto worlds retain that fourth independent public venue.
+    for (const symbol of cexSymbols.filter((symbol) => symbol !== 'BNB')) {
+      expect(exchangesForMarket(symbol)).toContain('coinbase');
+    }
+  });
+
   it('classifies exact boundaries and provides monotonic in-tier progress', () => {
     const thresholds = MARKET_TRADE_CONFIG.BTC.tiers;
     expect(classifyTradeTier('BTC', thresholds.minor - 1)).toBe('dust');

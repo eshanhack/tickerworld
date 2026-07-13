@@ -269,6 +269,51 @@ describe('/api/dex-market', () => {
 });
 
 describe('DEX chart presentation', () => {
+  it('keeps passive DEX portal prices when a CEX relay changes chart generation mid-poll', async () => {
+    let resolveResponse: ((response: Response) => void) | undefined;
+    const pendingResponse = new Promise<Response>((resolve) => {
+      resolveResponse = resolve;
+    });
+    vi.stubGlobal('fetch', vi.fn(() => pendingResponse));
+    vi.stubGlobal('window', { setTimeout, clearTimeout });
+    vi.spyOn(Date, 'now').mockReturnValue(NOW);
+    const feed = new HyperliquidMarketFeed();
+    const internals = feed as unknown as {
+      activeSymbol: 'BTC';
+      syncGeneration: number;
+      pollDexMarkets(): Promise<void>;
+    };
+
+    const poll = internals.pollDexMarkets();
+    // This is the exact handoff that happens as the room's market relay
+    // becomes available for a CEX world. It must only invalidate the CEX
+    // chart, never the independent DEX portal quotes.
+    internals.syncGeneration += 1;
+    resolveResponse?.(Response.json({
+      provider: 'dexscreener',
+      markets: DEX_ASSET_SYMBOLS.map((symbol, index) => ({
+        symbol,
+        chain: DEX_MARKETS[symbol].chain,
+        poolAddress: DEX_MARKETS[symbol].poolAddress,
+        priceUsd: index + 0.1,
+        checkedAt: NOW,
+      })),
+      checkedAt: NOW,
+    }));
+    await poll;
+
+    for (const [index, symbol] of DEX_ASSET_SYMBOLS.entries()) {
+      expect(feed.getState(symbol)).toMatchObject({
+        price: index + 0.1,
+        mode: 'live',
+        updateKind: 'snapshot',
+      });
+    }
+    feed.dispose();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
   it('uses a changed genuine DEX quote as a labelled pulse only while exact prints are stale', async () => {
     const activeOpen = Math.floor(NOW / 60_000) * 60_000;
     const candles: Candle[] = [

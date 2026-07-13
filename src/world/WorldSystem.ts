@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { WORLD_DAY_DURATION_SECONDS } from '../../shared/src/index.js';
 import {
   ACTIVE_CHUNK_RADIUS,
   CHUNK_SEGMENTS,
@@ -170,7 +171,7 @@ interface CloudPuff {
 }
 
 /** A complete session-relative day, dusk, night, and dawn cycle. */
-export const DEFAULT_DAY_DURATION_SECONDS = 18 * 60;
+export const DEFAULT_DAY_DURATION_SECONDS = WORLD_DAY_DURATION_SECONDS;
 const LOAD_BUDGET = 3;
 const UNLOAD_BUDGET = 4;
 const LAMP_LIGHT_COUNT = 4;
@@ -734,6 +735,18 @@ export class WorldSystem {
       return;
     }
 
+    // A portal may join a newly-created room whose shared clock begins before
+    // the old room's. Reset only timeline-bound event bookkeeping; terrain and
+    // all persistent render pools remain untouched. Small packet jitter is
+    // absorbed by RoomClientSystem before it reaches this guard.
+    if (elapsedSeconds < this.currentElapsedSeconds - 1) {
+      this.previousWeatherElapsed = null;
+      this.previousVegetationElapsed = null;
+      this.firedThunder.clear();
+      this.marketFlashStartedAt = Number.NEGATIVE_INFINITY;
+      this.marketFlashIntensity = 0;
+      this.clearTradeSurge();
+    }
     this.currentElapsedSeconds = elapsedSeconds;
     const chunkX = Math.floor((playerPosition.x + this.chunkSize * 0.5) / this.chunkSize);
     const chunkZ = Math.floor((playerPosition.z + this.chunkSize * 0.5) / this.chunkSize);

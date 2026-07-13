@@ -38,7 +38,14 @@ function player(actorId: string, animal: 'fox' | 'rabbit' = 'fox') {
 }
 
 class FakeRoom {
-  readonly state: { players: Map<string, ReturnType<typeof player>> };
+  readonly state: {
+    players: Map<string, ReturnType<typeof player>>;
+    environment?: {
+      elapsedSeconds: number;
+      updatedAt: number;
+      dayDurationSeconds: number;
+    };
+  };
   readonly reconnection = { enabled: false, minDelay: 0, maxDelay: 0 };
   readonly sent: Array<{ type: string; payload: unknown }> = [];
   readonly leave = vi.fn(async () => undefined);
@@ -47,8 +54,19 @@ class FakeRoom {
   private reconnectListener: (() => void) | null = null;
   readonly removeAllListeners = vi.fn(() => this.messages.clear());
 
-  constructor(actorId: string, animal: 'fox' | 'rabbit' = 'fox') {
-    this.state = { players: new Map([['local', player(actorId, animal)]]) };
+  constructor(
+    actorId: string,
+    animal: 'fox' | 'rabbit' = 'fox',
+    environment?: {
+      elapsedSeconds: number;
+      updatedAt: number;
+      dayDurationSeconds: number;
+    },
+  ) {
+    this.state = {
+      players: new Map([['local', player(actorId, animal)]]),
+      ...(environment ? { environment } : {}),
+    };
   }
 
   onStateChange(_listener: (state: unknown) => void): () => void { return () => undefined; }
@@ -154,6 +172,35 @@ describe('RoomClientSystem identity transitions', () => {
       },
     ]);
     system.dispose();
+  });
+
+  it('uses the room-owned environment timeline while retaining a solo fallback', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(10_000);
+    const firstRoom = new FakeRoom('anon-a', 'fox', {
+      elapsedSeconds: 420,
+      updatedAt: 1_700_000_000_000,
+      dayDurationSeconds: 18 * 60,
+    });
+    const secondRoom = new FakeRoom('anon-a', 'fox', {
+      elapsedSeconds: 3,
+      updatedAt: 1_700_000_010_000,
+      dayDurationSeconds: 18 * 60,
+    });
+    const { system } = createSystem([firstRoom, secondRoom]);
+    // No server clock has reached the browser yet, so an offline game retains
+    // its existing session-relative timeline.
+    expect(system.getWorldElapsedSeconds(12)).toBe(12);
+    await system.connect('btc');
+    expect(system.state.environment).toMatchObject({ elapsedSeconds: 420 });
+    now.mockReturnValue(10_750);
+    expect(system.getWorldElapsedSeconds(12)).toBeCloseTo(420.75, 8);
+
+    await system.switchMarket('eth');
+    expect(system.state.environment).toMatchObject({ elapsedSeconds: 3 });
+    now.mockReturnValue(11_250);
+    expect(system.getWorldElapsedSeconds(12)).toBeCloseTo(3.5, 8);
+    system.dispose();
+    now.mockRestore();
   });
 
   it('joins every supported ticker through the same market-filtered room contract', async () => {

@@ -102,6 +102,72 @@ describe.sequential('Colyseus market rooms', () => {
     await new Promise((resolve) => setTimeout(resolve, 150));
   });
 
+  it('replicates one monotonic day/night weather timeline to every player in a room', async () => {
+    const firstIdentity = runtime.anonymous.issue();
+    const secondIdentity = runtime.anonymous.issue();
+    const options = {
+      protocolVersion: PROTOCOL_VERSION,
+      market: 'sol' as const,
+      animal: firstIdentity.animal,
+      anonymousToken: firstIdentity.token,
+    };
+    const first = await testServer.sdk.joinOrCreate('market', options);
+    const second = await testServer.sdk.joinOrCreate('market', {
+      ...options,
+      animal: secondIdentity.animal,
+      anonymousToken: secondIdentity.token,
+    });
+    first.onMessage(SERVER_MESSAGES.population, () => {});
+    second.onMessage(SERVER_MESSAGES.population, () => {});
+
+    await new Promise((resolve) => setTimeout(resolve, 650));
+    const firstEnvironment = (first.state as unknown as { environment?: {
+      elapsedSeconds?: number;
+      updatedAt?: number;
+      dayDurationSeconds?: number;
+    } }).environment;
+    const secondEnvironment = (second.state as unknown as { environment?: {
+      elapsedSeconds?: number;
+      updatedAt?: number;
+      dayDurationSeconds?: number;
+    } }).environment;
+    expect(firstEnvironment).toBeDefined();
+    expect(secondEnvironment).toBeDefined();
+    expect(firstEnvironment).toMatchObject({ dayDurationSeconds: 18 * 60 });
+    expect(secondEnvironment).toMatchObject({ dayDurationSeconds: 18 * 60 });
+    expect(firstEnvironment?.elapsedSeconds).toBeGreaterThan(0.35);
+    expect(secondEnvironment?.elapsedSeconds).toBeGreaterThan(0.35);
+    expect(firstEnvironment?.elapsedSeconds).toBeCloseTo(secondEnvironment?.elapsedSeconds ?? -1, 2);
+    expect(firstEnvironment?.updatedAt).toBeCloseTo(secondEnvironment?.updatedAt ?? -1, -2);
+
+    // The timeline is global, not merely shared by people who happened to
+    // create the same shard at the same moment. A different world receives
+    // the same sky/weather phase immediately.
+    const otherIdentity = runtime.anonymous.issue();
+    const otherWorld = await testServer.sdk.joinOrCreate('market', {
+      protocolVersion: PROTOCOL_VERSION,
+      market: 'eth' as const,
+      animal: otherIdentity.animal,
+      anonymousToken: otherIdentity.token,
+    });
+    otherWorld.onMessage(SERVER_MESSAGES.population, () => {});
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    const latestFirstEnvironment = (first.state as unknown as { environment?: {
+      elapsedSeconds?: number;
+    } }).environment;
+    const otherEnvironment = (otherWorld.state as unknown as { environment?: {
+      elapsedSeconds?: number;
+    } }).environment;
+    expect(otherEnvironment?.elapsedSeconds).toBeCloseTo(latestFirstEnvironment?.elapsedSeconds ?? -1, 0);
+
+    const before = firstEnvironment?.elapsedSeconds ?? 0;
+    await new Promise((resolve) => setTimeout(resolve, 550));
+    const after = (first.state as unknown as { environment?: { elapsedSeconds?: number } })
+      .environment?.elapsedSeconds ?? 0;
+    expect(after).toBeGreaterThan(before);
+    await Promise.all([first.leave(), second.leave(), otherWorld.leave()]);
+  });
+
   it('binds wallet authentication to the signed anonymous actor and serves the canonical account API', async () => {
     const identity = runtime.anonymous.issue();
     const { publicKey, privateKey } = generateKeyPairSync('ed25519');

@@ -72,6 +72,19 @@ export const MARKET_ROOM_MAX_CLIENTS = 50;
 export const STATE_PATCH_RATE_MS = 100;
 export const MOVE_SEND_RATE_HZ = 10;
 export const REMOTE_INTERPOLATION_DELAY_MS = 150;
+/**
+ * A complete in-world solar cycle. The room server publishes its elapsed
+ * timeline so every player in a shard evaluates this same cycle together.
+ */
+export const WORLD_DAY_DURATION_SECONDS = 18 * 60;
+/**
+ * A single global epoch makes the sky deterministic across rooms, shards, and
+ * server restarts. Every player therefore sees the same time/weather rather
+ * than merely matching the instant their particular room was created.
+ */
+export const WORLD_ENVIRONMENT_EPOCH_MS = 1_735_689_600_000; // 2025-01-01T00:00:00.000Z
+/** Keep the room clock fresh without spending a state patch every frame. */
+export const WORLD_ENVIRONMENT_SYNC_MS = 500;
 export const CHAT_MAX_LENGTH = 140;
 export const CHAT_HISTORY_LIMIT = 50;
 export const CHAT_CLIENT_ROW_LIMIT = 200;

@@ -82,14 +82,17 @@ const DEFAULT_AUDIO: TradeAudioConfig = Object.freeze({
 
 const DEFAULT_HOLOGRAM: TradeHologramConfig = Object.freeze({
   maxVisible: 3,
-  holdSeconds: 3,
-  materializeSeconds: 0.28,
-  dissolveSeconds: 0.62,
-  coalesceSeconds: 1,
-  bigScale: 1,
-  whaleScale: 1.24,
-  overflowScale: 0.84,
-  dissolveParticles: 12,
+  // Big prints are rare enough that the player should have time to notice
+  // their projection while approaching the chart. The slot pool is still
+  // bounded, so sustained tape flow pre-empts rather than accumulates.
+  holdSeconds: 5,
+  materializeSeconds: 0.2,
+  dissolveSeconds: 1.1,
+  coalesceSeconds: 1.2,
+  bigScale: 1.16,
+  whaleScale: 1.5,
+  overflowScale: 0.92,
+  dissolveParticles: 16,
   dissolveCapacity: 48,
   minimumTier: 'big',
 });

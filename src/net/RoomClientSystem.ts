@@ -28,6 +28,7 @@ import {
   type ReportRejection,
   type RoomConnectionState,
   type RoomPopulation,
+  type SharedWorldEnvironment,
   type PartyJoinResult,
   type ParkourCheckpointId,
   type ParkourRespawnMessage,
@@ -94,6 +95,7 @@ function boundRelayedMarketMids(value: unknown): CompactMarketMid[] {
 type RoomMatchClient = Pick<Client, 'joinOrCreate' | 'joinById'>;
 
 type RoomStateShape = {
+  readonly environment?: unknown;
   readonly players?: {
     forEach?: (callback: (player: unknown, key: string) => void) => void;
   };
@@ -115,6 +117,8 @@ export interface RoomClientSnapshot {
   readonly market: MarketSlug;
   readonly remotes: readonly NetPlayerState[];
   readonly populations: ReadonlyMap<MarketSlug, RoomPopulation>;
+  /** Null until an authoritative room clock arrives; solo mode stays local. */
+  readonly environment: SharedWorldEnvironment | null;
   readonly lastError: string | null;
 }
 
@@ -174,6 +178,50 @@ export function parseRoomPopulations(value: unknown): readonly RoomPopulation[] 
     populations.push(population as RoomPopulation);
   }
   return populations;
+}
+
+const MIN_WORLD_DAY_DURATION_SECONDS = 60;
+const MAX_WORLD_DAY_DURATION_SECONDS = 3_600;
+// The server uses one fixed global epoch, so this must permit a long-lived
+// deployment instead of treating a healthy multi-year room clock as hostile.
+const MAX_WORLD_ELAPSED_SECONDS = 3_153_600_000;
+
+/** Validates the schema object without trusting an arbitrary room payload. */
+export function parseSharedWorldEnvironment(value: unknown): SharedWorldEnvironment | null {
+  if (!value || typeof value !== 'object') return null;
+  const candidate = value as Partial<SharedWorldEnvironment>;
+  if (
+    typeof candidate.elapsedSeconds !== 'number'
+    || !Number.isFinite(candidate.elapsedSeconds)
+    || candidate.elapsedSeconds < 0
+    || candidate.elapsedSeconds > MAX_WORLD_ELAPSED_SECONDS
+    || typeof candidate.updatedAt !== 'number'
+    || !Number.isFinite(candidate.updatedAt)
+    || candidate.updatedAt < 0
+    || typeof candidate.dayDurationSeconds !== 'number'
+    || !Number.isFinite(candidate.dayDurationSeconds)
+    || candidate.dayDurationSeconds < MIN_WORLD_DAY_DURATION_SECONDS
+    || candidate.dayDurationSeconds > MAX_WORLD_DAY_DURATION_SECONDS
+  ) return null;
+  return {
+    elapsedSeconds: candidate.elapsedSeconds,
+    updatedAt: candidate.updatedAt,
+    dayDurationSeconds: candidate.dayDurationSeconds,
+  };
+}
+
+/**
+ * Advances an authoritative patch from the local receipt time. The browser
+ * clock never has to agree with the server clock: only elapsed time since the
+ * same patch is projected.
+ */
+export function projectSharedWorldElapsed(
+  environment: SharedWorldEnvironment,
+  receivedAt: number,
+  now: number,
+): number {
+  const elapsedSinceReceipt = Math.max(0, (now - receivedAt) / 1_000);
+  return Math.max(0, environment.elapsedSeconds + elapsedSinceReceipt);
 }
 
 export interface AccountRoomSession {
@@ -302,6 +350,7 @@ export class RoomClientSystem implements GameSystem {
   private readonly emoteGate = new EmoteRateGate();
   private readonly clientFactory: (endpoint: string) => RoomMatchClient;
   private readonly joinTimeoutMs: number;
+  private readonly now: () => number;
   private client: RoomMatchClient | null = null;
   private room: Room | null = null;
   private roomEpoch = 0;
@@ -327,6 +376,8 @@ export class RoomClientSystem implements GameSystem {
   private operationTail: Promise<void> = Promise.resolve();
   private joinFromMarket: MarketSlug | undefined;
   private authoritativeSpawnReceived = false;
+  private environment: SharedWorldEnvironment | null = null;
+  private environmentReceivedAt = 0;
 
   constructor(options: RoomClientSystemOptions) {
     this.options = options;
@@ -343,6 +394,7 @@ export class RoomClientSystem implements GameSystem {
     this.joinTimeoutMs = Number.isFinite(options.joinTimeoutMs) && Number(options.joinTimeoutMs) > 0
       ? Math.max(1, Number(options.joinTimeoutMs))
       : 8_000;
+    this.now = Date.now;
     this.snapshotProvider = options.snapshot;
     this.random = options.random ?? Math.random;
     this.pendingPartyToken = isPartyToken(options.partyToken) ? options.partyToken : null;
@@ -354,6 +406,7 @@ export class RoomClientSystem implements GameSystem {
       market: this.market,
       remotes: this.remotes,
       populations: this.populations.size > 0 ? new Map(this.populations) : EMPTY_POPULATIONS,
+      environment: this.environment,
       lastError: this.lastError,
     };
   }
@@ -380,6 +433,18 @@ export class RoomClientSystem implements GameSystem {
   /** Changes only when a new Colyseus room seat is successfully joined. */
   get sessionRoomEpoch(): number {
     return this.roomEpoch;
+  }
+
+  /**
+   * The active room's shared timeline, projected from its latest state patch.
+   * If multiplayer has never supplied a clock, preserve the original local
+   * session-relative world clock. After a transient disconnect, retain the
+   * last good anchor so rain and lighting do not visibly reset.
+   */
+  getWorldElapsedSeconds(localFallbackSeconds: number): number {
+    const environment = this.environment;
+    if (!environment) return Math.max(0, localFallbackSeconds);
+    return projectSharedWorldElapsed(environment, this.environmentReceivedAt, this.now());
   }
 
   subscribe(listener: SnapshotListener): () => void {
@@ -425,6 +490,7 @@ export class RoomClientSystem implements GameSystem {
   private async connectInternal(market: MarketSlug): Promise<boolean> {
     if (this.disposed) return false;
     this.market = market;
+    this.clearWorldEnvironment();
     this.joinFromMarket = undefined;
     this.authoritativeSpawnReceived = false;
     this.retryAttempt = 0;
@@ -440,6 +506,7 @@ export class RoomClientSystem implements GameSystem {
     if (this.disposed) return false;
     const fromMarket = this.market;
     this.market = market;
+    this.clearWorldEnvironment();
     this.joinFromMarket = fromMarket === market ? undefined : fromMarket;
     this.authoritativeSpawnReceived = false;
     const generation = ++this.generation;
@@ -582,6 +649,7 @@ export class RoomClientSystem implements GameSystem {
     this.reportRejectionListeners.clear();
     this.marketListeners.clear();
     this.marketMidsListeners.clear();
+    this.clearWorldEnvironment();
     void this.leaveRoom();
     this.client = null;
     this.remotes = [];
@@ -633,6 +701,7 @@ export class RoomClientSystem implements GameSystem {
         return false;
       }
       this.room = room;
+      this.clearWorldEnvironment();
       this.roomEpoch += 1;
       this.boundActorId = targetIdentity.actorId;
       this.joinFromMarket = undefined;
@@ -791,6 +860,8 @@ export class RoomClientSystem implements GameSystem {
   }
 
   private acceptState(state: RoomStateShape): void {
+    const environment = parseSharedWorldEnvironment(state.environment);
+    if (environment) this.acceptWorldEnvironment(environment);
     const next: NetPlayerState[] = [];
     state.players?.forEach?.((value) => {
       const parsed = parseRemote(value);
@@ -806,6 +877,32 @@ export class RoomClientSystem implements GameSystem {
     });
     this.remotes = next;
     this.emit();
+  }
+
+  private acceptWorldEnvironment(environment: SharedWorldEnvironment): void {
+    const receivedAt = this.now();
+    const previous = this.environment;
+    if (previous) {
+      // A schema patch should be monotonic. Preserve a tiny local lead caused
+      // by packet jitter, while allowing an actual newly joined room to reset
+      // after clearWorldEnvironment() has removed the prior anchor.
+      const projected = projectSharedWorldElapsed(previous, this.environmentReceivedAt, receivedAt);
+      if (environment.elapsedSeconds < projected && projected - environment.elapsedSeconds < 1) {
+        this.environment = {
+          ...environment,
+          elapsedSeconds: projected,
+        };
+        this.environmentReceivedAt = receivedAt;
+        return;
+      }
+    }
+    this.environment = environment;
+    this.environmentReceivedAt = receivedAt;
+  }
+
+  private clearWorldEnvironment(): void {
+    this.environment = null;
+    this.environmentReceivedAt = 0;
   }
 
   private sendIdentityRefresh(

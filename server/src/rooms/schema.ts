@@ -1,5 +1,11 @@
 import { MapSchema, Schema, type } from '@colyseus/schema';
-import { PROTOCOL_VERSION, type MarketSlug, type MoveSnapshot } from '@tickerworld/shared';
+import {
+  PROTOCOL_VERSION,
+  WORLD_DAY_DURATION_SECONDS,
+  type MarketSlug,
+  type MoveSnapshot,
+  type SharedWorldEnvironment,
+} from '@tickerworld/shared';
 
 export class PlayerState extends Schema {
   @type('string') actorId = '';
@@ -17,8 +23,21 @@ export class PlayerState extends Schema {
   @type('float64') updatedAt = 0;
 }
 
+/**
+ * Colyseus-replicated room clock. Clients project forward from the latest
+ * sample locally, then gently re-anchor at the next state patch. This keeps
+ * day/night, rain, and deterministic thunder aligned without rendering a
+ * network-timed animation at 10Hz.
+ */
+export class WorldEnvironmentState extends Schema implements SharedWorldEnvironment {
+  @type('float64') elapsedSeconds = 0;
+  @type('float64') updatedAt = 0;
+  @type('float32') dayDurationSeconds = WORLD_DAY_DURATION_SECONDS;
+}
+
 export class MarketRoomState extends Schema {
   @type('string') market: MarketSlug = 'btc';
   @type('uint16') protocolVersion = PROTOCOL_VERSION;
+  @type(WorldEnvironmentState) environment = new WorldEnvironmentState();
   @type({ map: PlayerState }) players = new MapSchema<PlayerState>();
 }
