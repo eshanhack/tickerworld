@@ -94,7 +94,21 @@ export interface RoomPopulation {
   market: MarketSlug;
   online: number;
   shards: number;
+  /** Joinable room instances, presented to players as numbered channels. */
+  channels?: readonly RoomChannelPopulation[];
   updatedAt: number;
+}
+
+/**
+ * Public, short-lived description of one room shard. Room ids are opaque and
+ * may disappear when an empty Colyseus room auto-disposes; `channel` is the
+ * friendly number shown in the world switcher for that room's lifetime.
+ */
+export interface RoomChannelPopulation {
+  roomId: string;
+  channel: number;
+  online: number;
+  capacity: number;
 }
 
 /**

@@ -8,6 +8,7 @@ export type UiInteractionOwner =
   | 'settings'
   | 'wardrobe'
   | 'emote'
+  | 'worlds'
   | 'context';
 
 export type UiInteractionListener = (

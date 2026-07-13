@@ -89,6 +89,17 @@ describe('action-gated onboarding journey', () => {
     expect(journey.record('identity')).toBe(false);
     expect(listener).toHaveBeenCalledTimes(2);
   });
+
+  it('dismisses hints only for the lifetime of the journey without completing lessons', () => {
+    const journey = new OnboardingJourney();
+    const listener = vi.fn();
+    journey.subscribe(listener);
+    expect(journey.dismiss()).toBe(true);
+    expect(journey.dismiss()).toBe(false);
+    expect(journey.snapshot).toMatchObject({ dismissed: true, completed: false, currentStep: 'identity' });
+    expect(listener).toHaveBeenCalledTimes(2);
+    expect(new OnboardingJourney().snapshot.dismissed).toBe(false);
+  });
 });
 
 describe('launch overlay discipline', () => {
@@ -111,6 +122,16 @@ describe('launch overlay discipline', () => {
     expect(coordinator.set('share', true)).toMatchObject({ displaced: 'settings', largeOwner: 'share' });
     coordinator.set('share', false);
     expect(coordinator.largeOwner).toBeNull();
+  });
+
+  it('treats the world/channel guide as the active large overlay', () => {
+    const coordinator = new OverlayCoordinator();
+    coordinator.set('chat', true);
+    expect(coordinator.set('worlds', true)).toMatchObject({
+      displaced: 'chat',
+      largeOwner: 'worlds',
+    });
+    expect(coordinator.has('chat')).toBe(false);
   });
 
   it('does not let shortcuts displace portal transfer or WebGL recovery', () => {

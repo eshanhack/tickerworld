@@ -38,6 +38,7 @@ function player(actorId: string, animal: 'fox' | 'rabbit' = 'fox') {
 }
 
 class FakeRoom {
+  readonly roomId: string;
   readonly state: {
     players: Map<string, ReturnType<typeof player>>;
     environment?: {
@@ -62,7 +63,9 @@ class FakeRoom {
       updatedAt: number;
       dayDurationSeconds: number;
     },
+    roomId = 'room-default',
   ) {
+    this.roomId = roomId;
     this.state = {
       players: new Map([['local', player(actorId, animal)]]),
       ...(environment ? { environment } : {}),
@@ -226,6 +229,12 @@ describe('RoomClientSystem identity transitions', () => {
       market,
       online: index,
       shards: index === 0 ? 0 : 1,
+      channels: index === 0 ? [] : [{
+        roomId: `room-${market}`,
+        channel: 1,
+        online: index,
+        capacity: 50,
+      }],
       updatedAt: 1_000,
     }));
     room.emit(SERVER_MESSAGES.population, [
@@ -241,7 +250,52 @@ describe('RoomClientSystem identity transitions', () => {
       .toEqual([]);
     expect(parseRoomPopulations({ market: 'btc', online: 51, shards: 1, updatedAt: 1_000 }))
       .toEqual([]);
+    expect(parseRoomPopulations({
+      market: 'btc',
+      online: 2,
+      shards: 1,
+      channels: [{ roomId: 'btc-1', channel: 1, online: 1, capacity: 50 }],
+      updatedAt: 1_000,
+    })).toEqual([]);
+    expect(system.state.totalOnline).toBe(updates.reduce((sum, update) => sum + update.online, 0));
     system.dispose();
+  });
+
+  it('exposes exact channel members and joins a requested channel with a full-room fallback', async () => {
+    const selected = new FakeRoom('anon-a', 'fox', undefined, 'eth-channel-2');
+    selected.state.players.set('remote', {
+      ...player('remote-b', 'rabbit'),
+      username: 'MapleRabbit',
+    });
+    const exact = createSystem([selected]);
+    await expect(exact.system.switchChannel('eth', 'eth-channel-2')).resolves.toEqual({
+      status: 'joined',
+      market: 'eth',
+      requestedRoomId: 'eth-channel-2',
+      roomId: 'eth-channel-2',
+    });
+    expect(exact.joinById).toHaveBeenCalledWith(
+      'eth-channel-2',
+      expect.objectContaining({ market: 'eth' }),
+    );
+    expect(exact.system.state).toMatchObject({
+      currentRoomId: 'eth-channel-2',
+      channelOnline: 2,
+    });
+    expect(exact.system.state.members.map(({ username }) => username)).toContain('MapleRabbit');
+    exact.system.dispose();
+
+    const fallbackRoom = new FakeRoom('anon-a', 'fox', undefined, 'eth-channel-3');
+    const fallback = createSystem([new Error('room is full'), fallbackRoom]);
+    await expect(fallback.system.switchChannel('eth', 'eth-channel-2')).resolves.toEqual({
+      status: 'fallback',
+      market: 'eth',
+      requestedRoomId: 'eth-channel-2',
+      roomId: 'eth-channel-3',
+    });
+    expect(fallback.joinById).toHaveBeenCalledTimes(1);
+    expect(fallback.joinOrCreate).toHaveBeenCalledTimes(1);
+    fallback.system.dispose();
   });
 
   it('keeps every destination playable offline when no room endpoint is configured', async () => {

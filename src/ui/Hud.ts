@@ -181,6 +181,7 @@ export class Hud {
   private readonly onboardingBody: HTMLElement;
   private readonly onboardingProgress: HTMLElement;
   private readonly onboardingCta: HTMLButtonElement;
+  private readonly onboardingDismiss: HTMLButtonElement;
   private readonly contextLossOverlay: HTMLElement;
   private readonly contextRetryButton: HTMLButtonElement;
   private readonly newsOverlay: NewsOverlayView;
@@ -244,6 +245,7 @@ export class Hud {
         <div class="onboarding-orb" aria-hidden="true">&#10022;</div>
         <div><small data-onboarding-progress>1 / 5</small><strong data-onboarding-title>Choose your character</strong><p data-onboarding-body>Nine distinct characters are ready to roam.</p></div>
         <button type="button" data-onboarding-cta>Open wardrobe</button>
+        <button class="onboarding-dismiss" type="button" aria-label="Dismiss onboarding quests" data-onboarding-dismiss>&times;</button>
       </section>
 
       <div class="hud-toast" role="status" aria-live="polite" data-toast></div>
@@ -335,6 +337,7 @@ export class Hud {
     this.onboardingBody = this.required('[data-onboarding-body]');
     this.onboardingProgress = this.required('[data-onboarding-progress]');
     this.onboardingCta = this.required<HTMLButtonElement>('[data-onboarding-cta]');
+    this.onboardingDismiss = this.required<HTMLButtonElement>('[data-onboarding-dismiss]');
     this.contextLossOverlay = this.required('[data-context-loss]');
     this.contextRetryButton = this.required<HTMLButtonElement>('[data-context-retry]');
     this.newsOverlay = new NewsOverlayView(this.root, {
@@ -379,6 +382,7 @@ export class Hud {
     this.emoteButton.addEventListener('click', this.toggleEmotes);
     this.emotePicker.addEventListener('click', this.pickEmote);
     this.onboardingCta.addEventListener('click', this.activateOnboardingCta);
+    this.onboardingDismiss.addEventListener('click', this.dismissOnboarding);
     this.contextRetryButton.addEventListener('click', this.retryContext);
     this.compassButton.addEventListener('click', this.toggleCompass);
     this.motionButton.addEventListener('click', this.toggleMotion);
@@ -641,6 +645,7 @@ export class Hud {
     this.emoteButton.removeEventListener('click', this.toggleEmotes);
     this.emotePicker.removeEventListener('click', this.pickEmote);
     this.onboardingCta.removeEventListener('click', this.activateOnboardingCta);
+    this.onboardingDismiss.removeEventListener('click', this.dismissOnboarding);
     this.contextRetryButton.removeEventListener('click', this.retryContext);
     this.joystick.removeEventListener('pointerdown', this.joystickStart);
     this.joystick.removeEventListener('pointermove', this.joystickMove);
@@ -692,7 +697,7 @@ export class Hud {
     this.onboardingCta.textContent = copy.cta ?? '';
     this.onboardingCta.classList.toggle('is-hidden', copy.cta === null);
     this.onboardingHint.classList.toggle('is-complete', snapshot.completed);
-    this.onboardingHint.classList.toggle('is-hidden', snapshot.completed || !this.entered);
+    this.onboardingHint.classList.toggle('is-hidden', snapshot.completed || snapshot.dismissed || !this.entered);
   }
 
   private setOwnedOverlay(owner: 'settings' | 'wardrobe' | 'emote' | 'context', open: boolean): void {
@@ -817,6 +822,10 @@ export class Hud {
     const step = this.onboarding.snapshot.currentStep;
     if (step === 'identity') this.setOwnedOverlay('wardrobe', true);
     else if (step === 'emote') this.setOwnedOverlay('emote', true);
+  };
+
+  private readonly dismissOnboarding = (): void => {
+    this.onboarding.dismiss();
   };
 
   private readonly toggleCompass = (): void => {

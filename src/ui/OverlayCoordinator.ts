@@ -8,6 +8,7 @@ export type OverlayOwner =
   | 'settings'
   | 'wardrobe'
   | 'emote'
+  | 'worlds'
   | 'context';
 
 const LARGE_OVERLAYS = new Set<OverlayOwner>([
@@ -19,6 +20,7 @@ const LARGE_OVERLAYS = new Set<OverlayOwner>([
   'share',
   'settings',
   'wardrobe',
+  'worlds',
   'context',
 ]);
 

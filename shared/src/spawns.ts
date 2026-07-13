@@ -5,7 +5,6 @@ import {
   WORLD_RADIUS,
 } from './constants.js';
 import type { MarketSlug, SpawnAssignment } from './contracts.js';
-import { PORTAL_ARRIVAL_OFFSET, createPortalRoutes } from './portals.js';
 import { sampleBoundedTerrainHeight } from './terrain.js';
 
 const SPAWN_COLUMNS = 10;
@@ -23,35 +22,19 @@ function stableHash(value: string): number {
   return hash >>> 0;
 }
 
-function arrivalDirection(market: MarketSlug, fromMarket?: MarketSlug): { x: number; z: number } {
-  if (fromMarket && fromMarket !== market) {
-    const route = createPortalRoutes(market).find(({ to }) => to === fromMarket);
-    if (route) {
-      const length = Math.hypot(route.x, route.z) || 1;
-      return { x: route.x / length, z: route.z / length };
-    }
-  }
-  // Initial joins use the quiet southern plaza approach, away from the podium.
-  return { x: 0, z: -1 };
-}
-
 /**
- * Builds fifty 1.8-unit-spaced slots in a shallow outward-facing grid. Portal
- * arrivals never extend back into the trigger ring, while initial joins remain
- * between the podium exclusion and the seven portal gates.
+ * Builds fifty 1.8-unit-spaced slots in the quiet southern plaza approach.
+ * Every join, including portal travel and channel changes, arrives close
+ * enough to frame the character and chart together instead of materializing
+ * behind a distant return portal.
  */
 export function createSpawnAssignments(
   market: MarketSlug,
   fromMarket?: MarketSlug,
 ): readonly SpawnAssignment[] {
-  const direction = arrivalDirection(market, fromMarket);
+  const direction = { x: 0, z: -1 };
   const tangent = { x: -direction.z, z: direction.x };
-  const arrivalPortal = fromMarket && fromMarket !== market
-    ? createPortalRoutes(market).find(({ to }) => to === fromMarket)
-    : null;
-  const baseRadius = arrivalPortal
-    ? Math.hypot(arrivalPortal.x, arrivalPortal.z) + PORTAL_ARRIVAL_OFFSET
-    : INITIAL_BASE_RADIUS;
+  const baseRadius = INITIAL_BASE_RADIUS;
   const assignments: SpawnAssignment[] = [];
 
   for (let row = 0; row < SPAWN_ROWS; row += 1) {

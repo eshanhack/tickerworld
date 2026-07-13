@@ -1177,6 +1177,30 @@ html.is-launch-capture body::after {
   white-space: nowrap;
 }
 
+.onboarding-hint .onboarding-dismiss {
+  position: absolute;
+  top: -.42rem;
+  right: -.42rem;
+  display: grid;
+  place-items: center;
+  width: 1.45rem;
+  height: 1.45rem;
+  padding: 0;
+  border: 1px solid rgba(255,255,255,.7);
+  color: #596361;
+  background: rgba(255,241,207,.96);
+  box-shadow: 0 .25rem .7rem rgba(47,58,57,.14);
+  font-size: .95rem;
+  line-height: 1;
+}
+
+.onboarding-hint .onboarding-dismiss:hover,
+.onboarding-hint .onboarding-dismiss:focus-visible {
+  color: #fff6df;
+  background: #c9744f;
+  outline: 3px solid rgba(201,116,79,.18);
+}
+
 .wardrobe-panel {
   position: absolute;
   z-index: 76;

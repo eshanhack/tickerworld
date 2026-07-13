@@ -207,7 +207,10 @@ export class SocialSystem implements GameSystem {
     this.log.append(row);
     while (this.log.childElementCount > CHAT_CLIENT_ROW_LIMIT) this.log.firstElementChild?.remove();
     this.log.scrollTop = this.log.scrollHeight;
-    if (message.actorId !== this.localActorId) this.options.onSpeech?.(message);
+    // The room echoes accepted chat to every participant, including its
+    // sender. Forward that canonical message for both remote and local head
+    // bubbles so the player sees exactly what everyone else received.
+    this.options.onSpeech?.(message);
   }
 
   acceptChatHistory(messages: readonly ChatMessage[]): void {

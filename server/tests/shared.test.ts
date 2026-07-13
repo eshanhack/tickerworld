@@ -1,8 +1,8 @@
 import {
   ACCEPTED_PROTOCOL_VERSIONS,
+  DEX_FIELD_PORTAL_RADIUS,
   MARKET_SLUGS,
   MAX_SPRINT_SPEED,
-  DEX_FIELD_PORTAL_RADIUS,
   PODIUM_EXCLUSION_RADIUS,
   PORTAL_RADIUS,
   SPAWN_SLOT_COUNT,
@@ -109,12 +109,10 @@ describe('shared multiplayer contracts', () => {
       for (const fromMarket of MARKET_SLUGS) {
         if (fromMarket === market) continue;
         const routes = createPortalRoutes(market);
-        const arrivalRoute = routes.find(({ to }) => to === fromMarket);
-        expect(arrivalRoute).toBeDefined();
-        const arrivalRadius = Math.hypot(arrivalRoute!.x, arrivalRoute!.z);
         for (const slot of createSpawnAssignments(market, fromMarket)) {
-          expect(Math.hypot(slot.x, slot.z)).toBeGreaterThan(arrivalRadius + 4.4);
-          expect(Math.hypot(slot.x, slot.z)).toBeLessThanOrEqual(WORLD_RADIUS);
+          // Portal travel now lands on the same near-chart approach as a
+          // direct join, safely inside the portal ring.
+          expect(Math.hypot(slot.x, slot.z)).toBeLessThan(PORTAL_RADIUS - 3.2);
           for (const portal of routes) {
             expect(Math.hypot(slot.x - portal.x, slot.z - portal.z)).toBeGreaterThan(3.2);
           }

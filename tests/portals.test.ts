@@ -7,7 +7,6 @@ import {
   marketForSymbol,
 } from '../shared/src/index.js';
 import {
-  PORTAL_ARRIVAL_OFFSET,
   DEX_FIELD_PORTAL_RADIUS,
   PORTAL_DWELL_SECONDS,
   PORTAL_RADIUS,
@@ -63,27 +62,20 @@ describe('fixed portal routes', () => {
     expect(ethBtc?.isReturnPortal).toBe(true);
   });
 
-  it('spawns beyond the return portal facing toward the plaza', () => {
+  it('spawns near the centre in front of the chart after portal travel', () => {
     const spawn = portalArrivalSpawn('ETH', 'BTC');
     expect(spawn).not.toBeNull();
     if (!spawn) return;
-    expect(Math.hypot(spawn.x, spawn.z)).toBeCloseTo(PORTAL_RADIUS + PORTAL_ARRIVAL_OFFSET, 8);
-    const facing = { x: -Math.sin(spawn.facingYaw), z: -Math.cos(spawn.facingYaw) };
-    const inward = new THREE.Vector2(-spawn.x, -spawn.z).normalize();
-    expect(facing.x).toBeCloseTo(inward.x, 8);
-    expect(facing.z).toBeCloseTo(inward.y, 8);
+    expect(spawn).toMatchObject({ x: 0, z: -18, facingYaw: Math.PI });
+    expect(Math.hypot(spawn.x, spawn.z)).toBeLessThan(PORTAL_RADIUS);
   });
 
-  it('keeps DEX arrivals on the outer field ring and inside the world boundary', () => {
+  it('keeps DEX return metadata while also arriving near the chart', () => {
     const spawn = portalArrivalSpawn('PUMP', 'BTC');
     expect(spawn).not.toBeNull();
     if (!spawn) return;
     expect(spawn.returnPortal.radius).toBe(DEX_FIELD_PORTAL_RADIUS);
-    expect(Math.hypot(spawn.x, spawn.z)).toBeCloseTo(
-      DEX_FIELD_PORTAL_RADIUS + PORTAL_ARRIVAL_OFFSET,
-      8,
-    );
-    expect(Math.hypot(spawn.x, spawn.z)).toBeLessThan(84);
+    expect(Math.hypot(spawn.x, spawn.z)).toBe(18);
   });
 
   it('formats live price and aggregate population without inventing offline counts', () => {

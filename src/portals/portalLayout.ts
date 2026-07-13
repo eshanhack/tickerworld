@@ -60,6 +60,13 @@ export interface PortalArrivalSpawn {
   readonly returnPortal: PortalRoute;
 }
 
+/** Solo/offline counterpart to the server's near-chart spawn grid. */
+export const PORTAL_CENTRE_SPAWN = Object.freeze({
+  x: 0,
+  z: -18,
+  facingYaw: Math.PI,
+});
+
 export function formatPortalPopulation(
   population: number | null,
   connectionMode: PortalConnectionMode,
@@ -133,7 +140,7 @@ export function createPortalLabelModel(
   };
 }
 
-/** Finds the spawn just outside the portal that returns to the previous world. */
+/** Finds the return route while placing the player near the destination chart. */
 export function portalArrivalSpawn(
   activeMarket: AssetSymbol,
   previousMarket: AssetSymbol,
@@ -142,9 +149,7 @@ export function portalArrivalSpawn(
   const returnPortal = routes.find((route) => route.destination === previousMarket);
   if (!returnPortal) return null;
   return {
-    x: returnPortal.x + returnPortal.direction.x * PORTAL_ARRIVAL_OFFSET,
-    z: returnPortal.z + returnPortal.direction.z * PORTAL_ARRIVAL_OFFSET,
-    facingYaw: Math.atan2(returnPortal.direction.x, returnPortal.direction.z),
+    ...PORTAL_CENTRE_SPAWN,
     returnPortal,
   };
 }

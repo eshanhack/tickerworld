@@ -18,6 +18,8 @@ export interface OnboardingSnapshot {
   readonly currentStep: OnboardingStepId | null;
   readonly completedActions: ReadonlySet<OnboardingAction>;
   readonly completed: boolean;
+  /** UI-only dismissal; deliberately lives in memory and resets on page reload. */
+  readonly dismissed: boolean;
   readonly progress: number;
 }
 
@@ -46,6 +48,7 @@ function stepComplete(step: StepDefinition, actions: ReadonlySet<OnboardingActio
 export class OnboardingJourney {
   private readonly actions = new Set<OnboardingAction>();
   private readonly listeners = new Set<OnboardingListener>();
+  private dismissed = false;
 
   public get snapshot(): OnboardingSnapshot {
     const currentIndex = STEPS.findIndex((step) => !stepComplete(step, this.actions));
@@ -54,8 +57,17 @@ export class OnboardingJourney {
       currentStep: currentIndex < 0 ? null : STEPS[currentIndex]!.id,
       completedActions: new Set(this.actions),
       completed: currentIndex < 0,
+      dismissed: this.dismissed,
       progress: completedSteps / STEPS.length,
     };
+  }
+
+  /** Hides the journey for this in-memory game session without changing progress. */
+  public dismiss(): boolean {
+    if (this.dismissed) return false;
+    this.dismissed = true;
+    this.emit();
+    return true;
   }
 
   public record(action: OnboardingAction): boolean {

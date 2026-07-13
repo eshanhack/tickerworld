@@ -17,6 +17,7 @@ export {
   createPortalLabelModel,
   createPortalRoutes,
   formatPortalPopulation,
+  PORTAL_CENTRE_SPAWN,
   portalArrivalSpawn,
 } from './portalLayout';
 export type {
@@ -27,6 +28,22 @@ export type {
   PortalRoute,
 } from './portalLayout';
 export { PortalOverlayView } from './PortalOverlayView';
+export {
+  OnlinePopulationBadgeView,
+  WorldChannelNavigatorView,
+  normalizeWorldChannels,
+  populationBadgeLabels,
+  worldGridNavigationIndex,
+  worldPopulationLabel,
+  type OnlinePopulationBadgeOptions,
+  type OnlinePopulationSnapshot,
+  type WorldChannelNavigatorOptions,
+  type WorldChannelSelection,
+  type WorldChannelSnapshot,
+  type WorldChannelState,
+  type WorldConnectionState,
+  type WorldPopulationSnapshot,
+} from './WorldChannelNavigatorView';
 export {
   PORTAL_LABEL_LAYOUT,
   assignPortalLabelRows,

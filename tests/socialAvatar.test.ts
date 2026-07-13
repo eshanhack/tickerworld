@@ -150,7 +150,7 @@ describe('pooled remote avatar renderer', () => {
     expect(parent.children).toHaveLength(0);
   });
 
-  it('uses complete, initialized species features nearby and only collapses them at distance', () => {
+  it('keeps complete, initialized species features for every visible remote without an LOD downgrade', () => {
     const parent = new Group();
     const camera = new PerspectiveCamera(52, 1, 0.1, 100);
     camera.position.set(0, 3, 8);
@@ -161,6 +161,8 @@ describe('pooled remote avatar renderer', () => {
       parent,
       camera,
       maxPlayers: 1,
+      // Legacy callers may still pass this during deployment skew; it must no
+      // longer replace a distant friend with a reduced proxy.
       detailDistance: 12,
       cullDistance: 42,
       now: () => now,
@@ -187,8 +189,9 @@ describe('pooled remote avatar renderer', () => {
     system.setPlayers([remote('near-penguin', 28, 2, 'base', 'penguin')], now);
     now += 200;
     system.update(1 / 60);
-    expect(system.getDebugStats()).toMatchObject({ rendered: 1, detailed: 0 });
-    expect(Math.abs(instanceTransform(belly).scale.x * instanceTransform(belly).scale.y * instanceTransform(belly).scale.z)).toBe(0);
+    expect(system.getDebugStats()).toMatchObject({ rendered: 1, detailed: 1 });
+    expect(Math.abs(instanceTransform(belly).scale.x * instanceTransform(belly).scale.y * instanceTransform(belly).scale.z)).toBeGreaterThan(0);
+    expect(Math.abs(instanceTransform(wingLeft).scale.x * instanceTransform(wingLeft).scale.y * instanceTransform(wingLeft).scale.z)).toBeGreaterThan(0);
     const body = pool(system, 'remote-body-pool');
     expect(Math.abs(instanceTransform(body).scale.x * instanceTransform(body).scale.y * instanceTransform(body).scale.z)).toBeGreaterThan(0);
 
@@ -279,7 +282,7 @@ describe('pooled remote avatar renderer', () => {
       camera,
       maxPlayers: 1,
       localPosition: () => localPosition,
-      localNameplate: { animal: () => animal, username: null },
+      localNameplate: { actorId: 'local-player', animal: () => animal, username: null },
       viewport: () => ({ left: 0, top: 0, width: 800, height: 600 }),
       occlusionBounds: () => [{
         left: -10_000,
@@ -306,12 +309,61 @@ describe('pooled remote avatar renderer', () => {
     expect(nameplate?.position.x).toBe(-3);
     expect(nameplate?.position.y).toBeCloseTo(2.2467);
     expect(nameplate?.position.z).toBe(6);
-    expect(system.getDebugStats().labels).toBe(3);
+    expect(system.getDebugStats().labels).toBe(4);
 
     system.setLocalUsername(null);
     expect(nameplate?.visible).toBe(false);
     system.dispose();
     expect(parent.children).toHaveLength(0);
+  });
+
+  it('renders the room-echoed local chat above the local head and expires it', () => {
+    const parent = new Group();
+    const camera = new PerspectiveCamera(52, 1, 0.1, 100);
+    camera.position.set(0, 3, 8);
+    camera.lookAt(0, 1, 0);
+    camera.updateMatrixWorld(true);
+    const localPosition = new Vector3(3, 0.5, -4);
+    let now = 1_000;
+    const system = new RemoteAvatarSystem({
+      parent,
+      camera,
+      maxPlayers: 1,
+      now: () => now,
+      localPosition: () => localPosition,
+      localNameplate: { actorId: 'me', animal: () => 'rabbit', username: null },
+      viewport: () => ({ left: 0, top: 0, width: 800, height: 600 }),
+      occlusionBounds: () => [{
+        left: -10_000,
+        top: -10_000,
+        right: 10_000,
+        bottom: 10_000,
+        depth: 100,
+      }],
+    });
+
+    system.showSpeech({ actorId: 'me', text: 'I can see my own bubble' });
+    system.update(1 / 60);
+    const speech = system.root.getObjectByName('local-player-speech');
+    expect(speech).toBeInstanceOf(Text);
+    expect((speech as Text).text).toBe('I can see my own bubble');
+    expect(speech?.visible).toBe(true);
+    expect(speech?.position.x).toBe(3);
+    expect(speech?.position.y).toBeCloseTo(2.584);
+    expect(speech?.position.z).toBe(-4);
+    expect((speech as Text).outlineOpacity).toBeGreaterThanOrEqual(0.72 * 0.96);
+
+    now += 5_001;
+    system.update(1 / 60);
+    expect(speech?.visible).toBe(false);
+    expect((speech as Text).text).toBe('');
+
+    system.setLocalActorId('new-me');
+    system.showSpeech({ actorId: 'new-me', text: 'Identity followed me' });
+    system.update(1 / 60);
+    expect((speech as Text).text).toBe('Identity followed me');
+    expect(speech?.visible).toBe(true);
+    system.dispose();
   });
 
   it('renders remote Saylor as an upright suited biped within the shared pool budget', () => {

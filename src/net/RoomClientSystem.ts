@@ -26,6 +26,7 @@ import {
   type NetPlayerState,
   type ReportSendMessage,
   type ReportRejection,
+  type RoomChannelPopulation,
   type RoomConnectionState,
   type RoomPopulation,
   type SharedWorldEnvironment,
@@ -116,11 +117,34 @@ export interface RoomClientSnapshot {
   readonly connection: RoomConnectionState;
   readonly market: MarketSlug;
   readonly remotes: readonly NetPlayerState[];
+  /** Every player in the current channel, including the local player. */
+  readonly members: readonly NetPlayerState[];
   readonly populations: ReadonlyMap<MarketSlug, RoomPopulation>;
+  readonly currentRoomId: string | null;
+  readonly currentChannel: RoomChannelPopulation | null;
+  readonly totalOnline: number;
+  /** Aggregate across every channel of the active tickerworld. */
+  readonly marketOnline: number;
+  /** Exact replicated membership of the channel currently being rendered. */
+  readonly channelOnline: number;
   /** Null until an authoritative room clock arrives; solo mode stays local. */
   readonly environment: SharedWorldEnvironment | null;
   readonly lastError: string | null;
 }
+
+export type ChannelJoinResult =
+  | {
+    readonly status: 'joined' | 'fallback';
+    readonly market: MarketSlug;
+    readonly requestedRoomId: string;
+    readonly roomId: string;
+  }
+  | {
+    readonly status: 'offline';
+    readonly market: MarketSlug;
+    readonly requestedRoomId: string;
+    readonly roomId: null;
+  };
 
 export interface RoomClientSystemOptions {
   readonly endpoint?: string;
@@ -157,6 +181,56 @@ type MarketMidsListener = (mids: readonly CompactMarketMid[]) => void;
 
 const EMPTY_POPULATIONS = new Map<MarketSlug, RoomPopulation>();
 
+function isPublicRoomId(value: unknown): value is string {
+  return typeof value === 'string'
+    && value.length >= 1
+    && value.length <= 128
+    && /^[A-Za-z0-9_-]+$/.test(value);
+}
+
+function isUnavailableChannelError(error: unknown): boolean {
+  const source = error && typeof error === 'object'
+    ? error as { code?: unknown; message?: unknown }
+    : null;
+  if (source?.code === 522 || source?.code === '522') return true;
+  const message = typeof source?.message === 'string'
+    ? source.message
+    : typeof error === 'string' ? error : '';
+  return /room.+(?:full|not found|unavailable|invalid)|(?:full|invalid).+room/i.test(message);
+}
+
+export function parseRoomChannels(value: unknown): readonly RoomChannelPopulation[] | null {
+  if (!Array.isArray(value) || value.length > 64) return null;
+  const channels: RoomChannelPopulation[] = [];
+  const roomIds = new Set<string>();
+  const numbers = new Set<number>();
+  for (const candidate of value) {
+    if (!candidate || typeof candidate !== 'object') return null;
+    const channel = candidate as Partial<RoomChannelPopulation>;
+    if (!isPublicRoomId(channel.roomId)
+      || roomIds.has(channel.roomId)
+      || !Number.isSafeInteger(channel.channel)
+      || Number(channel.channel) < 1
+      || Number(channel.channel) > 64
+      || numbers.has(Number(channel.channel))
+      || !Number.isSafeInteger(channel.online)
+      || Number(channel.online) < 0
+      || !Number.isSafeInteger(channel.capacity)
+      || Number(channel.capacity) < 1
+      || Number(channel.capacity) > MARKET_ROOM_MAX_CLIENTS
+      || Number(channel.online) > Number(channel.capacity)) return null;
+    roomIds.add(channel.roomId);
+    numbers.add(Number(channel.channel));
+    channels.push({
+      roomId: channel.roomId,
+      channel: Number(channel.channel),
+      online: Number(channel.online),
+      capacity: Number(channel.capacity),
+    });
+  }
+  return channels.sort((first, second) => first.channel - second.channel);
+}
+
 export function parseRoomPopulations(value: unknown): readonly RoomPopulation[] {
   const candidates = Array.isArray(value) ? value : [value];
   const populations: RoomPopulation[] = [];
@@ -174,8 +248,22 @@ export function parseRoomPopulations(value: unknown): readonly RoomPopulation[] 
       || typeof population.updatedAt !== 'number'
       || !Number.isFinite(population.updatedAt)
       || population.updatedAt < 0) continue;
+    const channels = population.channels === undefined
+      ? undefined
+      : parseRoomChannels(population.channels);
+    if (channels === null
+      || (channels !== undefined && (
+        channels.length !== Number(population.shards)
+        || channels.reduce((sum, channel) => sum + channel.online, 0) !== Number(population.online)
+      ))) continue;
     seen.add(population.market);
-    populations.push(population as RoomPopulation);
+    populations.push({
+      market: population.market,
+      online: Number(population.online),
+      shards: Number(population.shards),
+      ...(channels === undefined ? {} : { channels }),
+      updatedAt: population.updatedAt,
+    });
   }
   return populations;
 }
@@ -357,6 +445,9 @@ export class RoomClientSystem implements GameSystem {
   private market: MarketSlug = 'btc';
   private connection: RoomConnectionState = 'offline';
   private remotes: NetPlayerState[] = [];
+  private members: NetPlayerState[] = [];
+  private currentRoomId: string | null = null;
+  private requestedChannelRoomId: string | null = null;
   private lastError: string | null = null;
   private sendAccumulator = 0;
   private sequence = 0;
@@ -401,11 +492,21 @@ export class RoomClientSystem implements GameSystem {
   }
 
   get state(): RoomClientSnapshot {
+    const population = this.populations.get(this.market);
+    const currentChannel = this.currentRoomId
+      ? population?.channels?.find((channel) => channel.roomId === this.currentRoomId) ?? null
+      : null;
     return {
       connection: this.connection,
       market: this.market,
       remotes: this.remotes,
+      members: this.members,
       populations: this.populations.size > 0 ? new Map(this.populations) : EMPTY_POPULATIONS,
+      currentRoomId: this.currentRoomId,
+      currentChannel,
+      totalOnline: [...this.populations.values()].reduce((sum, entry) => sum + entry.online, 0),
+      marketOnline: population?.online ?? (this.connection === 'online' ? this.members.length : 0),
+      channelOnline: this.connection === 'online' ? this.members.length : 0,
       environment: this.environment,
       lastError: this.lastError,
     };
@@ -490,6 +591,7 @@ export class RoomClientSystem implements GameSystem {
   private async connectInternal(market: MarketSlug): Promise<boolean> {
     if (this.disposed) return false;
     this.market = market;
+    this.requestedChannelRoomId = null;
     this.clearWorldEnvironment();
     this.joinFromMarket = undefined;
     this.authoritativeSpawnReceived = false;
@@ -499,13 +601,64 @@ export class RoomClientSystem implements GameSystem {
   }
 
   switchMarket(market: MarketSlug): Promise<boolean> {
-    return this.enqueueOperation(() => this.switchMarketInternal(market));
+    return this.enqueueOperation(() => this.switchMarketInternal(market, null));
   }
 
-  private async switchMarketInternal(market: MarketSlug): Promise<boolean> {
+  /**
+   * Joins the selected numbered channel when it still has a seat. A stale or
+   * just-filled channel falls back to normal market matchmaking, keeping the
+   * player online while returning an explicit result for the switcher UI.
+   */
+  switchChannel(market: MarketSlug, roomId: string): Promise<ChannelJoinResult> {
+    return this.enqueueOperation(async () => {
+      const requestedRoomId = isPublicRoomId(roomId) ? roomId : '';
+      if (!requestedRoomId) {
+        return { status: 'offline', market, requestedRoomId: roomId, roomId: null };
+      }
+      if (this.connection === 'online'
+        && this.market === market
+        && this.currentRoomId === requestedRoomId) {
+        return { status: 'joined', market, requestedRoomId, roomId: requestedRoomId };
+      }
+      const joined = await this.switchMarketInternal(market, requestedRoomId);
+      const actualRoomId = joined ? this.currentRoomId : null;
+      if (!actualRoomId) return { status: 'offline', market, requestedRoomId, roomId: null };
+      return {
+        status: actualRoomId === requestedRoomId ? 'joined' : 'fallback',
+        market,
+        requestedRoomId,
+        roomId: actualRoomId,
+      };
+    });
+  }
+
+  /** Refreshes channels even while the player is browsing in solo mode. */
+  async refreshPopulations(): Promise<readonly RoomPopulation[]> {
+    if (!this.apiEndpoint) return [];
+    try {
+      const response = await this.fetchWithDeadline(`${this.apiEndpoint}/api/populations`, {
+        method: 'GET',
+        headers: { Accept: 'application/json' },
+      });
+      const payload = await response.json().catch(() => null) as { populations?: unknown } | null;
+      if (!response.ok) return [];
+      const updates = parseRoomPopulations(payload?.populations);
+      for (const update of updates) this.populations.set(update.market, update);
+      if (updates.length > 0) this.emit();
+      return updates;
+    } catch {
+      return [];
+    }
+  }
+
+  private async switchMarketInternal(
+    market: MarketSlug,
+    requestedChannelRoomId: string | null,
+  ): Promise<boolean> {
     if (this.disposed) return false;
     const fromMarket = this.market;
     this.market = market;
+    this.requestedChannelRoomId = requestedChannelRoomId;
     this.clearWorldEnvironment();
     this.joinFromMarket = fromMarket === market ? undefined : fromMarket;
     this.authoritativeSpawnReceived = false;
@@ -513,6 +666,7 @@ export class RoomClientSystem implements GameSystem {
     this.clearRetry();
     await this.leaveRoom();
     this.remotes = [];
+    this.members = [];
     this.emit();
     return this.join(generation);
   }
@@ -653,6 +807,8 @@ export class RoomClientSystem implements GameSystem {
     void this.leaveRoom();
     this.client = null;
     this.remotes = [];
+    this.members = [];
+    this.currentRoomId = null;
     this.populations.clear();
   }
 
@@ -681,7 +837,8 @@ export class RoomClientSystem implements GameSystem {
       );
       const partyToken = this.pendingPartyToken;
       const joinOptions = partyToken ? { ...options, partyToken } : options;
-      let roomRequest: Promise<Room>;
+      const requestedChannelRoomId = partyToken ? null : this.requestedChannelRoomId;
+      let room: Room;
       if (partyToken) {
         const redemption = await this.redeemPartyToken(partyToken);
         if (!redemption.ok || redemption.market !== this.market) {
@@ -689,18 +846,36 @@ export class RoomClientSystem implements GameSystem {
           this.fallbackFromParty(partyToken, failure);
           return this.join(generation, identityOptions);
         }
-        roomRequest = this.client.joinById(redemption.roomId, joinOptions);
+        room = await this.joinRoomWithTimeout(this.client.joinById(redemption.roomId, joinOptions));
+      } else if (requestedChannelRoomId) {
+        try {
+          room = await this.joinRoomWithTimeout(
+            this.client.joinById(requestedChannelRoomId, joinOptions),
+          );
+        } catch (error) {
+          if (this.disposed || generation !== this.generation) return false;
+          if (!isUnavailableChannelError(error)) throw error;
+          // Channel snapshots are deliberately short-lived. If the selected
+          // room filled or disposed between menu selection and matchmaking,
+          // keep the transfer useful by joining the healthiest normal shard.
+          this.requestedChannelRoomId = null;
+          room = await this.joinRoomWithTimeout(
+            this.client.joinOrCreate(MARKET_ROOM_NAME, joinOptions),
+          );
+        }
       } else {
-        roomRequest = this.client.joinOrCreate(MARKET_ROOM_NAME, joinOptions);
+        room = await this.joinRoomWithTimeout(
+          this.client.joinOrCreate(MARKET_ROOM_NAME, joinOptions),
+        );
       }
-      const room = await this.joinRoomWithTimeout(
-        roomRequest,
-      );
       if (this.disposed || generation !== this.generation) {
         await room.leave(true);
         return false;
       }
       this.room = room;
+      const joinedRoomId = (room as Room & { roomId?: unknown }).roomId;
+      this.currentRoomId = isPublicRoomId(joinedRoomId) ? joinedRoomId : null;
+      this.requestedChannelRoomId = null;
       this.clearWorldEnvironment();
       this.roomEpoch += 1;
       this.boundActorId = targetIdentity.actorId;
@@ -817,8 +992,10 @@ export class RoomClientSystem implements GameSystem {
       room.onLeave(() => {
         if (room !== this.room || this.disposed || generation !== this.generation) return;
         this.room = null;
+        this.currentRoomId = null;
         this.boundActorId = null;
         this.remotes = [];
+        this.members = [];
         this.finishIdentityRefresh(false);
         this.finishPartyInvite(null);
         this.clearPendingMarketState();
@@ -863,9 +1040,11 @@ export class RoomClientSystem implements GameSystem {
     const environment = parseSharedWorldEnvironment(state.environment);
     if (environment) this.acceptWorldEnvironment(environment);
     const next: NetPlayerState[] = [];
+    const members: NetPlayerState[] = [];
     state.players?.forEach?.((value) => {
       const parsed = parseRemote(value);
       if (!parsed) return;
+      members.push(parsed);
       if (parsed.actorId === this.boundActorId) {
         if (!this.authoritativeSpawnReceived) {
           this.authoritativeSpawnReceived = true;
@@ -876,6 +1055,7 @@ export class RoomClientSystem implements GameSystem {
       next.push(parsed);
     });
     this.remotes = next;
+    this.members = members;
     this.emit();
   }
 
@@ -1046,6 +1226,7 @@ export class RoomClientSystem implements GameSystem {
     const generation = ++this.generation;
     await this.leaveRoom();
     this.remotes = [];
+    this.members = [];
     this.emit();
 
     const joined = await this.join(generation, {
@@ -1141,6 +1322,8 @@ export class RoomClientSystem implements GameSystem {
   private async leaveRoom(): Promise<void> {
     const room = this.room;
     this.room = null;
+    this.currentRoomId = null;
+    this.members = [];
     this.boundActorId = null;
     this.finishIdentityRefresh(false);
     this.finishPartyInvite(null);

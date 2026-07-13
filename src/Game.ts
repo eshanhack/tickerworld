@@ -29,7 +29,16 @@ import {
   type RoomClientSnapshot,
 } from './net';
 import { BrowserNewsFeed, type NewsFeedMode, type NewsFeedUpdate } from './news';
-import { PortalSystem, type PortalRoute } from './portals';
+import {
+  OnlinePopulationBadgeView,
+  PortalSystem,
+  WorldChannelNavigatorView,
+  type PortalRoute,
+  type WorldChannelSelection,
+  type WorldChannelSnapshot,
+  type WorldConnectionState,
+  type WorldPopulationSnapshot,
+} from './portals';
 import { FoxPlayer, ThirdPersonCamera, type FootstepEvent, type FoxActionEvent } from './player';
 import {
   marketSlugForSymbol,
@@ -160,6 +169,8 @@ export class Game {
   private readonly uiInteractionLock = new UiInteractionLock();
   private readonly portalSystem: PortalSystem;
   private readonly roomClient: RoomClientSystem;
+  private readonly worldNavigator: WorldChannelNavigatorView;
+  private readonly onlinePopulationBadge: OnlinePopulationBadgeView;
   private remoteAvatars?: RemoteAvatarSystem;
   private emotes?: EmoteVisualSystem;
   private social?: SocialSystem;
@@ -170,6 +181,7 @@ export class Game {
   private readonly monumentIds = new Map<Monument, string>();
   private readonly latestStates = new Map<AssetSymbol, AssetState>();
   private readonly pendingRoomSpawns = new Map<MarketSlug, NetPlayerState>();
+  private populationViewKey = '';
   private readonly clock = new THREE.Clock();
   private readonly tempPosition = new THREE.Vector3();
   private readonly newsCameraSpace = new THREE.Vector3();
@@ -500,6 +512,21 @@ export class Game {
     }
     this.hud.setCompassEnabled(this.compassEnabled);
     this.hud.setReducedMotion(this.reducedMotion);
+    this.worldNavigator = new WorldChannelNavigatorView(
+      this.hud.mountLayer('tickerworld-world-navigator-layer'),
+      {
+        activeMarket: this.activeMarket,
+        canOpen: () => this.entered
+          && !this.contextLost
+          && !this.uiInteractionLock.has('portal'),
+        onOpenChange: (open) => this.setWorldNavigatorOpen(open),
+        onTravel: (selection) => this.quickTravel(selection),
+      },
+    );
+    this.onlinePopulationBadge = new OnlinePopulationBadgeView(
+      this.hud.mountLayer('tickerworld-online-population-layer'),
+      { onBrowseWorlds: () => this.worldNavigator.open() },
+    );
     this.parkourHud = new ParkourHudView(this.hud.mountLayer('tickerworld-parkour-layer'), {
       onQuit: () => this.parkour.quitRun(),
     });
@@ -535,6 +562,7 @@ export class Game {
       fontUrl: nunitoFontUrl,
       localPosition: () => this.player.position,
       localNameplate: {
+        actorId: this.roomClient.identity.actorId,
         animal: () => this.player.animal,
         username: this.guestAppearance.username,
       },
@@ -798,6 +826,8 @@ export class Game {
   public async switchMarket(
     destination: AssetSymbol,
     previousMarket = this.activeMarket,
+    selectedChannelRoomId: string | null = null,
+    forceMatchmaking = false,
   ): Promise<boolean> {
     if (this.disposed) return false;
     const originMarket = this.activeMarket;
@@ -805,7 +835,11 @@ export class Game {
     const switchGeneration = ++this.marketSwitchGeneration;
     try {
       const destinationSlug = marketSlugForSymbol(destination);
-      if (destination === this.activeMarket && this.roomClient.state.market === destinationSlug) {
+      if (destination === this.activeMarket
+        && this.roomClient.state.market === destinationSlug
+        && (selectedChannelRoomId
+          ? selectedChannelRoomId === this.roomClient.state.currentRoomId
+          : !forceMatchmaking)) {
         this.portalSystem.cancelTravel();
         return true;
       }
@@ -815,10 +849,25 @@ export class Game {
       // joined the destination room or deliberately resolved to solo mode. This
       // prevents movement in a new world while the client is still in the old
       // room and keeps browser history travel consistent with physical portals.
-      await this.roomClient.switchMarket(destinationSlug);
+      const channelResult = selectedChannelRoomId
+        ? await this.roomClient.switchChannel(destinationSlug, selectedChannelRoomId)
+        : null;
+      if (!selectedChannelRoomId) await this.roomClient.switchMarket(destinationSlug);
       if (this.disposed || switchGeneration !== this.marketSwitchGeneration) return false;
       if (destination === this.activeMarket) {
         this.portalSystem.cancelTravel();
+        this.refreshPopulationViews(this.roomClient.state);
+        if (channelResult?.status === 'fallback') {
+          const channel = this.roomClient.state.currentChannel?.channel;
+          this.hud.showToast(channel
+            ? `That channel filled up — joined Channel ${channel}.`
+            : 'That channel filled up — joined the best open channel.');
+        } else if (channelResult?.status === 'offline') {
+          this.hud.showToast('Multiplayer is unavailable, so this world is running in solo mode.');
+        } else if (channelResult?.status === 'joined') {
+          const channel = this.roomClient.state.currentChannel?.channel;
+          if (channel) this.hud.showToast(`Channel ${channel}`);
+        }
         return true;
       }
       await this.market.setActiveMarket(destination);
@@ -853,6 +902,7 @@ export class Game {
         if (marketUi) marketUi.visible = false;
       }
       this.hud.setActiveMarket(destination);
+      this.worldNavigator.setActiveMarket(destination);
       const destinationState = this.market.getState(destination);
       const roomConnection = this.roomClient.state.connection;
       this.hud.setEntryStatus(
@@ -868,9 +918,18 @@ export class Game {
       this.parkour.resetRun();
 
       this.placeAtSpawn(destination, previousMarket);
+      this.refreshPopulationViews(this.roomClient.state);
       this.refreshAudioSources();
       this.audio.updateProximityPosition(this.player.position);
       this.hud.showToast(`${destination} world`);
+      if (channelResult?.status === 'fallback') {
+        const channel = this.roomClient.state.currentChannel?.channel;
+        this.hud.showToast(channel
+          ? `Selected channel filled up — joined Channel ${channel}.`
+          : 'Selected channel filled up — joined the best open channel.');
+      } else if (channelResult?.status === 'offline') {
+        this.hud.showToast('Multiplayer is unavailable, so travel continued in solo mode.');
+      }
       if (destination !== originMarket) this.hud.recordOnboardingAction('portal');
       if (destination !== originMarket) {
         this.telemetry.emit({ name: 'portal_completed', market: destination });
@@ -888,6 +947,31 @@ export class Game {
     if (await this.switchMarket(route.destination, previous)) {
       this.routeHistory?.push(route.destination);
     }
+  }
+
+  private async quickTravel(selection: WorldChannelSelection): Promise<boolean> {
+    const previous = this.activeMarket;
+    const travelled = await this.switchMarket(
+      selection.symbol,
+      previous,
+      selection.channelId,
+      selection.channelId === null,
+    );
+    if (travelled && selection.symbol !== previous) this.routeHistory?.push(selection.symbol);
+    return travelled;
+  }
+
+  private setWorldNavigatorOpen(open: boolean): boolean {
+    if (open) {
+      if (this.uiInteractionLock.has('context') || this.uiInteractionLock.has('portal')) return false;
+      this.share?.close();
+      this.social?.setVisible(false);
+      this.onlinePopulationBadge?.collapse();
+      void this.roomClient.refreshPopulations();
+    } else {
+      this.social?.setVisible(this.visible);
+    }
+    return this.setUiInteraction('worlds', open);
   }
 
   private setUiInteraction(owner: UiInteractionOwner, active: boolean): boolean {
@@ -1002,6 +1086,7 @@ export class Game {
 
   private onRoomIdentityChanged(identity: GuestIdentity): void {
     this.social?.setLocalActorId(identity.actorId);
+    this.remoteAvatars?.setLocalActorId(identity.actorId);
     this.appearanceSyncKey = null;
     if (this.roomClient.sessionToken) {
       const skin = identity.skin ?? 'base';
@@ -1069,6 +1154,66 @@ export class Game {
     this.cameraRig.setOrbit(player.yaw, this.cameraRig.pitch, this.cameraRig.zoomDistance);
   }
 
+  private refreshPopulationViews(state: RoomClientSnapshot): void {
+    const connection: WorldConnectionState = state.connection === 'online'
+      ? 'online'
+      : state.connection === 'connecting' || state.connection === 'reconnecting'
+        ? 'connecting'
+        : 'offline';
+    const populations: WorldPopulationSnapshot[] = [];
+    for (const symbol of GRAND_MONUMENTS.map(({ symbol }) => symbol)) {
+      const population = state.populations.get(marketSlugForSymbol(symbol));
+      const channels: WorldChannelSnapshot[] = (population?.channels ?? []).map((channel) => {
+        const fill = channel.capacity > 0 ? channel.online / channel.capacity : 1;
+        return {
+          id: channel.roomId,
+          label: `Channel ${channel.channel}`,
+          online: channel.online,
+          capacity: channel.capacity,
+          state: connection === 'offline'
+            ? 'offline'
+            : channel.online >= channel.capacity
+              ? 'full'
+              : fill >= 0.8
+                ? 'busy'
+                : 'available',
+        };
+      });
+      populations.push({
+        symbol,
+        online: population?.online ?? (connection === 'offline' ? null : 0),
+        shards: population?.shards ?? (connection === 'offline' ? null : 0),
+        connection,
+        currentChannelId: symbol === this.activeMarket ? state.currentRoomId : null,
+        channels,
+      });
+    }
+    const usernames = state.members.map((member) => {
+      if (member.username) return member.username;
+      if (member.animal === 'saylor') return 'Michael Saylor (guest)';
+      return `${member.animal.slice(0, 1).toUpperCase()}${member.animal.slice(1)} (guest)`;
+    });
+    const nextKey = JSON.stringify({
+      activeMarket: this.activeMarket,
+      connection,
+      totalOnline: state.totalOnline,
+      marketOnline: state.marketOnline,
+      currentRoomId: state.currentRoomId,
+      populations,
+      usernames,
+    });
+    if (nextKey === this.populationViewKey) return;
+    this.populationViewKey = nextKey;
+    this.worldNavigator.setPopulations(populations);
+    this.onlinePopulationBadge.setSnapshot({
+      totalOnline: connection === 'offline' ? null : state.totalOnline,
+      worldOnline: connection === 'offline' ? null : state.marketOnline,
+      world: this.activeMarket,
+      usernames,
+      connection,
+    });
+  }
+
   private onRoomClientState(state: RoomClientSnapshot): void {
     if (state.connection !== 'online') {
       this.appearanceSyncKey = null;
@@ -1100,8 +1245,9 @@ export class Game {
     }
     this.social?.setConnectionState(
       state.connection,
-      state.connection === 'online' ? state.remotes.length + 1 : 0,
+      state.connection === 'online' ? state.channelOnline : 0,
     );
+    this.refreshPopulationViews(state);
     const connectionMode = state.connection === 'online'
       ? 'online'
       : state.connection === 'connecting' || state.connection === 'reconnecting'
@@ -1814,6 +1960,8 @@ export class Game {
     this.telemetry.dispose();
     this.roomClient.dispose();
     this.canvasInteractions?.dispose();
+    this.worldNavigator.dispose();
+    this.onlinePopulationBadge.dispose();
     this.social?.dispose();
     this.share?.dispose();
     this.uiInteractionLock.clear();

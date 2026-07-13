@@ -28,12 +28,6 @@ const BUBBLE_RENDER_ORDER = 39;
 const SPEECH_LIFETIME_MS = 5_000;
 const SAMPLE_LIMIT = 6;
 const HIDDEN_SCALE = new THREE.Vector3(0, 0, 0);
-/**
- * Remote creatures retain their complete species read while they can actually
- * be inspected. Beyond this range we keep only the animated silhouette. This
- * is an LOD choice, not a separate low-quality renderer for nearby friends.
- */
-const DEFAULT_DETAIL_DISTANCE = 34;
 
 interface AnimalProfile {
   readonly body: number;
@@ -126,7 +120,10 @@ export interface RemoteAvatarSystemOptions {
   readonly maxPlayers?: number;
   readonly interpolationDelayMs?: number;
   readonly cullDistance?: number;
-  /** Distance at which the accessory pools collapse to the animated silhouette. */
+  /**
+   * @deprecated Remote players no longer drop species features at distance.
+   * Kept temporarily so older callers can deploy across this client change.
+   */
   readonly detailDistance?: number;
   readonly localPosition?: () => Readonly<THREE.Vector3>;
   /**
@@ -135,6 +132,8 @@ export interface RemoteAvatarSystemOptions {
    * saved, so anonymous play keeps the original clean silhouette.
    */
   readonly localNameplate?: {
+    /** Actor id used to route the room's own echoed chat above the local head. */
+    readonly actorId?: string;
     readonly animal: () => AnimalKind;
     readonly username?: string | null;
   };
@@ -245,7 +244,6 @@ export class RemoteAvatarSystem implements GameSystem {
   private readonly capacity: number;
   private readonly interpolationDelayMs: number;
   private readonly cullDistanceSquared: number;
-  private readonly detailDistanceSquared: number;
   private readonly localPosition: () => Readonly<THREE.Vector3>;
   private readonly viewport: () => RemoteAvatarViewport;
   private readonly occlusionBounds: () => readonly ScreenBounds[];
@@ -255,8 +253,11 @@ export class RemoteAvatarSystem implements GameSystem {
   private readonly blocked = new Set<string>();
   private readonly pendingSpeech = new Map<string, { text: string; expiresAt: number }>();
   private readonly localNameplate?: Text;
+  private readonly localSpeech?: Text;
   private readonly localAnimal?: () => AnimalKind;
+  private localActorId: string | null = null;
   private localUsername: string | null = null;
+  private localSpeechExpiresAt = 0;
   private readonly material = new THREE.MeshStandardMaterial({
     color: 0xffffff,
     roughness: 0.84,
@@ -277,9 +278,9 @@ export class RemoteAvatarSystem implements GameSystem {
   private readonly legHindRight: PartPool;
   private readonly tail: PartPool;
   private readonly crest: PartPool;
-  // Detail pools are still shared InstancedMeshes. They restore eyes, muzzles,
-  // bellies, wings, gills and tail tips at conversational distance without
-  // allocating an Object3D rig (or materials) per remote player.
+  // Species pools are shared InstancedMeshes. Eyes, muzzles, bellies, wings,
+  // gills and tail tips stay present for every visible remote player; distance
+  // culling now removes an avatar as a whole instead of degrading its identity.
   private readonly muzzle: PartPool;
   private readonly belly: PartPool;
   private readonly eyeLeft: PartPool;
@@ -314,11 +315,6 @@ export class RemoteAvatarSystem implements GameSystem {
     this.interpolationDelayMs = Math.max(0, options.interpolationDelayMs ?? REMOTE_INTERPOLATION_DELAY_MS);
     const cullDistance = Math.max(8, options.cullDistance ?? 68);
     this.cullDistanceSquared = cullDistance * cullDistance;
-    const detailDistance = Math.min(
-      cullDistance,
-      Math.max(6, options.detailDistance ?? DEFAULT_DETAIL_DISTANCE),
-    );
-    this.detailDistanceSquared = detailDistance * detailDistance;
     this.localPosition = options.localPosition ?? (() => this.camera.position);
     this.viewport = options.viewport ?? (() => ({ left: 0, top: 0, width: innerWidth, height: innerHeight }));
     this.occlusionBounds = options.occlusionBounds ?? (() => []);
@@ -391,12 +387,17 @@ export class RemoteAvatarSystem implements GameSystem {
     }
     if (options.localNameplate) {
       this.localAnimal = options.localNameplate.animal;
+      this.localActorId = options.localNameplate.actorId?.trim() || null;
       this.localUsername = options.localNameplate.username?.trim() || null;
       const nameplate = new Text();
       nameplate.name = 'local-player-nameplate';
       configureLabel(nameplate, options.fontUrl, false);
+      const speech = new Text();
+      speech.name = 'local-player-speech';
+      configureLabel(speech, options.fontUrl, true);
       this.localNameplate = nameplate;
-      this.root.add(nameplate);
+      this.localSpeech = speech;
+      this.root.add(nameplate, speech);
       this.renderLocalUsername();
     }
     this.flushMatrices();
@@ -408,6 +409,19 @@ export class RemoteAvatarSystem implements GameSystem {
     if (!this.localNameplate || this.disposed) return;
     this.localUsername = username?.trim() || null;
     this.renderLocalUsername();
+  }
+
+  /** Updates the actor id after an account/anonymous identity transition. */
+  setLocalActorId(actorId: string): void {
+    const next = actorId.trim() || null;
+    if (next === this.localActorId) return;
+    this.localActorId = next;
+    this.localSpeechExpiresAt = 0;
+    if (this.localSpeech?.text) {
+      this.localSpeech.text = '';
+      this.localSpeech.visible = false;
+      this.syncText(this.localSpeech);
+    }
   }
 
   setPlayers(players: readonly NetPlayerState[], receivedAt = this.now()): void {
@@ -456,6 +470,10 @@ export class RemoteAvatarSystem implements GameSystem {
 
   showSpeech(message: Pick<ChatMessage, 'actorId' | 'text'>): void {
     if (this.disposed || this.blocked.has(message.actorId)) return;
+    if (this.localActorId && message.actorId === this.localActorId) {
+      this.showLocalSpeech(message.text);
+      return;
+    }
     const expiresAt = this.now() + SPEECH_LIFETIME_MS;
     const text = clipSpeech(message.text);
     const slot = this.slotByActor.get(message.actorId);
@@ -464,6 +482,14 @@ export class RemoteAvatarSystem implements GameSystem {
       return;
     }
     this.setSlotSpeech(slot, text, expiresAt);
+  }
+
+  /** Shows an accepted local chat message above the controlled character. */
+  showLocalSpeech(text: string): void {
+    if (this.disposed || !this.localSpeech) return;
+    this.localSpeech.text = clipSpeech(text);
+    this.localSpeechExpiresAt = this.now() + SPEECH_LIFETIME_MS;
+    this.syncText(this.localSpeech);
   }
 
   pickAt(clientX: number, clientY: number, domElement: HTMLElement): NetPlayerState | null {
@@ -498,7 +524,9 @@ export class RemoteAvatarSystem implements GameSystem {
       const distanceSquared = (pose.x - local.x) ** 2 + (pose.z - local.z) ** 2;
       const shouldRender = distanceSquared <= this.cullDistanceSquared;
       slot.rendered = shouldRender;
-      slot.detailVisible = shouldRender && distanceSquared <= this.detailDistanceSquared;
+      // A visible friend is always their complete selected creature. We cull
+      // at the room's configured horizon instead of swapping them to a proxy.
+      slot.detailVisible = shouldRender;
       slot.nameplate.visible = shouldRender && this.labelsVisible;
       slot.speech.visible = shouldRender && this.labelsVisible && slot.speechExpiresAt > now;
       if (!shouldRender) {
@@ -514,7 +542,7 @@ export class RemoteAvatarSystem implements GameSystem {
         this.syncText(slot.speech);
       }
     }
-    this.writeLocalNameplate(occlusions);
+    this.writeLocalLabels(now, occlusions);
     this.flushMatrices();
   }
 
@@ -528,6 +556,7 @@ export class RemoteAvatarSystem implements GameSystem {
     this.labelsVisible = visible;
     if (visible) return;
     if (this.localNameplate) this.localNameplate.visible = false;
+    if (this.localSpeech) this.localSpeech.visible = false;
     for (const slot of this.slots) {
       slot.nameplate.visible = false;
       slot.speech.visible = false;
@@ -543,7 +572,7 @@ export class RemoteAvatarSystem implements GameSystem {
       drawCalls: this.allPools.length,
       geometries: new Set(this.allPools.map((pool) => pool.geometry)).size,
       materials: 1,
-      labels: this.slots.length * 2 + (this.localNameplate ? 1 : 0),
+      labels: this.slots.length * 2 + (this.localNameplate ? 2 : 0),
     };
   }
 
@@ -559,6 +588,8 @@ export class RemoteAvatarSystem implements GameSystem {
     }
     this.localNameplate?.dispose();
     this.localNameplate?.removeFromParent();
+    this.localSpeech?.dispose();
+    this.localSpeech?.removeFromParent();
     const geometries = new Set(this.allPools.map((pool) => pool.geometry));
     for (const geometry of geometries) geometry.dispose();
     this.material.dispose();
@@ -672,20 +703,35 @@ export class RemoteAvatarSystem implements GameSystem {
     this.syncText(nameplate);
   }
 
-  private writeLocalNameplate(occlusions: readonly ScreenBounds[]): void {
+  private writeLocalLabels(now: number, occlusions: readonly ScreenBounds[]): void {
     const nameplate = this.localNameplate;
-    if (!nameplate || !this.localUsername || !this.labelsVisible) {
+    const speech = this.localSpeech;
+    if (!nameplate || !speech || !this.labelsVisible) {
       if (nameplate) nameplate.visible = false;
+      if (speech) speech.visible = false;
       return;
     }
     const local = this.localPosition();
     const animal = this.localAnimal?.() ?? 'fox';
     const profile = ANIMAL_PROFILES[validAnimal(animal)];
     const proportionalHeight = profile.height * (animalMotionProfile(animal).modelScale / 0.9);
-    nameplate.visible = true;
-    nameplate.position.set(local.x, local.y + proportionalHeight + 0.28, local.z);
+    const labelY = local.y + proportionalHeight + 0.28;
+    nameplate.visible = Boolean(this.localUsername);
+    nameplate.position.set(local.x, labelY, local.z);
     nameplate.quaternion.copy(this.camera.quaternion);
-    this.setTextOpacity(nameplate, this.labelOpacity(nameplate.position, 2.6, occlusions));
+    speech.visible = this.localSpeechExpiresAt > now;
+    speech.position.set(local.x, labelY + 0.42, local.z);
+    speech.quaternion.copy(this.camera.quaternion);
+    const opacity = this.labelOpacity(nameplate.position, speech.visible ? 3.2 : 2.6, occlusions);
+    this.setTextOpacity(nameplate, opacity);
+    // Speech is short-lived and must remain readable to its sender even when
+    // the player is standing in front of the chart. Persistent nameplates
+    // retain the stronger overlap fade to keep the market UI uncluttered.
+    this.setTextOpacity(speech, speech.visible ? Math.max(0.72, opacity) : opacity);
+    if (this.localSpeechExpiresAt <= now && speech.text) {
+      speech.text = '';
+      this.syncText(speech);
+    }
   }
 
   private writeAvatar(
@@ -780,7 +826,7 @@ export class RemoteAvatarSystem implements GameSystem {
     slot.speech.quaternion.copy(this.camera.quaternion);
     const opacity = this.labelOpacity(slot.nameplate.position, slot.speech.visible ? 3.2 : 2.6, occlusions);
     this.setTextOpacity(slot.nameplate, opacity);
-    this.setTextOpacity(slot.speech, opacity);
+    this.setTextOpacity(slot.speech, slot.speech.visible ? Math.max(0.72, opacity) : opacity);
   }
 
   /**

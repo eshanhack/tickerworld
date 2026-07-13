@@ -1,11 +1,14 @@
 import {
+  MARKET_ROOM_MAX_CLIENTS,
   MARKET_SLUGS,
   type MarketSlug,
+  type RoomChannelPopulation,
   type RoomPopulation,
 } from '@tickerworld/shared';
 
 interface RoomEntry {
   market: MarketSlug;
+  channel: number;
   clients: number;
   publish: (populations: readonly RoomPopulation[]) => void;
 }
@@ -21,7 +24,14 @@ export class PopulationDirectory {
     market: MarketSlug,
     publish: (populations: readonly RoomPopulation[]) => void,
   ): void {
-    this.rooms.set(roomId, { market, clients: 0, publish });
+    const occupiedChannels = new Set(
+      [...this.rooms.values()]
+        .filter((room) => room.market === market)
+        .map((room) => room.channel),
+    );
+    let channel = 1;
+    while (occupiedChannels.has(channel)) channel += 1;
+    this.rooms.set(roomId, { market, channel, clients: 0, publish });
     this.queuePublish();
   }
 
@@ -40,19 +50,25 @@ export class PopulationDirectory {
   snapshot(now = Date.now()): readonly RoomPopulation[] {
     return MARKET_SLUGS.map((market) => {
       let online = 0;
-      let shards = 0;
-      for (const room of this.rooms.values()) {
+      const channels: RoomChannelPopulation[] = [];
+      for (const [roomId, room] of this.rooms) {
         if (room.market !== market) continue;
         online += room.clients;
-        shards += 1;
+        channels.push({
+          roomId,
+          channel: room.channel,
+          online: room.clients,
+          capacity: MARKET_ROOM_MAX_CLIENTS,
+        });
       }
-      return { market, online, shards, updatedAt: now };
+      channels.sort((first, second) => first.channel - second.channel);
+      return { market, online, shards: channels.length, channels, updatedAt: now };
     });
   }
 
-  room(roomId: string): { market: MarketSlug; clients: number } | null {
+  room(roomId: string): { market: MarketSlug; channel: number; clients: number } | null {
     const entry = this.rooms.get(roomId);
-    return entry ? { market: entry.market, clients: entry.clients } : null;
+    return entry ? { market: entry.market, channel: entry.channel, clients: entry.clients } : null;
   }
 
   clear(): void {

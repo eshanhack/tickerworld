@@ -34,4 +34,13 @@ describe('UiInteractionLock', () => {
     expect(lock.has('portal')).toBe(false);
     expect(lock.locked).toBe(false);
   });
+
+  it('locks movement while the world guide is open', () => {
+    const lock = new UiInteractionLock();
+    lock.set('worlds', true);
+    expect(lock.locked).toBe(true);
+    expect(lock.has('worlds')).toBe(true);
+    lock.set('worlds', false);
+    expect(lock.locked).toBe(false);
+  });
 });

@@ -19,10 +19,24 @@ describe('market population directory', () => {
     directory.update('btc-1', 50);
     directory.update('btc-2', 25);
     directory.update('eth-1', 7);
-    expect(directory.snapshot().find((entry) => entry.market === 'btc')).toMatchObject({ online: 75, shards: 2 });
+    expect(directory.snapshot().find((entry) => entry.market === 'btc')).toMatchObject({
+      online: 75,
+      shards: 2,
+      channels: [
+        { roomId: 'btc-1', channel: 1, online: 50, capacity: 50 },
+        { roomId: 'btc-2', channel: 2, online: 25, capacity: 50 },
+      ],
+    });
     expect(directory.snapshot().find((entry) => entry.market === 'eth')).toMatchObject({ online: 7, shards: 1 });
     expect(publish).toHaveBeenCalled();
     directory.unregister('btc-2');
     expect(directory.snapshot().find((entry) => entry.market === 'btc')).toMatchObject({ online: 50, shards: 1 });
+
+    // Empty channel numbers are reused without renumbering live channels.
+    directory.register('btc-3', 'btc', publish);
+    expect(directory.snapshot().find((entry) => entry.market === 'btc')?.channels).toEqual([
+      { roomId: 'btc-1', channel: 1, online: 50, capacity: 50 },
+      { roomId: 'btc-3', channel: 2, online: 0, capacity: 50 },
+    ]);
   });
 });
