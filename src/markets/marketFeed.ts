@@ -677,8 +677,14 @@ export class HyperliquidMarketFeed implements MarketFeed {
       this.emit(state);
       if (isDexAssetSymbol(symbol)) {
         this.reconnectAttempt = 0;
-        this.socketDebug = 'dex polling';
+        // A DEX chart uses its own on-chain polling path, but the portal ring
+        // still needs the compact Hyperliquid/xyz midpoint stream for every
+        // non-DEX destination. Keep one mids-only socket alive in these worlds.
+        this.socketDebug = 'dex polling + mids';
         await Promise.all([this.pollDexMarkets(), this.pollActiveDexTrades()]);
+        if (generation === this.syncGeneration && !this.paused && !this.disposed) {
+          this.connect(generation);
+        }
         return;
       }
       this.connect(generation);
@@ -773,7 +779,6 @@ export class HyperliquidMarketFeed implements MarketFeed {
       || this.paused
       || this.disposed
       || FORCE_SIMULATION
-      || isDexAssetSymbol(this.activeSymbol)
       || this.relayActive
       || !this.directFallbackAllowed
       || this.socket
@@ -792,7 +797,11 @@ export class HyperliquidMarketFeed implements MarketFeed {
           socket.send(JSON.stringify({ method: 'subscribe', subscription }));
         }
         this.reconnectAttempt = 0;
-        if (this.activeSymbol !== 'TEST') this.setAllModes('live');
+        // The DEX chart's own quote/trade poll is authoritative for its
+        // status. This socket is only a passive midpoint source in that case.
+        if (this.activeSymbol !== 'TEST' && !isDexAssetSymbol(this.activeSymbol)) {
+          this.setAllModes('live');
+        }
       });
       socket.addEventListener('message', (event) => {
         if (this.socket === socket) this.handleMessage(String(event.data));
@@ -1207,8 +1216,26 @@ export class HyperliquidMarketFeed implements MarketFeed {
     this.socket = undefined;
     this.pendingTrades.clear();
     if (this.paused || this.disposed || FORCE_SIMULATION || this.relayActive || !this.directFallbackAllowed) return;
-    this.setAllModes('reconnecting');
+    if (isDexAssetSymbol(this.activeSymbol)) {
+      // Losing passive portal mids must not mark a still-polling DEX chart as
+      // unavailable. Individual passive portal states are marked below.
+      this.setPassiveMidModes('reconnecting');
+    } else {
+      this.setAllModes('reconnecting');
+    }
     this.scheduleReconnect();
+  }
+
+  /** Marks only portal-only market quotes stale while a DEX chart keeps polling. */
+  private setPassiveMidModes(mode: FeedMode): void {
+    for (const symbol of ASSET_SYMBOLS) {
+      if (symbol === this.activeSymbol || symbol === 'TEST' || isDexAssetSymbol(symbol)) continue;
+      const previous = this.getState(symbol);
+      if (previous.mode === mode) continue;
+      const state: AssetState = { ...previous, mode, updateKind: 'snapshot' };
+      this.states.set(symbol, state);
+      this.emit(state);
+    }
   }
 
   private scheduleReconnect(): void {

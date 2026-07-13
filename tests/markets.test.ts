@@ -180,9 +180,33 @@ describe('market candle helpers', () => {
       { type: 'allMids' },
       { type: 'allMids', dex: 'xyz' },
     ]);
+    // DEX worlds keep the exact DEX trade poll for their local chart while a
+    // lightweight Hyperliquid socket supplies prices for the other portals.
+    expect(buildHyperliquidSubscriptions('ANSEM')).toEqual([
+      { type: 'allMids' },
+      { type: 'allMids', dex: 'xyz' },
+    ]);
     expect(parseHyperliquidMids({ mids: {
       BTC: '64123.5', ETH: 3120, 'xyz:CL': '73.42', BAD: 1, SOL: 'nope',
     } })).toEqual({ BTC: 64123.5, ETH: 3120, WTI: 73.42 });
+  });
+
+  it('keeps a DEX chart live when the passive portal-mids socket reconnects', () => {
+    const feed = new HyperliquidMarketFeed();
+    const internals = feed as unknown as {
+      activeSymbol: 'ANSEM';
+      setPassiveMidModes(mode: AssetState['mode']): void;
+      applyCompactMids(mids: readonly { instrument: 'BTC'; price: number; upstreamAt: number }[], publishedAt: number): void;
+    };
+    internals.activeSymbol = 'ANSEM';
+    internals.applyCompactMids([{ instrument: 'BTC', price: 99_000, upstreamAt: 1_000 }], 1_000);
+    expect(feed.getState('BTC')).toMatchObject({ price: 99_000, mode: 'live' });
+    expect(feed.getState('ANSEM').mode).toBe('connecting');
+
+    internals.setPassiveMidModes('reconnecting');
+    expect(feed.getState('BTC').mode).toBe('reconnecting');
+    expect(feed.getState('ANSEM').mode).toBe('connecting');
+    feed.dispose();
   });
 
   it('accepts server-coalesced active charts and silent portal mids', () => {
