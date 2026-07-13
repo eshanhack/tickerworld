@@ -81,11 +81,12 @@ import {
 } from './ui';
 import {
   CyberpunkDexDistrict,
+  DesertOilDistrict,
   OilWorldEffects,
   ParkourParkSystem,
   WorldGuard,
   WorldSystem,
-  isDexCyberpunkSymbol,
+  worldEnvironmentTheme,
   type ParkourEvent,
 } from './world';
 
@@ -150,6 +151,7 @@ export class Game {
   private readonly fireworks: FireworkPool;
   private readonly oilEffects: OilWorldEffects;
   private readonly dexDistrict: CyberpunkDexDistrict;
+  private readonly desertDistrict: DesertOilDistrict;
   private readonly parkour: ParkourParkSystem;
   private parkourHud?: ParkourHudView;
   private tradeDebugPanel?: TradeDebugPanel;
@@ -302,6 +304,13 @@ export class Game {
       activeMarket: this.activeMarket,
       reducedMotion: this.reducedMotion,
     });
+    this.desertDistrict = new DesertOilDistrict({
+      parent: this.scene,
+      seed: WORLD_SEED,
+      heightAt: (x, z) => this.world.heightAt(x, z),
+      activeMarket: this.activeMarket,
+      reducedMotion: this.reducedMotion,
+    });
     this.fireworks = new FireworkPool({
       capacity: launchQuality.fireworkCapacity,
       reducedMotion: this.reducedMotion,
@@ -336,7 +345,7 @@ export class Game {
         return true;
       },
     });
-    this.parkour.setCyberpunkTheme(isDexCyberpunkSymbol(this.activeMarket));
+    this.parkour.setVisualTheme(worldEnvironmentTheme(this.activeMarket));
 
     const spawnZ = 21;
     this.player = new FoxPlayer({
@@ -467,6 +476,7 @@ export class Game {
         this.world.setReducedMotion(enabled);
         this.oilEffects.setReducedMotion(enabled);
         this.dexDistrict.setReducedMotion(enabled);
+        this.desertDistrict.setReducedMotion(enabled);
         this.parkour.setReducedMotion(enabled);
         this.emotes?.setReducedMotion(enabled);
         this.portalSystem?.setReducedMotion(enabled);
@@ -820,7 +830,8 @@ export class Game {
       if (this.disposed || switchGeneration !== this.marketSwitchGeneration) return false;
       this.world.setActiveMarket(destination);
       this.dexDistrict.setActiveMarket(destination);
-      this.parkour.setCyberpunkTheme(isDexCyberpunkSymbol(destination));
+      this.desertDistrict.setActiveMarket(destination);
+      this.parkour.setVisualTheme(worldEnvironmentTheme(destination));
       this.monuments.clearBigOrders();
       this.world.clearTradeSurge();
       this.monuments.remove(this.activeMonument, true);
@@ -1156,6 +1167,10 @@ export class Game {
     this.dexDistrict.update(delta, this.worldElapsed, {
       nightFactor: this.world.nightFactor,
       rainIntensity: this.world.rainLevel,
+      playerPosition: this.player.position,
+    });
+    this.desertDistrict.update(delta, this.worldElapsed, {
+      nightFactor: this.world.nightFactor,
       playerPosition: this.player.position,
     });
     this.oilEffects.update(delta, this.worldElapsed, this.player.position);
@@ -1564,6 +1579,7 @@ export class Game {
     return this.worldGuard.collides(x, z)
       || this.monuments.collidesCamera(x, y, z)
       || this.dexDistrict.collidesCamera(x, y, z)
+      || this.desertDistrict.collidesCamera(x, y, z)
       || this.parkour.collidesCamera(x, y, z);
   }
 
@@ -1581,11 +1597,18 @@ export class Game {
       previousX,
       previousZ,
     );
+    const desert = this.desertDistrict.resolveHorizontal(
+      district.x,
+      district.z,
+      0.7,
+      previousX,
+      previousZ,
+    );
     return this.parkour.resolveHorizontal(
       previousX,
       previousZ,
-      district.x,
-      district.z,
+      desert.x,
+      desert.z,
       this.player.position.y,
     );
   };
@@ -1801,6 +1824,7 @@ export class Game {
     this.fireworks.dispose();
     this.oilEffects.dispose();
     this.dexDistrict.dispose();
+    this.desertDistrict.dispose();
     this.parkour.dispose();
     this.portalSystem.dispose();
     this.player.dispose();

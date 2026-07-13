@@ -144,7 +144,7 @@ describe('nearby parkour park', () => {
     park.dispose();
   });
 
-  it('retains identical course geometry and collision while adopting the DEX neon palette', () => {
+  it('retains identical course geometry and collision across park, desert, and DEX palettes', () => {
     const park = new ParkourParkSystem({ parent: new THREE.Group(), heightAt: () => 0 });
     const start = park.root.getObjectByName('parkour-start-solid') as THREE.Mesh<
       THREE.BufferGeometry,
@@ -155,14 +155,22 @@ describe('nearby parkour park', () => {
     const sample = park.sampleGround(30, 2);
     const blocked = park.resolveHorizontal(58, -1, 60.6, 0.4, 0);
 
-    park.setCyberpunkTheme(true);
+    park.setVisualTheme('desert');
     expect(start.geometry).toBe(geometry);
     expect(start.material.color.getHex()).not.toBe(ordinaryColor);
+    expect(start.material.roughness).toBeGreaterThan(0.85);
+    expect(park.sampleGround(30, 2)).toEqual(sample);
+    expect(park.resolveHorizontal(58, -1, 60.6, 0.4, 0)).toEqual(blocked);
+
+    const desertColor = start.material.color.getHex();
+    park.setVisualTheme('cyberpunk');
+    expect(start.geometry).toBe(geometry);
+    expect(start.material.color.getHex()).not.toBe(desertColor);
     expect(start.material.emissiveIntensity).toBeGreaterThan(0.2);
     expect(park.sampleGround(30, 2)).toEqual(sample);
     expect(park.resolveHorizontal(58, -1, 60.6, 0.4, 0)).toEqual(blocked);
 
-    park.setCyberpunkTheme(false);
+    park.setVisualTheme('park');
     expect(start.material.color.getHex()).toBe(ordinaryColor);
     expect(start.material.emissiveIntensity).toBeCloseTo(0.055);
     park.dispose();

@@ -40,6 +40,23 @@ export type {
   CyberpunkDistrictEnvironment,
 } from './CyberpunkDexDistrict';
 export {
+  DesertOilDistrict,
+  WTI_SPAWN_PROTECTION_POINTS,
+  createDesertOilLayout,
+  isDesertOilProtectedPoint,
+} from './DesertOilDistrict';
+export type {
+  DesertDuneDescriptor,
+  DesertFormationDescriptor,
+  DesertOasisDescriptor,
+  DesertOilDistrictEnvironment,
+  DesertOilDistrictOptions,
+  DesertOilDistrictStats,
+  DesertOilLayout,
+  DesertPalmDescriptor,
+  DesertPumpjackDescriptor,
+} from './DesertOilDistrict';
+export {
   DEX_CYBERPUNK_SYMBOLS,
   DEX_CYBERPUNK_THEMES,
   dexCyberpunkGlowAt,
@@ -52,6 +69,12 @@ export type {
   DexCyberpunkSymbol,
   DexCyberpunkTheme,
 } from './dexCyberpunkTheme';
+export {
+  OIL_DESERT_PALETTE,
+  isOilDesertSymbol,
+  worldEnvironmentTheme,
+} from './oilDesertTheme';
+export type { WorldEnvironmentTheme } from './oilDesertTheme';
 export { OilWorldEffects } from './OilWorldEffects';
 export type { OilWorldEffectsOptions } from './OilWorldEffects';
 export {
@@ -83,6 +106,7 @@ export type {
   ParkourSurfaceDescriptor,
   ParkourSurfaceRole,
   ParkourSurfaceShape,
+  ParkourVisualTheme,
 } from './ParkourParkSystem';
 export type {
   DropFlashTier,

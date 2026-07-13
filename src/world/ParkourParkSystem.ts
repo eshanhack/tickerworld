@@ -206,6 +206,17 @@ const CYBERPUNK_PALETTE_COLORS: Readonly<Record<ParkourPalette, number>> = {
   sage: 0x55c8ff,
 };
 
+const DESERT_PALETTE_COLORS: Readonly<Record<ParkourPalette, number>> = {
+  teal: 0x55aaa0,
+  rose: 0xc97758,
+  lavender: 0x887994,
+  gold: 0xe0a24e,
+  cream: 0xf0d29b,
+  sage: 0x7d945e,
+};
+
+export type ParkourVisualTheme = 'park' | 'cyberpunk' | 'desert';
+
 function surface(
   id: string,
   shape: ParkourSurfaceShape,
@@ -443,7 +454,7 @@ export class ParkourParkSystem implements GameSystem {
   private startSuppressedUntilExit = false;
   private failElapsed = 0;
   private respawnCooldown = 0;
-  private cyberpunkTheme = false;
+  private visualTheme: ParkourVisualTheme = 'park';
 
   public constructor(options: ParkourParkSystemOptions) {
     this.heightAt = options.heightAt;
@@ -477,15 +488,24 @@ export class ParkourParkSystem implements GameSystem {
 
   /** Rethemes the existing course without rebuilding any collision geometry. */
   public setCyberpunkTheme(enabled: boolean): void {
-    if (this.cyberpunkTheme === enabled) return;
-    this.cyberpunkTheme = enabled;
+    this.setVisualTheme(enabled ? 'cyberpunk' : 'park');
+  }
+
+  /** Rethemes presentation only; course layout, collision and timing remain identical. */
+  public setVisualTheme(theme: ParkourVisualTheme): void {
+    if (this.visualTheme === theme) return;
+    this.visualTheme = theme;
     for (const [palette, material] of this.paletteMaterials) {
-      const color = enabled ? CYBERPUNK_PALETTE_COLORS[palette] : PALETTE_COLORS[palette];
+      const color = theme === 'cyberpunk'
+        ? CYBERPUNK_PALETTE_COLORS[palette]
+        : theme === 'desert'
+          ? DESERT_PALETTE_COLORS[palette]
+          : PALETTE_COLORS[palette];
       material.color.setHex(color);
       material.emissive.setHex(color);
-      material.emissiveIntensity = enabled ? 0.28 : 0.055;
-      material.roughness = enabled ? 0.48 : 0.78;
-      material.metalness = enabled ? 0.16 : 0.01;
+      material.emissiveIntensity = theme === 'cyberpunk' ? 0.28 : theme === 'desert' ? 0.08 : 0.055;
+      material.roughness = theme === 'cyberpunk' ? 0.48 : theme === 'desert' ? 0.9 : 0.78;
+      material.metalness = theme === 'cyberpunk' ? 0.16 : 0.01;
     }
   }
 
@@ -979,15 +999,17 @@ export class ParkourParkSystem implements GameSystem {
   private materialFor(palette: ParkourPalette): MeshStandardMaterial {
     const existing = this.paletteMaterials.get(palette);
     if (existing) return existing;
-    const color = this.cyberpunkTheme
+    const color = this.visualTheme === 'cyberpunk'
       ? CYBERPUNK_PALETTE_COLORS[palette]
-      : PALETTE_COLORS[palette];
+      : this.visualTheme === 'desert'
+        ? DESERT_PALETTE_COLORS[palette]
+        : PALETTE_COLORS[palette];
     const material = this.trackMaterial(new MeshStandardMaterial({
       color,
       emissive: color,
-      emissiveIntensity: this.cyberpunkTheme ? 0.28 : 0.055,
-      roughness: this.cyberpunkTheme ? 0.48 : 0.78,
-      metalness: this.cyberpunkTheme ? 0.16 : 0.01,
+      emissiveIntensity: this.visualTheme === 'cyberpunk' ? 0.28 : this.visualTheme === 'desert' ? 0.08 : 0.055,
+      roughness: this.visualTheme === 'cyberpunk' ? 0.48 : this.visualTheme === 'desert' ? 0.9 : 0.78,
+      metalness: this.visualTheme === 'cyberpunk' ? 0.16 : 0.01,
       flatShading: true,
     }));
     this.paletteMaterials.set(palette, material);
