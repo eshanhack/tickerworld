@@ -49,6 +49,7 @@ function bytesToBase64(bytes: Uint8Array): string {
 }
 
 function title(value: string): string {
+  if (value === 'saylor') return 'Michael Saylor';
   return value.split('-').map((word) => `${word.charAt(0).toUpperCase()}${word.slice(1)}`).join(' ');
 }
 

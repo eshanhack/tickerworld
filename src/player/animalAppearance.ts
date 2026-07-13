@@ -78,6 +78,13 @@ export const BASE_ANIMAL_PALETTES: Readonly<Record<AnimalKind, AnimalAppearanceP
     accent: 0xb36c9c,
     highlight: 0xf0b8c7,
   },
+  saylor: {
+    primary: 0x283746,
+    secondary: 0xd8a17a,
+    dark: 0x666b70,
+    accent: 0xf29a3f,
+    highlight: 0xffdfaa,
+  },
 };
 
 export const PREMIUM_SKIN_ANIMAL: Readonly<Record<PremiumSkinId, AnimalKind>> = {

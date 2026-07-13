@@ -41,6 +41,7 @@ export interface SocialSystemOptions {
 }
 
 function animalLabel(value: string): string {
+  if (value === 'saylor') return 'Michael Saylor';
   return `${value.slice(0, 1).toUpperCase()}${value.slice(1)}`;
 }
 

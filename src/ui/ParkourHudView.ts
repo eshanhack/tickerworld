@@ -49,6 +49,7 @@ function stableHash(value: string): number {
 }
 
 function titleAnimal(animal: AnimalKind): string {
+  if (animal === 'saylor') return 'Michael Saylor';
   return animal.charAt(0).toUpperCase() + animal.slice(1);
 }
 

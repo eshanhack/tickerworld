@@ -789,6 +789,13 @@ export class FoxPlayer {
 
     for (const leg of FOX_LEG_KEYS) {
       const rendered = renderedPaws[leg];
+      // The Saylor tribute is the roster's only biped. Its visible legs are
+      // driven by the two hind chains, so front-paw contacts must remain
+      // silent or the upright stride would produce four unsynchronised steps.
+      if (this.animal === 'saylor' && leg.startsWith('front')) {
+        this.previousContacts[leg] = rendered.contact;
+        continue;
+      }
       if (!this.previousContacts[leg] && rendered.contact) {
         const sprinting = this.runBlend > 0.52;
         const clusteredRunContact = sprinting

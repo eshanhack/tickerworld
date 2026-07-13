@@ -10,6 +10,7 @@ import {
   createSpawnAssignments,
   createPortalRoutes,
   isActorId,
+  isAnimalKind,
   isAllowedWorldXZ,
   normalizeUsername,
   maximumHorizontalTravel,
@@ -21,6 +22,11 @@ import { describe, expect, it } from 'vitest';
 describe('shared multiplayer contracts', () => {
   it('accepts only current and previous protocol versions', () => {
     expect(ACCEPTED_PROTOCOL_VERSIONS).toEqual([2, 1]);
+  });
+
+  it('accepts the free Saylor fan-tribute character without widening arbitrary values', () => {
+    expect(isAnimalKind('saylor')).toBe(true);
+    expect(isAnimalKind('strategy')).toBe(false);
   });
 
   it('normalizes safe usernames without broadening the character set', () => {

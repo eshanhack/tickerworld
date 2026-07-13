@@ -254,6 +254,7 @@ export class FoxRig {
   private readonly tail: TailRig[] = [];
   private readonly materials: RigMaterials;
   private readonly appearanceRoots: THREE.Group[] = [];
+  private readonly appearanceOwnedMaterials = new Set<THREE.Material>();
   private readonly foxVisualMeshes: THREE.Mesh[] = [];
   private speciesVisual: SpeciesVisualRig | null = null;
   private readonly plantBounds = new THREE.Box3();
@@ -590,6 +591,9 @@ export class FoxRig {
       case 'axolotl':
         this.addAxolotlFeatures(root, materials);
         break;
+      case 'saylor':
+        this.addSaylorFeatures(root, materials);
+        break;
     }
     if (appearance.animal === 'fox') return;
     const parts = new Map<string, AnimatedSpeciesPart>();
@@ -622,6 +626,17 @@ export class FoxRig {
       accent: this.materials.innerEar,
       highlight: this.materials.innerEar,
     };
+  }
+
+  private createOwnedAppearanceMaterial(color: number): THREE.MeshStandardMaterial {
+    const material = new THREE.MeshStandardMaterial({
+      color,
+      roughness: 0.9,
+      metalness: 0,
+      flatShading: true,
+    });
+    this.appearanceOwnedMaterials.add(material);
+    return material;
   }
 
   private addShape(
@@ -861,6 +876,127 @@ export class FoxRig {
     fin.rotation.x = 0.16;
   }
 
+  private addSaylorFeatures(root: THREE.Group, materials: AppearanceMaterials): void {
+    const formalDark = this.createOwnedAppearanceMaterial(0x252b32);
+    const silver = this.createOwnedAppearanceMaterial(0x9aa0a4);
+    const body = this.addMotionGroup(root, 'Body', [0, 0, 0]);
+    this.addShape(body, 'SaylorSuitTorso', materials.primary, [0.46, 0.53, 0.3], [0, 1.18, 0.03]);
+    this.addShape(body, 'SaylorShoulders', materials.primary, [0.56, 0.17, 0.28], [0, 1.47, 0]);
+    this.addShape(body, 'SaylorBlackShirt', formalDark, [0.18, 0.33, 0.045], [0, 1.27, -0.29]);
+    for (const side of [-1, 1] as const) {
+      const lapel = this.addShape(
+        body,
+        side < 0 ? 'SaylorLapelLeft' : 'SaylorLapelRight',
+        formalDark,
+        [0.105, 0.3, 0.035],
+        [side * 0.15, 1.34, -0.315],
+      );
+      lapel.rotation.z = side * -0.27;
+    }
+    this.addShape(body, 'SaylorJacketHemLeft', materials.primary, [0.22, 0.25, 0.25], [-0.2, 0.84, 0.05]);
+    this.addShape(body, 'SaylorJacketHemRight', materials.primary, [0.22, 0.25, 0.25], [0.2, 0.84, 0.05]);
+
+    const tie = this.addMotionGroup(root, 'Tail', [0, 1.51, -0.345]);
+    this.addShape(tie, 'SaylorOrangeTieKnot', materials.accent, [0.075, 0.065, 0.035], [0, -0.05, 0]);
+    const tieBlade = this.addShape(tie, 'SaylorOrangeTie', materials.accent, [0.07, 0.25, 0.025], [0, -0.31, 0]);
+    tieBlade.rotation.z = 0.02;
+
+    const coin = this.addMotionGroup(root, 'Coin', [-0.245, 1.43, -0.34]);
+    const pin = shadows(new THREE.Mesh(new THREE.CylinderGeometry(0.072, 0.072, 0.035, 12), materials.accent));
+    pin.name = 'SaylorBitcoinPin';
+    pin.rotation.x = Math.PI * 0.5;
+    coin.add(pin);
+    this.addShape(coin, 'SaylorBitcoinPinMark', formalDark, [0.018, 0.045, 0.012], [0, 0, -0.025]);
+
+    const head = this.addMotionGroup(root, 'Head', [0, 0, 0]);
+    const neck = makeCapsule('SaylorNeck', materials.secondary, 0.105, 0.13, 1.57);
+    head.add(neck);
+    this.addShape(head, 'SaylorFace', materials.secondary, [0.285, 0.335, 0.245], [0, 1.86, -0.02]);
+    this.addShape(head, 'SaylorJaw', materials.secondary, [0.23, 0.18, 0.21], [0, 1.7, -0.08]);
+    for (const side of [-1, 1] as const) {
+      this.addShape(
+        head,
+        side < 0 ? 'SaylorEarLeft' : 'SaylorEarRight',
+        materials.secondary,
+        [0.055, 0.105, 0.045],
+        [side * 0.28, 1.86, -0.01],
+      );
+      this.addShape(
+        head,
+        side < 0 ? 'SaylorEyeLeft' : 'SaylorEyeRight',
+        formalDark,
+        [0.035, 0.046, 0.018],
+        [side * 0.105, 1.9, -0.245],
+      );
+      const brow = makeCapsule(
+        side < 0 ? 'SaylorBrowLeft' : 'SaylorBrowRight',
+        formalDark,
+        0.014,
+        0.105,
+        0,
+      );
+      brow.position.set(side * 0.105, 1.995, -0.248);
+      brow.rotation.z = side * 0.1;
+      head.add(brow);
+    }
+    this.addShape(head, 'SaylorNose', materials.secondary, [0.06, 0.085, 0.085], [0, 1.82, -0.275]);
+    this.addShape(head, 'SaylorSilverBeard', silver, [0.215, 0.115, 0.035], [0, 1.66, -0.235]);
+    this.addShape(head, 'SaylorSilverMustache', silver, [0.12, 0.025, 0.025], [0, 1.75, -0.29]);
+    this.addShape(head, 'SaylorSilverHairCap', silver, [0.29, 0.11, 0.235], [0, 2.12, -0.01]);
+    const sweptHair = this.addShape(
+      head,
+      'SaylorSweptSilverHair',
+      silver,
+      [0.22, 0.075, 0.15],
+      [0.075, 2.19, -0.06],
+    );
+    sweptHair.rotation.z = -0.16;
+
+    for (const side of [-1, 1] as const) {
+      const arm = this.addMotionGroup(
+        root,
+        side < 0 ? 'FrontLeft' : 'FrontRight',
+        [side * 0.49, 1.43, 0],
+      );
+      const sleeve = makeCapsule(
+        side < 0 ? 'SaylorArmLeft' : 'SaylorArmRight',
+        materials.primary,
+        0.095,
+        0.5,
+        -0.32,
+      );
+      arm.add(sleeve);
+      this.addShape(
+        arm,
+        side < 0 ? 'SaylorHandLeft' : 'SaylorHandRight',
+        materials.secondary,
+        [0.09, 0.105, 0.085],
+        [0, -0.67, -0.02],
+      );
+
+      const leg = this.addMotionGroup(
+        root,
+        side < 0 ? 'HindLeft' : 'HindRight',
+        [side * 0.21, 0.82, 0.04],
+      );
+      const trouser = makeCapsule(
+        side < 0 ? 'SaylorLegLeft' : 'SaylorLegRight',
+        materials.primary,
+        0.115,
+        0.53,
+        -0.35,
+      );
+      leg.add(trouser);
+      this.addShape(
+        leg,
+        side < 0 ? 'SaylorShoeLeft' : 'SaylorShoeRight',
+        formalDark,
+        [0.13, 0.075, 0.2],
+        [0, -0.75, -0.1],
+      );
+    }
+  }
+
   private animateSpeciesVisual(
     elapsed: number,
     gaitPhase: number,
@@ -886,6 +1022,8 @@ export class FoxRig {
     const doubleKick = airPose === 'double' ? Math.sin(airProgress * Math.PI) * motionScale : 0;
     const riseShape = airPose === 'rise' || airPose === 'apex' ? airBlend * motionScale : 0;
     const fallShape = airPose === 'fall' ? airBlend * motionScale : 0;
+    const glideShape = airPose === 'glide' ? airBlend * motionScale : 0;
+    const anticipateShape = airPose === 'anticipate' ? airProgress * motionScale : 0;
     const body = part('Body');
     const head = part('Head');
     const frontLeft = part('FrontLeft');
@@ -897,6 +1035,7 @@ export class FoxRig {
     const earLeft = part('EarLeft');
     const earRight = part('EarRight');
     const tail = part('Tail');
+    const coin = part('Coin');
 
     switch (visual.animal) {
       case 'penguin': {
@@ -999,6 +1138,47 @@ export class FoxRig {
         if (tail) tail.rotation.y += Math.sin(elapsed * 3.2 + phase) * (0.28 + movementBlend * 0.22) + doubleKick * 0.7;
         break;
       }
+      case 'saylor': {
+        const executiveStride = 0.55 + runBlend * 0.3;
+        const armSpread = glideShape * 1.22 + doubleKick * 0.58;
+        visual.root.position.y = pulse * (0.025 + runBlend * 0.02) - anticipateShape * 0.055;
+        if (body) {
+          body.rotation.z += stride * 0.025;
+          body.rotation.x += riseShape * 0.06 - fallShape * 0.075 - glideShape * 0.08;
+          body.scale.y *= 1 - anticipateShape * 0.035 + doubleKick * 0.025;
+        }
+        if (head) {
+          head.rotation.z -= stride * 0.018;
+          head.rotation.y += Math.sin(elapsed * 0.55) * 0.025 * (1 - movementBlend);
+          head.rotation.x -= riseShape * 0.04;
+        }
+        if (frontLeft) {
+          frontLeft.rotation.x += opposite * executiveStride - riseShape * 0.32;
+          frontLeft.rotation.z -= armSpread;
+        }
+        if (frontRight) {
+          frontRight.rotation.x += stride * executiveStride - riseShape * 0.32;
+          frontRight.rotation.z += armSpread;
+        }
+        if (hindLeft) {
+          hindLeft.rotation.x += stride * (0.62 + runBlend * 0.18) + doubleKick * 0.72 - anticipateShape * 0.2;
+          hindLeft.rotation.z -= doubleKick * 0.1;
+        }
+        if (hindRight) {
+          hindRight.rotation.x += opposite * (0.62 + runBlend * 0.18) + doubleKick * 0.72 - anticipateShape * 0.2;
+          hindRight.rotation.z += doubleKick * 0.1;
+        }
+        if (tail) {
+          tail.rotation.x += glideShape * 0.82 + fallShape * 0.28;
+          tail.rotation.z += Math.sin(elapsed * 2.2) * (0.018 + movementBlend * 0.025) + doubleKick * 0.32;
+        }
+        if (coin) {
+          coin.rotation.y += doubleKick * Math.PI * 1.5;
+          coin.rotation.z += Math.sin(elapsed * 1.8) * 0.025 + doubleKick * 0.2;
+          coin.scale.setScalar(1 + doubleKick * 0.28);
+        }
+        break;
+      }
     }
   }
 
@@ -1014,6 +1194,8 @@ export class FoxRig {
     this.appearanceRoots.length = 0;
     this.speciesVisual = null;
     geometries.forEach((geometry) => geometry.dispose());
+    this.appearanceOwnedMaterials.forEach((material) => material.dispose());
+    this.appearanceOwnedMaterials.clear();
   }
 
   private setRestBodyPose(): void {

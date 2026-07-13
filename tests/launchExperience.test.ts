@@ -35,7 +35,7 @@ describe('route-specific entry shell', () => {
         expect(model.enterLabel).toBe(`Enter ${model.symbol} world`);
       } else {
         expect(model.kicker).toBe(`${model.symbol} WORLD · LIVE`);
-        expect(model.description).toBe(`Walk inside ${model.symbol}’s live one-minute chart with other tiny animals.`);
+        expect(model.description).toBe(`Walk inside ${model.symbol}’s live one-minute chart with other tiny characters.`);
         expect(model.enterLabel).toBe(`Enter ${model.symbol} world`);
       }
     }
@@ -126,15 +126,18 @@ describe('launch overlay discipline', () => {
 });
 
 describe('free launch wardrobe', () => {
-  it('contains exactly eight distinct creatures and no color-charm variants', () => {
+  it('contains exactly nine distinct characters and no color-charm variants', () => {
     const entries = baseWardrobeEntries();
     expect(entries.map(({ animal }) => animal)).toEqual([
-      'fox', 'penguin', 'frog', 'duck', 'bear', 'rabbit', 'cat', 'axolotl',
+      'fox', 'penguin', 'frog', 'duck', 'bear', 'rabbit', 'cat', 'axolotl', 'saylor',
     ]);
+    expect(entries.at(-1)).toMatchObject({
+      animal: 'saylor', label: 'Michael Saylor', sigil: '₿', skin: 'base',
+    });
     expect(entries.every(({ skin }) => skin === 'base')).toBe(true);
     const colors = colorWardrobeEntries();
     expect(colors).toEqual([]);
-    expect(freeWardrobeEntries()).toHaveLength(8);
+    expect(freeWardrobeEntries()).toHaveLength(9);
     expect(freeWardrobeEntries().every((entry) => (
       !('price' in entry) && !('entitlement' in entry) && !('owned' in entry)
     ))).toBe(true);

@@ -39,6 +39,7 @@ export const ANIMAL_KINDS = [
   'rabbit',
   'cat',
   'axolotl',
+  'saylor',
 ] as const;
 
 export const PREMIUM_SKINS = [

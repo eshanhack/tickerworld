@@ -23,6 +23,7 @@ const LABELS: Readonly<Record<AnimalKind, string>> = {
   rabbit: 'Rabbit',
   cat: 'Cat',
   axolotl: 'Axolotl',
+  saylor: 'Michael Saylor',
 };
 
 const BASE_LOOKS: Readonly<Record<AnimalKind, Omit<WardrobeEntry, 'animal' | 'skin' | 'label'>>> = {
@@ -34,6 +35,7 @@ const BASE_LOOKS: Readonly<Record<AnimalKind, Omit<WardrobeEntry, 'animal' | 'sk
   rabbit: { sigil: 'RB', primary: '#c0a5c8', secondary: '#f5e5ed' },
   cat: { sigil: 'CT', primary: '#b88671', secondary: '#f4d7bd' },
   axolotl: { sigil: 'AX', primary: '#d99aa8', secondary: '#f5ced5' },
+  saylor: { sigil: '₿', primary: '#263d59', secondary: '#e9b88f' },
 };
 
 export function baseWardrobeEntries(): readonly WardrobeEntry[] {
@@ -94,7 +96,7 @@ export class WardrobeView {
     const close = document.createElement('button');
     close.className = 'wardrobe-close';
     close.type = 'button';
-    close.setAttribute('aria-label', 'Close creature wardrobe');
+    close.setAttribute('aria-label', 'Close character wardrobe');
     close.textContent = '\u00d7';
     close.addEventListener('click', options.onClose);
 
@@ -105,7 +107,7 @@ export class WardrobeView {
     title.id = 'wardrobe-title';
     title.textContent = 'Make this wanderer yours';
     const copy = document.createElement('p');
-    copy.textContent = 'Choose a creature with its own size, movement, jumps, and personality.';
+    copy.textContent = 'Choose from nine characters with distinct movement and personality. Michael Saylor is an unaffiliated fan tribute and is not endorsed by him or Strategy.';
 
     const nameForm = document.createElement('form');
     nameForm.className = 'wardrobe-name-form';
@@ -140,7 +142,7 @@ export class WardrobeView {
     nameForm.addEventListener('submit', this.submitUsername);
     nameForm.append(nameLabel, this.nameInput, saveName, clearName, this.nameStatus);
 
-    const baseSection = this.createLookSection('Creatures', baseWardrobeEntries(), 'Classic');
+    const baseSection = this.createLookSection('Characters', baseWardrobeEntries(), 'Classic');
     this.element.append(close, kicker, title, copy, nameForm, baseSection);
     parent.append(this.element);
     this.setSelected(this.selectedAnimal, this.selectedSkin);
@@ -193,14 +195,18 @@ export class WardrobeView {
       button.className = `wardrobe-animal wardrobe-${entry.animal}`;
       button.style.setProperty('--wardrobe-primary', entry.primary);
       button.style.setProperty('--wardrobe-secondary', entry.secondary);
-      button.setAttribute('aria-label', `Use ${entry.label}`);
+      const isFanTribute = entry.animal === 'saylor';
+      button.setAttribute(
+        'aria-label',
+        isFanTribute ? `Use ${entry.label}, unaffiliated fan tribute` : `Use ${entry.label}`,
+      );
       const sigil = document.createElement('span');
       sigil.setAttribute('aria-hidden', 'true');
       sigil.textContent = entry.sigil;
       const label = document.createElement('strong');
       label.textContent = entry.label;
       const small = document.createElement('small');
-      small.textContent = badge;
+      small.textContent = isFanTribute ? 'Fan tribute' : badge;
       button.append(sigil, label, small);
       button.addEventListener('click', () => {
         if (this.options.onSelect(entry.animal, entry.skin) === false) return;
@@ -227,13 +233,13 @@ export class WardrobeView {
     this.nameInput.setAttribute('aria-invalid', 'false');
     this.nameStatus.textContent = username
       ? `${username} is saved in this browser. If a room already uses it, choose another.`
-      : 'Display name cleared. You will appear as your creature.';
+      : 'Display name cleared. You will appear as your character.';
   };
 
   private readonly clearUsername = (): void => {
     if (this.options.onUsernameChange(null) === false) return;
     this.nameInput.value = '';
     this.nameInput.setAttribute('aria-invalid', 'false');
-    this.nameStatus.textContent = 'Display name cleared. You will appear as your creature.';
+    this.nameStatus.textContent = 'Display name cleared. You will appear as your character.';
   };
 }

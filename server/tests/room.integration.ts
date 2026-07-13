@@ -243,6 +243,26 @@ describe.sequential('Colyseus market rooms', () => {
       (player: any) => player.actorId === firstIdentity.actorId,
     )).toMatchObject({ animal: 'cat', skin: 'tide-cat', username: 'MoonFox' });
 
+    first.send(CLIENT_MESSAGES.appearance, {
+      protocolVersion: PROTOCOL_VERSION,
+      animal: 'saylor',
+      skin: 'base',
+    });
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect([...(second.state as any).players.values()].find(
+      (player: any) => player.actorId === firstIdentity.actorId,
+    )).toMatchObject({ animal: 'saylor', skin: 'base', username: 'MoonFox' });
+
+    first.send(CLIENT_MESSAGES.appearance, {
+      protocolVersion: PROTOCOL_VERSION,
+      animal: 'saylor',
+      skin: 'tide-cat',
+    });
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect([...(second.state as any).players.values()].find(
+      (player: any) => player.actorId === firstIdentity.actorId,
+    )).toMatchObject({ animal: 'saylor', skin: 'base', username: 'MoonFox' });
+
     const waitingForReportRejection = first.waitForMessage(SERVER_MESSAGES.reportRejected);
     first.send(CLIENT_MESSAGES.report, {
       protocolVersion: PROTOCOL_VERSION,

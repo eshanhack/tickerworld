@@ -48,7 +48,7 @@
 .economy-animal-grid strong, .economy-skin-grid strong { overflow: hidden; max-width: 100%; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .animal-sigil { width: 25px; height: 21px; border-radius: 55% 55% 45% 45%; background: #c9795c; box-shadow: inset 0 -5px rgba(49,55,61,.08); }
 .animal-sigil.penguin { background: #526a78; }.animal-sigil.frog { background: #79ad79; }.animal-sigil.duck { background: #e2b95f; }
-.animal-sigil.bear { background: #9b765e; }.animal-sigil.rabbit { background: #c0a5c8; }.animal-sigil.cat { background: #b88671; }.animal-sigil.axolotl { background: #d99aa8; }
+.animal-sigil.bear { background: #9b765e; }.animal-sigil.rabbit { background: #c0a5c8; }.animal-sigil.cat { background: #b88671; }.animal-sigil.axolotl { background: #d99aa8; }.animal-sigil.saylor { background: linear-gradient(145deg, #e9b88f 0 35%, #263d59 36% 100%); }
 .economy-skin-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 7px; }
 .economy-skin-grid button { grid-template-columns: 30px 1fr auto; justify-items: start; text-align: left; }
 .skin-swatch { width: 25px; height: 25px; border-radius: 50%; background: linear-gradient(135deg, var(--skin-a), var(--skin-b) 52%, var(--skin-c)); box-shadow: inset 0 -4px rgba(49,55,61,.08); }

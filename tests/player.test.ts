@@ -117,6 +117,22 @@ describe('FoxPlayer', () => {
     fox.dispose();
   });
 
+  it('emits a true two-beat cadence for the upright Saylor character', () => {
+    const input = new PlayerInputController({ target: null, document: null });
+    const player = new FoxPlayer({ input, animal: 'saylor' });
+    const footsteps: FootstepEvent[] = [];
+    input.setVirtualInput(0, 1);
+
+    for (let frame = 0; frame < 180; frame += 1) {
+      player.update(1 / 60, 0, () => 0, () => 'stone', (event) => footsteps.push(event));
+    }
+
+    expect(footsteps.length).toBeGreaterThan(4);
+    expect(footsteps.every(({ leg }) => leg === 'hindLeft' || leg === 'hindRight')).toBe(true);
+    expect(new Set(footsteps.map(({ side }) => side))).toEqual(new Set(['left', 'right']));
+    player.dispose();
+  });
+
   it('supports faster sprint movement', () => {
     const walkingInput = new PlayerInputController({ target: null, document: null });
     const sprintInput = new PlayerInputController({ target: null, document: null });

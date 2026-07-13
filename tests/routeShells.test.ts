@@ -30,7 +30,7 @@ describe('static market entry shells', () => {
   it('renders route-specific crawler metadata without live prices', () => {
     const html = renderMarketShell(template, 'btc', 'BTC');
     expect(html).toContain('<title>BTC World · Tickerworld</title>');
-    expect(html).toContain('Walk inside BTC’s live one-minute chart with other tiny animals.');
+    expect(html).toContain('Walk inside BTC’s live one-minute chart with other tiny characters.');
     expect(html).toContain('https://tickerworld.io/social/btc.jpg');
     expect(html).toContain('<meta property="og:image:width" content="1200" />');
     expect(html).toContain('<meta property="og:image:height" content="630" />');

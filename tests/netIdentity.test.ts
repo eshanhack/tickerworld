@@ -71,6 +71,18 @@ describe('signed room identity', () => {
     expect(readGuestAppearance(browser)).toEqual(DEFAULT_GUEST_APPEARANCE);
   });
 
+  it('round-trips the free Saylor fan-tribute character as a base appearance', () => {
+    const browser = new MemoryStorage();
+    expect(writeGuestAppearance({
+      animal: 'saylor',
+      skin: 'base',
+      username: 'BitcoinTitan',
+    }, browser)).toEqual({ animal: 'saylor', skin: 'base', username: 'BitcoinTitan' });
+    expect(readGuestAppearance(browser)).toEqual({
+      animal: 'saylor', skin: 'base', username: 'BitcoinTitan',
+    });
+  });
+
   it('persists a signed anonymous token only for its live browser session', () => {
     const storage = new MemoryStorage();
     const identity = {

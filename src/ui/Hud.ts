@@ -101,7 +101,7 @@ function onboardingCopy(snapshot: OnboardingSnapshot): {
 } {
   switch (snapshot.currentStep) {
     case 'identity':
-      return { title: 'Choose your creature', body: 'Eight distinct animals are ready to roam.', cta: 'Open wardrobe' };
+      return { title: 'Choose your character', body: 'Nine distinct characters are ready to roam.', cta: 'Open wardrobe' };
     case 'move-jump': {
       const moved = snapshot.completedActions.has('move');
       const jumped = snapshot.completedActions.has('jump');
@@ -243,14 +243,14 @@ export class Hud {
 
       <section class="onboarding-hint is-hidden" aria-live="polite" data-onboarding>
         <div class="onboarding-orb" aria-hidden="true">&#10022;</div>
-        <div><small data-onboarding-progress>1 / 5</small><strong data-onboarding-title>Choose your creature</strong><p data-onboarding-body>Eight distinct animals are ready to roam.</p></div>
+        <div><small data-onboarding-progress>1 / 5</small><strong data-onboarding-title>Choose your character</strong><p data-onboarding-body>Nine distinct characters are ready to roam.</p></div>
         <button type="button" data-onboarding-cta>Open wardrobe</button>
       </section>
 
       <div class="hud-toast" role="status" aria-live="polite" data-toast></div>
 
       <div class="hud-actions">
-        <button class="round-action wardrobe-action" type="button" aria-label="Choose your creature" data-wardrobe>YOU</button>
+        <button class="round-action wardrobe-action" type="button" aria-label="Choose your character" data-wardrobe>YOU</button>
         <button class="round-action emote-action" type="button" aria-label="Choose an emote" data-emote>&#10022;</button>
         <button class="round-action" type="button" aria-label="Show settings and controls" data-help>?</button>
       </div>
@@ -272,7 +272,7 @@ export class Hud {
           <div class="audio-channel audio-submix"><button class="channel-mute" type="button" aria-label="Mute weather and world ambience" data-weather-mute><span>&#9729;</span><strong>Weather</strong></button><label aria-label="Weather and world ambience volume"><input type="range" min="0" max="1" step="0.01" value="1" data-weather-volume /></label></div>
           <div class="audio-channel audio-submix"><button class="channel-mute" type="button" aria-label="Mute movement sounds" data-movement-mute><span>&#8767;</span><strong>Movement</strong></button><label aria-label="Movement, footsteps, and foliage volume"><input type="range" min="0" max="1" step="0.01" value="1" data-movement-volume /></label></div>
         </div>
-        <button type="button" class="compass-setting wardrobe-setting" data-settings-wardrobe><span>Creature wardrobe</span><strong>8 CREATURES</strong></button>
+        <button type="button" class="compass-setting wardrobe-setting" data-settings-wardrobe><span>Character wardrobe</span><strong>9 CHARACTERS</strong></button>
         <button type="button" class="compass-setting" data-compass-setting><span>Monument whisper</span><strong>ON</strong></button>
         <button type="button" class="compass-setting motion-setting" data-motion-setting><span>Gentle motion</span><strong>OFF</strong></button>
         <p>Live prices use Hyperliquid perpetual market data. If the feed drops, genuine values pause while Tickerworld reconnects. For ambience, not financial advice.</p>

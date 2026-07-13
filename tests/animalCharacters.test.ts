@@ -16,6 +16,7 @@ const SIGNATURE_FEATURE: Readonly<Record<AnimalKind, string>> = {
   rabbit: 'RabbitEarLeft',
   cat: 'CatWhiskerLeft1',
   axolotl: 'AxolotlGillLeft1',
+  saylor: 'SaylorBitcoinPin',
 };
 
 function create(animal: AnimalKind): FoxPlayer {
@@ -62,7 +63,7 @@ describe('distinct playable animal characters', () => {
       .toBeGreaterThan(3.8);
     expect(new Set(ANIMAL_KINDS.map((animal) => (
       ANIMAL_MOTION_PROFILES[animal].doubleJumpTurns.join(':')
-    ))).size).toBe(8);
+    ))).size).toBe(9);
     expect(ANIMAL_MOTION_PROFILES.frog.jumpImpulse).toBeGreaterThan(ANIMAL_MOTION_PROFILES.bear.jumpImpulse);
     expect(ANIMAL_MOTION_PROFILES.frog.accelerationScale).toBeGreaterThan(ANIMAL_MOTION_PROFILES.bear.accelerationScale);
 
@@ -136,5 +137,6 @@ describe('distinct playable animal characters', () => {
     expect(samples.get('duck')!.z).toBeLessThan(0);
     expect(Math.abs(samples.get('cat')!.x)).toBeGreaterThan(0.4);
     expect(Math.abs(samples.get('cat')!.y)).toBeGreaterThan(0.4);
+    expect(Math.abs(samples.get('saylor')!.y)).toBeGreaterThan(Math.abs(samples.get('saylor')!.x) + 0.4);
   });
 });

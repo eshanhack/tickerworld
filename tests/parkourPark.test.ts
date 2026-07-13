@@ -90,7 +90,7 @@ describe('nearby parkour park', () => {
     ))).toBe(false);
   });
 
-  it('keeps every jump link reachable for all eight animal movement profiles', () => {
+  it('keeps every jump link reachable for every character movement profile', () => {
     const { surfaces } = createParkourParkLayout();
     for (const animal of ANIMAL_KINDS) {
       const profile = ANIMAL_MOTION_PROFILES[animal];

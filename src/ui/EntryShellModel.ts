@@ -25,7 +25,7 @@ export function entryShellForMarket(symbol: AssetSymbol): EntryShellModel {
       symbol,
       kicker: 'WTI WORLD · LIVE',
       title: 'Tickerworld',
-      description: 'Walk inside the live CL crude-oil perpetual chart with other tiny animals.',
+      description: 'Walk inside the live CL crude-oil perpetual chart with other tiny characters.',
       enterLabel: 'Enter WTI world',
     };
   }
@@ -35,7 +35,7 @@ export function entryShellForMarket(symbol: AssetSymbol): EntryShellModel {
       symbol,
       kicker: `${symbol} WORLD · LIVE DEX`,
       title: 'Tickerworld',
-      description: `Walk inside ${symbol}'s live ${chain} DEX chart with other tiny animals.`,
+      description: `Walk inside ${symbol}'s live ${chain} DEX chart with other tiny characters.`,
       enterLabel: `Enter ${symbol} world`,
     };
   }
@@ -43,7 +43,7 @@ export function entryShellForMarket(symbol: AssetSymbol): EntryShellModel {
     symbol,
     kicker: `${symbol} WORLD · LIVE`,
     title: 'Tickerworld',
-    description: `Walk inside ${symbol}\u2019s live one-minute chart with other tiny animals.`,
+    description: `Walk inside ${symbol}\u2019s live one-minute chart with other tiny characters.`,
     enterLabel: `Enter ${symbol} world`,
   };
 }

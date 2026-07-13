@@ -1,4 +1,13 @@
-import { Group, InstancedMesh, Matrix4, MeshStandardMaterial, PerspectiveCamera, Vector3 } from 'three';
+import {
+  Color,
+  Group,
+  InstancedMesh,
+  Matrix4,
+  MeshStandardMaterial,
+  PerspectiveCamera,
+  Quaternion,
+  Vector3,
+} from 'three';
 import { Text } from 'troika-three-text';
 import { describe, expect, it } from 'vitest';
 import type { NetPlayerState } from '../shared/src/index.js';
@@ -15,6 +24,8 @@ function remote(
   x: number,
   updatedAt = 1,
   skin: NetPlayerState['skin'] = 'base',
+  animal: NetPlayerState['animal'] = 'fox',
+  username: string | null = null,
 ): NetPlayerState {
   return {
     actorId,
@@ -26,11 +37,30 @@ function remote(
     verticalSpeed: 0,
     grounded: true,
     gait: 'walk',
-    animal: 'fox',
+    animal,
     skin,
-    username: null,
+    username,
     updatedAt,
   };
+}
+
+function pool(system: RemoteAvatarSystem, name: string): InstancedMesh {
+  const candidate = system.root.getObjectByName(name);
+  expect(candidate, name).toBeInstanceOf(InstancedMesh);
+  return candidate as InstancedMesh;
+}
+
+function instanceTransform(mesh: InstancedMesh, index = 0): {
+  readonly position: Vector3;
+  readonly scale: Vector3;
+} {
+  const matrix = new Matrix4();
+  const position = new Vector3();
+  const rotation = new Quaternion();
+  const scale = new Vector3();
+  mesh.getMatrixAt(index, matrix);
+  matrix.decompose(position, rotation, scale);
+  return { position, scale };
 }
 
 describe('remote avatar interpolation', () => {
@@ -160,6 +190,86 @@ describe('pooled remote avatar renderer', () => {
 
     system.setLocalUsername(null);
     expect(nameplate?.visible).toBe(false);
+    system.dispose();
+    expect(parent.children).toHaveLength(0);
+  });
+
+  it('renders remote Saylor as an upright suited biped within the fixed ten pools', () => {
+    const parent = new Group();
+    const camera = new PerspectiveCamera(52, 1, 0.1, 100);
+    camera.position.set(0, 3, 8);
+    camera.lookAt(0, 1, 0);
+    camera.updateMatrixWorld(true);
+    let now = 500;
+    const system = new RemoteAvatarSystem({
+      parent,
+      camera,
+      maxPlayers: 1,
+      now: () => now,
+      localPosition: () => new Vector3(),
+      viewport: () => ({ left: 0, top: 0, width: 800, height: 600 }),
+    });
+
+    system.setPlayers([remote('btc-titan', 2, 1, 'base', 'saylor', 'Michael_Saylor')], now);
+    now += 200;
+    system.update(1 / 60);
+
+    expect(system.getDebugStats()).toMatchObject({
+      active: 1,
+      rendered: 1,
+      drawCalls: 10,
+      geometries: 4,
+      materials: 1,
+    });
+    const body = pool(system, 'remote-body-pool');
+    const head = pool(system, 'remote-head-pool');
+    const armLeft = pool(system, 'remote-front-left-leg-pool');
+    const armRight = pool(system, 'remote-front-right-leg-pool');
+    const legLeft = pool(system, 'remote-hind-left-leg-pool');
+    const legRight = pool(system, 'remote-hind-right-leg-pool');
+    const earLeft = pool(system, 'remote-left-ear-pool');
+    const earRight = pool(system, 'remote-right-ear-pool');
+    const tail = pool(system, 'remote-tail-pool');
+    const tie = pool(system, 'remote-crest-pool');
+
+    const bodyTransform = instanceTransform(body);
+    const headTransform = instanceTransform(head);
+    const leftArmTransform = instanceTransform(armLeft);
+    const rightArmTransform = instanceTransform(armRight);
+    const leftLegTransform = instanceTransform(legLeft);
+    const rightLegTransform = instanceTransform(legRight);
+    const tieTransform = instanceTransform(tie);
+    expect(headTransform.position.y).toBeGreaterThan(bodyTransform.position.y + 0.7);
+    expect(leftLegTransform.position.y).toBeLessThan(bodyTransform.position.y);
+    expect(rightLegTransform.position.y).toBeLessThan(bodyTransform.position.y);
+    expect(leftArmTransform.position.x).toBeLessThan(bodyTransform.position.x);
+    expect(rightArmTransform.position.x).toBeGreaterThan(bodyTransform.position.x);
+    expect(tieTransform.position.y).toBeGreaterThan(bodyTransform.position.y);
+    expect(tieTransform.position.z).toBeLessThan(bodyTransform.position.z);
+    expect(Math.abs(tieTransform.scale.x * tieTransform.scale.y * tieTransform.scale.z)).toBeGreaterThan(0);
+
+    for (const hidden of [earLeft, earRight, tail]) {
+      const matrix = new Matrix4();
+      hidden.getMatrixAt(0, matrix);
+      expect(Math.abs(matrix.determinant())).toBe(0);
+    }
+
+    const bodyColor = new Color();
+    const headColor = new Color();
+    const tieColor = new Color();
+    body.getColorAt(0, bodyColor);
+    head.getColorAt(0, headColor);
+    tie.getColorAt(0, tieColor);
+    expect(bodyColor.getHex()).toBe(0x283746);
+    expect(headColor.getHex()).toBe(0xd8a17a);
+    expect(tieColor.getHex()).toBe(0xf29a3f);
+
+    const remoteNameplate = system.root.children.find((child) => (
+      child instanceof Text && child.text === 'Michael_Saylor'
+    )) as Text | undefined;
+    expect(remoteNameplate).toBeDefined();
+    expect(remoteNameplate?.position.y).toBeGreaterThan(headTransform.position.y + 0.4);
+
     system.dispose();
     expect(parent.children).toHaveLength(0);
   });

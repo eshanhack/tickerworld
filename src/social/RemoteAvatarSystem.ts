@@ -72,6 +72,10 @@ const ANIMAL_PROFILES: Readonly<Record<AnimalKind, AnimalProfile>> = {
     body: 0xd99aa8, cream: 0xf5ced5, bodyScale: [0.67, 0.51, 0.91],
     headScale: [0.57, 0.43, 0.51], earScale: [0.28, 0.13, 0.12], tailScale: [0.17, 0.25, 0.72], height: 1.5,
   },
+  saylor: {
+    body: 0x263a59, cream: 0xe4b18e, bodyScale: [0.44, 0.73, 0.29],
+    headScale: [0.34, 0.4, 0.33], earScale: [0, 0, 0], tailScale: [0, 0, 0], height: 2.12,
+  },
 };
 
 interface TimedRemoteState {
@@ -154,6 +158,7 @@ function copyPose(state: NetPlayerState): RemotePose {
 }
 
 function titleAnimal(animal: AnimalKind): string {
+  if (animal === 'saylor') return 'Michael Saylor';
   return `${animal.charAt(0).toUpperCase()}${animal.slice(1)}`;
 }
 
@@ -554,16 +559,31 @@ export class RemoteAvatarSystem implements GameSystem {
     const bodyColor = new THREE.Color(appearance.palette.primary ?? profile.body);
     const creamColor = new THREE.Color(appearance.palette.secondary ?? profile.cream);
     const tailColor = new THREE.Color(appearance.palette.highlight ?? appearance.palette.primary);
-    this.body.mesh.setColorAt(slot.index, bodyColor);
-    this.head.mesh.setColorAt(slot.index, bodyColor);
-    this.earLeft.mesh.setColorAt(slot.index, bodyColor);
-    this.earRight.mesh.setColorAt(slot.index, bodyColor);
-    this.legFrontLeft.mesh.setColorAt(slot.index, creamColor);
-    this.legFrontRight.mesh.setColorAt(slot.index, creamColor);
-    this.legHindLeft.mesh.setColorAt(slot.index, creamColor);
-    this.legHindRight.mesh.setColorAt(slot.index, creamColor);
-    this.tail.mesh.setColorAt(slot.index, tailColor);
-    this.crest.mesh.setColorAt(slot.index, tailColor);
+    if (slot.animal === 'saylor') {
+      const hairColor = new THREE.Color(appearance.palette.dark);
+      const accentColor = new THREE.Color(appearance.palette.accent);
+      this.body.mesh.setColorAt(slot.index, bodyColor);
+      this.head.mesh.setColorAt(slot.index, creamColor);
+      this.earLeft.mesh.setColorAt(slot.index, hairColor);
+      this.earRight.mesh.setColorAt(slot.index, hairColor);
+      this.legFrontLeft.mesh.setColorAt(slot.index, bodyColor);
+      this.legFrontRight.mesh.setColorAt(slot.index, bodyColor);
+      this.legHindLeft.mesh.setColorAt(slot.index, bodyColor);
+      this.legHindRight.mesh.setColorAt(slot.index, bodyColor);
+      this.tail.mesh.setColorAt(slot.index, hairColor);
+      this.crest.mesh.setColorAt(slot.index, accentColor);
+    } else {
+      this.body.mesh.setColorAt(slot.index, bodyColor);
+      this.head.mesh.setColorAt(slot.index, bodyColor);
+      this.earLeft.mesh.setColorAt(slot.index, bodyColor);
+      this.earRight.mesh.setColorAt(slot.index, bodyColor);
+      this.legFrontLeft.mesh.setColorAt(slot.index, creamColor);
+      this.legFrontRight.mesh.setColorAt(slot.index, creamColor);
+      this.legHindLeft.mesh.setColorAt(slot.index, creamColor);
+      this.legHindRight.mesh.setColorAt(slot.index, creamColor);
+      this.tail.mesh.setColorAt(slot.index, tailColor);
+      this.crest.mesh.setColorAt(slot.index, tailColor);
+    }
     for (const pool of this.allPools) {
       if (pool.mesh.instanceColor) pool.mesh.instanceColor.needsUpdate = true;
     }
@@ -608,20 +628,42 @@ export class RemoteAvatarSystem implements GameSystem {
     const opposite = Math.sin(slot.gaitPhase + Math.PI) * movement;
     const legLift = Math.abs(Math.sin(slot.gaitPhase)) * 0.13 * movement;
 
-    this.writePart(this.body.mesh, slot.index, [0, 1.02 + bob, 0], [0, 0, 0], profile.bodyScale);
-    this.writePart(this.head.mesh, slot.index, [0, 1.36 + profile.height * 0.13 + bob, -0.62], [0.03, 0, 0], profile.headScale);
-    this.writePart(this.earLeft.mesh, slot.index, [-0.25, 1.74 + bob, -0.65], [0, 0, -0.08], profile.earScale);
-    this.writePart(this.earRight.mesh, slot.index, [0.25, 1.74 + bob, -0.65], [0, 0, 0.08], profile.earScale);
-    this.writePart(this.legFrontLeft.mesh, slot.index, [-0.34, 0.48 + legLift, -0.45], [swing * 0.5, 0, 0], [0.19, 0.43, 0.19]);
-    this.writePart(this.legFrontRight.mesh, slot.index, [0.34, 0.48, -0.45], [opposite * 0.5, 0, 0], [0.19, 0.43, 0.19]);
-    this.writePart(this.legHindLeft.mesh, slot.index, [-0.34, 0.48, 0.45], [opposite * 0.5, 0, 0], [0.2, 0.45, 0.2]);
-    this.writePart(this.legHindRight.mesh, slot.index, [0.34, 0.48 + legLift, 0.45], [swing * 0.5, 0, 0], [0.2, 0.45, 0.2]);
-    this.writePart(this.tail.mesh, slot.index, [0, 1.05 + bob, 0.78], [0.72, 0, 0], profile.tailScale);
-    if (slot.premium) {
-      this.writePart(this.crest.mesh, slot.index, [0, 1.96 + bob, -0.6], [0, 0, Math.PI], [0.15, 0.18, 0.15]);
+    if (slot.animal === 'saylor') {
+      const airborne = pose.grounded ? 0 : 1;
+      const humanBob = pose.grounded ? bob * 0.42 : 0.055;
+      const leftLift = Math.max(0, Math.sin(slot.gaitPhase)) * 0.11 * movement;
+      const rightLift = Math.max(0, Math.sin(slot.gaitPhase + Math.PI)) * 0.11 * movement;
+      this.writePart(this.body.mesh, slot.index, [0, 1.22 + humanBob, 0], [0.025 - airborne * 0.08, 0, 0], profile.bodyScale);
+      this.writePart(this.head.mesh, slot.index, [0, 2.03 + humanBob, -0.035], [-0.025, 0, 0], profile.headScale);
+      // The front-leg pools become suit sleeves and counter-swing naturally
+      // against the two visible legs. This keeps the original fixed draw-call
+      // budget while giving the public-figure tribute a true biped silhouette.
+      this.writePart(this.legFrontLeft.mesh, slot.index, [-0.5, 1.22 + humanBob, 0], [opposite * 0.72 - airborne * 0.55, 0, -0.035], [0.14, 0.57, 0.14]);
+      this.writePart(this.legFrontRight.mesh, slot.index, [0.5, 1.22 + humanBob, 0], [swing * 0.72 - airborne * 0.55, 0, 0.035], [0.14, 0.57, 0.14]);
+      this.writePart(this.legHindLeft.mesh, slot.index, [-0.22, 0.49 + leftLift, 0.03], [swing * 0.56 + airborne * 0.25, 0, 0], [0.17, 0.64, 0.17]);
+      this.writePart(this.legHindRight.mesh, slot.index, [0.22, 0.49 + rightLift, 0.03], [opposite * 0.56 + airborne * 0.25, 0, 0], [0.17, 0.64, 0.17]);
+      this.hidePart(this.earLeft.mesh, slot.index);
+      this.hidePart(this.earRight.mesh, slot.index);
+      this.hidePart(this.tail.mesh, slot.index);
+      // The existing crest cone becomes the orange tie/pin on the front of
+      // the suit. It is intentionally visible for the base Saylor character,
+      // independent of the legacy premium-crest flag.
+      this.writePart(this.crest.mesh, slot.index, [0, 1.39 + humanBob, -0.31], [0, 0, Math.PI], [0.115, 0.27, 0.07]);
     } else {
-      this.localMatrix.compose(this.position.set(0, -1_000, 0), this.localQuaternion.identity(), HIDDEN_SCALE);
-      this.crest.mesh.setMatrixAt(slot.index, this.localMatrix);
+      this.writePart(this.body.mesh, slot.index, [0, 1.02 + bob, 0], [0, 0, 0], profile.bodyScale);
+      this.writePart(this.head.mesh, slot.index, [0, 1.36 + profile.height * 0.13 + bob, -0.62], [0.03, 0, 0], profile.headScale);
+      this.writePart(this.earLeft.mesh, slot.index, [-0.25, 1.74 + bob, -0.65], [0, 0, -0.08], profile.earScale);
+      this.writePart(this.earRight.mesh, slot.index, [0.25, 1.74 + bob, -0.65], [0, 0, 0.08], profile.earScale);
+      this.writePart(this.legFrontLeft.mesh, slot.index, [-0.34, 0.48 + legLift, -0.45], [swing * 0.5, 0, 0], [0.19, 0.43, 0.19]);
+      this.writePart(this.legFrontRight.mesh, slot.index, [0.34, 0.48, -0.45], [opposite * 0.5, 0, 0], [0.19, 0.43, 0.19]);
+      this.writePart(this.legHindLeft.mesh, slot.index, [-0.34, 0.48, 0.45], [opposite * 0.5, 0, 0], [0.2, 0.45, 0.2]);
+      this.writePart(this.legHindRight.mesh, slot.index, [0.34, 0.48 + legLift, 0.45], [swing * 0.5, 0, 0], [0.2, 0.45, 0.2]);
+      this.writePart(this.tail.mesh, slot.index, [0, 1.05 + bob, 0.78], [0.72, 0, 0], profile.tailScale);
+      if (slot.premium) {
+        this.writePart(this.crest.mesh, slot.index, [0, 1.96 + bob, -0.6], [0, 0, Math.PI], [0.15, 0.18, 0.15]);
+      } else {
+        this.hidePart(this.crest.mesh, slot.index);
+      }
     }
 
     const labelY = pose.y
@@ -649,6 +691,11 @@ export class RemoteAvatarSystem implements GameSystem {
     this.localMatrix.compose(this.position, this.localQuaternion, this.localScale);
     this.worldMatrix.multiplyMatrices(this.rootMatrix, this.localMatrix);
     mesh.setMatrixAt(index, this.worldMatrix);
+  }
+
+  private hidePart(mesh: THREE.InstancedMesh, index: number): void {
+    this.localMatrix.compose(this.position.set(0, -1_000, 0), this.localQuaternion.identity(), HIDDEN_SCALE);
+    mesh.setMatrixAt(index, this.localMatrix);
   }
 
   private labelOpacity(worldPosition: THREE.Vector3, widthWorld: number, occlusions: readonly ScreenBounds[]): number {

@@ -8,7 +8,8 @@ export type AnimalAnimationStyle =
   | 'stomp'
   | 'bound'
   | 'prowl'
-  | 'swim';
+  | 'swim'
+  | 'stride';
 
 export interface AnimalMotionProfile {
   /** Overall rendered size. Contact geometry is scaled by the same amount. */
@@ -154,6 +155,21 @@ export const ANIMAL_MOTION_PROFILES: Readonly<Record<AnimalKind, AnimalMotionPro
     gaitScale: 1.28,
     animationStyle: 'swim',
     doubleJumpTurns: [1, 1, 0],
+  },
+  saylor: {
+    modelScale: 1,
+    walkSpeed: 4.25,
+    sprintSpeed: 6.85,
+    jumpImpulse: 8.35,
+    doubleJumpImpulse: 7.95,
+    gravity: 25.5,
+    glideGravity: 3.35,
+    glideTerminalSpeed: -2.8,
+    accelerationScale: 1.04,
+    turnScale: 1.02,
+    gaitScale: 0.92,
+    animationStyle: 'stride',
+    doubleJumpTurns: [0, 1, 0],
   },
 };
 

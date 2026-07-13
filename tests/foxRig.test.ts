@@ -102,7 +102,7 @@ describe('FoxRig hierarchy and silhouette', () => {
     disposeRig(rig);
   });
 
-  it('switches across all eight animals without replacing the articulated paw chains', () => {
+  it('switches across every playable form without replacing the articulated paw chains', () => {
     const rig = new FoxRig();
     const paws = Object.fromEntries(
       ['FrontLeft', 'FrontRight', 'HindLeft', 'HindRight'].map((label) => [
@@ -119,6 +119,7 @@ describe('FoxRig hierarchy and silhouette', () => {
       rabbit: 'RabbitEarLeft',
       cat: 'CatWhiskerLeft1',
       axolotl: 'AxolotlGillLeft1',
+      saylor: 'SaylorBitcoinPin',
     };
 
     for (const animal of ANIMAL_KINDS) {
@@ -139,6 +140,43 @@ describe('FoxRig hierarchy and silhouette', () => {
       });
       expect(Object.values(rig.getRenderedPawStates()).every((state) => Number.isFinite(state.clearance))).toBe(true);
     }
+    disposeRig(rig);
+  });
+
+  it('renders Saylor as an upright Bitcoin executive with a distinct biped air silhouette', () => {
+    const rig = new FoxRig();
+    rig.setAnimal('saylor');
+
+    for (const feature of [
+      'SaylorFace',
+      'SaylorSweptSilverHair',
+      'SaylorSilverBeard',
+      'SaylorOrangeTie',
+      'SaylorBitcoinPin',
+      'SaylorShoeLeft',
+      'SaylorShoeRight',
+    ]) {
+      expect(rig.root.getObjectByName(feature), feature).toBeInstanceOf(THREE.Mesh);
+    }
+    expect(rig.root.getObjectByName('FoxTorso')?.visible).toBe(false);
+    expect(rig.getDebugSnapshot().bounds.height).toBeGreaterThan(2.1);
+
+    settlePose(rig, 'grounded', Math.PI * 0.5, 1, 0.75);
+    const arm = rig.root.getObjectByName('SpeciesMotionFrontLeft')!;
+    const leg = rig.root.getObjectByName('SpeciesMotionHindLeft')!;
+    expect(Math.abs(arm.rotation.x)).toBeGreaterThan(0.35);
+    expect(Math.abs(leg.rotation.x)).toBeGreaterThan(0.35);
+
+    settlePose(rig, 'glide', Math.PI * 0.5, 0.5, 0.25);
+    const leftGlide = rig.root.getObjectByName('SpeciesMotionFrontLeft')!;
+    const rightGlide = rig.root.getObjectByName('SpeciesMotionFrontRight')!;
+    expect(leftGlide.rotation.z).toBeLessThan(-0.9);
+    expect(rightGlide.rotation.z).toBeGreaterThan(0.9);
+
+    settlePose(rig, 'double', 0, 0, 0, 0.5);
+    const coin = rig.root.getObjectByName('SpeciesMotionCoin')!;
+    expect(Math.abs(coin.rotation.y)).toBeGreaterThan(Math.PI);
+    expect(coin.scale.x).toBeGreaterThan(1.2);
     disposeRig(rig);
   });
 

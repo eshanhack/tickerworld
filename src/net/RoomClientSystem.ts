@@ -32,6 +32,7 @@ import {
   type ParkourCheckpointId,
   type ParkourRespawnMessage,
   type SkinId,
+  isAnimalKind,
   isMarketSlug,
   isProtocolVersionAccepted,
 } from '../../shared/src/index.js';
@@ -837,7 +838,7 @@ export class RoomClientSystem implements GameSystem {
       || typeof payload.actorId !== 'string'
       || typeof payload.token !== 'string'
       || typeof payload.expiresAt !== 'number'
-      || !['fox', 'penguin', 'frog', 'duck', 'bear', 'rabbit', 'cat', 'axolotl'].includes(String(payload.animal))) {
+      || !isAnimalKind(payload.animal)) {
       throw new Error('Could not establish a safe anonymous multiplayer identity.');
     }
     this.anonymousIdentity = {
