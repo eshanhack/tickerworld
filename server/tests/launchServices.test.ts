@@ -11,6 +11,7 @@ import { RuntimeSwitchboard } from '../src/services/runtimeSwitches.js';
 import { DatabaseNewsRequestBudget, NewsIngestService } from '../src/services/newsIngest.js';
 import { RetentionService } from '../src/services/retention.js';
 import { SafeLogger } from '../src/services/safeLogger.js';
+import { createStatefulXRulesApi } from './helpers/xRules.js';
 
 const switches = {
   admissions: true,
@@ -23,6 +24,37 @@ const switches = {
 };
 
 describe('viral launch services', () => {
+  it('requires the durable database and X token when production news ingestion is enabled', () => {
+    const productionNewsEnv: NodeJS.ProcessEnv = {
+      NODE_ENV: 'production',
+      COLYSEUS_CLOUD: '1',
+      DATABASE_SSL: 'verify-full',
+      TRUSTED_PROXY_CIDRS: '10.0.0.0/8',
+      PUBLIC_ORIGIN: 'https://tickerworld.io',
+      SERVER_HMAC_SECRET: 'server-production-secret-that-is-long-enough',
+      IP_HMAC_SECRET: 'ip-production-secret-that-is-long-enough',
+      ENABLE_NEWS_INGEST: 'true',
+    };
+
+    expect(() => loadConfig({
+      ...productionNewsEnv,
+      X_BEARER_TOKEN: 'paid-production-token',
+    })).toThrow(/DATABASE_URL/);
+    expect(() => loadConfig({
+      ...productionNewsEnv,
+      DATABASE_URL: 'postgres://user:pass@db.example/tickerworld',
+    })).toThrow(/X_BEARER_TOKEN/);
+    expect(loadConfig({
+      ...productionNewsEnv,
+      DATABASE_URL: 'postgres://user:pass@db.example/tickerworld',
+      X_BEARER_TOKEN: 'paid-production-token',
+    })).toMatchObject({
+      databaseUrl: 'postgres://user:pass@db.example/tickerworld',
+      xBearerToken: 'paid-production-token',
+      launchSwitches: { newsIngest: true },
+    });
+  });
+
   it('keeps production wallet and purchases fail-closed without credentials', () => {
     const config = loadConfig({
       NODE_ENV: 'production',
@@ -100,30 +132,38 @@ describe('viral launch services', () => {
 
   it('centralizes X reads, scopes explicit cashtags, and stops at the daily budget', async () => {
     const now = Date.parse('2026-07-12T00:05:00.000Z');
-    const fetcher = vi.fn()
-      .mockResolvedValueOnce(Response.json({
-        data: { id: 'user-1', name: 'Delta One', username: 'DeItaone' },
-      }))
-      .mockResolvedValueOnce(Response.json({
+    const rulesApi = createStatefulXRulesApi();
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const ruleResponse = rulesApi.respond(input, init);
+      if (ruleResponse) return ruleResponse;
+      const url = new URL(String(input));
+      if (url.pathname.includes('/users/by/username/')) return Response.json({
+        data: { id: '1000000000000000001', name: 'Delta One', username: 'DeItaone' },
+      });
+      if (url.pathname.endsWith('/tweets')) return Response.json({
         data: [{
-          id: 'post-1',
+          id: '2000000000000000001',
           text: '$BTC move',
           created_at: new Date(now - 1_000).toISOString(),
         }],
-      }));
+      });
+      throw new Error(`Unexpected X request: ${url}`);
+    });
     const switchboard = new RuntimeSwitchboard(switches, 400);
     const service = new NewsIngestService(
-      'paid-token', ['DeItaone'], 2, switchboard, fetcher, () => now, 60_000,
+      'paid-token', ['DeItaone'], 5, switchboard, fetcher, () => now, 60_000,
     );
     await service.refresh(now);
     expect(service.snapshot('BTC', now)).toMatchObject({
       mode: 'live',
-      items: [{ id: 'post-1', scope: 'BTC', demo: false }],
+      items: [{ id: '2000000000000000001', scope: 'BTC', demo: false }],
     });
-    expect(service.snapshot('ETH', now).items).toEqual([]);
-    await service.refresh(now + 60_000);
-    expect(fetcher).toHaveBeenCalledTimes(2);
-    service.dispose();
+    expect(service.snapshot('ETH', now).items).toEqual([
+      expect.objectContaining({ id: '2000000000000000001', scope: 'ETH', demo: false }),
+    ]);
+    await expect(service.refresh(now + 60_000)).rejects.toThrow('x_429');
+    expect(fetcher).toHaveBeenCalledTimes(5);
+    await service.dispose();
   });
 
   it('persists the paid X request kill across service instances', async () => {

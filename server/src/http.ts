@@ -2,6 +2,7 @@ import type { Application, NextFunction, Request, Response } from 'express';
 import express from 'express';
 import {
   ANIMAL_KINDS,
+  ASSET_SYMBOLS,
   MARKET_ROOM_MAX_CLIENTS,
   MARKET_SLUGS,
   PREMIUM_SKINS,
@@ -77,6 +78,12 @@ const inviteCreateSchema = z.object({
   message: 'Supply exactly one signed identity',
 });
 const inviteRedeemSchema = z.object({ token: z.string().min(40).max(1_024) });
+const newsAccountSchema = z.object({
+  scope: z.enum(ASSET_SYMBOLS),
+  handle: z.string().trim().min(1).max(16),
+  accountId: z.string().regex(/^\d{1,32}$/).optional(),
+  anonymousToken: z.string().min(40).max(1_024),
+}).strict();
 const switchPatchSchema = z.object({
   admissions: z.boolean().optional(),
   chatSend: z.boolean().optional(),
@@ -171,6 +178,7 @@ export function configureHttp(app: Application, runtime: ServerRuntime): void {
       marketRelay: runtime.marketRelay.available(),
       marketAgeMs: marketRelay.ageMs,
       news: runtime.news.available(),
+      newsIngestor: runtime.news.leaderStatus(),
     };
     const productionProvidersReady = features.trustedProxy
       && (!runtime.switches.enabled('publicWalletAuth') || features.walletAuth)
@@ -199,6 +207,40 @@ export function configureHttp(app: Application, runtime: ServerRuntime): void {
       : undefined;
     response.setHeader('Cache-Control', 'public, max-age=10, stale-while-revalidate=10');
     response.json(runtime.news.snapshot(scope));
+  });
+  app.post('/api/news/accounts', async (request, response) => {
+    const body = newsAccountSchema.parse(request.body);
+    // Reject forged/expired identity proofs before touching either the IP or
+    // actor bucket. Otherwise an unauthenticated caller behind a shared NAT can
+    // consume the whole household's small paid-provider allowance.
+    const identity = runtime.anonymous.verify(body.anonymousToken);
+    if (!identity) throw new UnauthorizedError('Anonymous identity proof is invalid');
+    // Only an immutable id can enter the high-volume retention bucket. A
+    // mutable handle may have been reclaimed by a different X account and is
+    // therefore always treated as a bounded acquisition.
+    const knownAssociation = body.accountId !== undefined
+      && runtime.news.isAccountIdAssociated(body.scope, body.accountId);
+    enforceRateLimit(
+      runtime,
+      knownAssociation ? 'news_account_touch_ip' : 'news_account_add_ip',
+      requestIpHash(request, runtime),
+      knownAssociation ? 256 : 3,
+      knownAssociation ? 60 * 60_000 : 24 * 60 * 60_000,
+    );
+    enforceRateLimit(
+      runtime,
+      knownAssociation ? 'news_account_touch_actor' : 'news_account_add_actor',
+      identity.actorId,
+      knownAssociation ? 64 : 2,
+      knownAssociation ? 60 * 60_000 : 24 * 60 * 60_000,
+    );
+    const account = knownAssociation
+      ? await runtime.news.touchAccount(body.scope, body.accountId!)
+      : body.accountId
+        ? await runtime.news.addAccountById(body.scope, body.accountId)
+        : await runtime.news.addAccount(body.scope, body.handle);
+    response.setHeader('Cache-Control', 'private, no-store');
+    response.status(201).json({ account });
   });
   app.post('/api/anonymous/session', (request, response) => {
     enforceRateLimit(
@@ -546,6 +588,13 @@ export function configureHttp(app: Application, runtime: ServerRuntime): void {
     }
     if (patch.adminActions && runtime.config.adminWallets.size === 0) {
       throw new ServiceUnavailableError('admin_not_ready', 'No admin wallet is configured');
+    }
+    if (patch.newsIngest && (!runtime.config.xBearerToken
+      || (runtime.config.nodeEnv === 'production' && !runtime.config.databaseUrl))) {
+      throw new ServiceUnavailableError(
+        'news_ingest_not_ready',
+        'Live X news requires a paid token and the shared production database',
+      );
     }
     const switches = runtime.switches.update(patch);
     response.json({ switches, updatedAt: Date.now() });

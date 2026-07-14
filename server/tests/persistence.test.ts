@@ -76,6 +76,67 @@ describe('persistence, auth, and economy invariants', () => {
     expect(tables).toEqual([]);
   });
 
+  it('persists canonical X sources and their per-world associations', async () => {
+    await db.insertInto('x_news_sources').values({
+      id: '1729384756102938475',
+      handle: 'DeItaone',
+      handle_normalized: 'deitaone',
+      name: 'Walter Bloomberg',
+      avatar_url: 'https://pbs.twimg.com/profile_images/example_normal.jpg',
+      status: 'active',
+      since_id: '1938475610293847561',
+      last_profile_at: 1_000,
+      last_poll_at: 2_000,
+      last_success_at: 2_050,
+      last_post_at: 1_900,
+      created_at: 500,
+      updated_at: 2_050,
+    }).execute();
+    await db.insertInto('x_news_worlds').values({
+      source_id: '1729384756102938475', scope: 'BTC', is_default: 1,
+      last_requested_at: 2_100, created_at: 500,
+    }).execute();
+    await db.insertInto('x_news_worlds').values({
+      source_id: '1729384756102938475', scope: 'ETH', last_requested_at: 2_200, created_at: 600,
+    }).execute();
+
+    expect(await db.selectFrom('x_news_sources').selectAll().executeTakeFirstOrThrow())
+      .toMatchObject({
+        id: '1729384756102938475',
+        handle_normalized: 'deitaone',
+        status: 'active',
+        since_id: '1938475610293847561',
+      });
+    expect(await db.selectFrom('x_news_worlds')
+      .select(['scope', 'is_default', 'last_requested_at'])
+      .orderBy('scope')
+      .execute()).toEqual([
+      { scope: 'BTC', is_default: 1, last_requested_at: 2_100 },
+      { scope: 'ETH', is_default: 0, last_requested_at: 2_200 },
+    ]);
+
+    await expect(db.insertInto('x_news_sources').values({
+      id: '9999999999999999999',
+      handle: 'DEITAONE',
+      handle_normalized: 'deitaone',
+      name: 'Duplicate handle',
+      avatar_url: null,
+      status: 'unavailable',
+      since_id: null,
+      last_profile_at: null,
+      last_poll_at: null,
+      last_success_at: null,
+      last_post_at: null,
+      created_at: 3_000,
+      updated_at: 3_000,
+    }).execute()).rejects.toThrow();
+
+    await db.deleteFrom('x_news_sources')
+      .where('id', '=', '1729384756102938475')
+      .execute();
+    expect(await db.selectFrom('x_news_worlds').selectAll().execute()).toEqual([]);
+  });
+
   it('verifies a nonce-bound Ed25519 wallet message and creates a revocable session', async () => {
     const { publicKey, privateKey } = generateKeyPairSync('ed25519');
     const publicDer = publicKey.export({ format: 'der', type: 'spki' });

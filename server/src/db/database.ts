@@ -13,6 +13,7 @@ import type { DatabaseSchema } from './types.js';
 import * as initialMigration from './migrations/001_initial.js';
 import * as identitySafetyMigration from './migrations/002_identity_safety.js';
 import * as launchOpsMigration from './migrations/003_launch_ops.js';
+import * as xNewsSourcesMigration from './migrations/004_x_news_sources.js';
 
 class StaticMigrationProvider implements MigrationProvider {
   async getMigrations(): Promise<Record<string, Migration>> {
@@ -20,6 +21,7 @@ class StaticMigrationProvider implements MigrationProvider {
       '001_initial': initialMigration as Migration,
       '002_identity_safety': identitySafetyMigration as Migration,
       '003_launch_ops': launchOpsMigration as Migration,
+      '004_x_news_sources': xNewsSourcesMigration as Migration,
     };
   }
 }

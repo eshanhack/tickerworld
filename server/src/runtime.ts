@@ -29,7 +29,11 @@ import { SlidingWindowRateLimiter } from './services/rateLimits.js';
 import { RuntimeSwitchboard } from './services/runtimeSwitches.js';
 import { PartyInviteService } from './services/partyInvites.js';
 import { DisabledMarketRelay, HyperliquidMarketRelay, type MarketRelay } from './services/marketRelay.js';
-import { DatabaseNewsRequestBudget, NewsIngestService } from './services/newsIngest.js';
+import {
+  DatabaseNewsIngestLease,
+  DatabaseNewsRequestBudget,
+  NewsIngestService,
+} from './services/newsIngest.js';
 import { SafeLogger } from './services/safeLogger.js';
 import { RetentionService } from './services/retention.js';
 
@@ -120,10 +124,13 @@ export async function createRuntime(
     Date.now,
     60_000,
     new DatabaseNewsRequestBudget(db),
+    db,
+    new DatabaseNewsIngestLease(db),
   );
   const logger = new SafeLogger();
   const retention = new RetentionService(db, logger);
   await retention.run();
+  await news.initialize();
   marketRelay.start();
   news.start();
   retention.start();
@@ -155,7 +162,7 @@ export async function createRuntime(
       chatRelay.clear();
       invites.clear();
       marketRelay.dispose();
-      news.dispose();
+      await news.dispose();
       retention.dispose();
       if (!overrides.db) await db.destroy();
     },

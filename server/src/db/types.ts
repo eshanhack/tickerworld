@@ -1,3 +1,5 @@
+import type { Generated } from 'kysely';
+
 export interface AccountRow {
   id: string;
   wallet_address: string;
@@ -131,6 +133,64 @@ export interface ProviderBudgetRow {
   updated_at: number;
 }
 
+export interface XNewsSourceRow {
+  /** Canonical immutable X user id, not the mutable account handle. */
+  id: string;
+  handle: string;
+  handle_normalized: string;
+  name: string;
+  avatar_url: string | null;
+  status: 'active' | 'unavailable';
+  since_id: string | null;
+  rule_pending_at: Generated<number | null>;
+  rule_pending_since_id: Generated<string | null>;
+  rule_ready_at: Generated<number | null>;
+  last_profile_at: number | null;
+  last_poll_at: number | null;
+  last_success_at: number | null;
+  last_post_at: number | null;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface XNewsWorldRow {
+  source_id: string;
+  scope: string;
+  is_default: Generated<0 | 1>;
+  last_requested_at: number;
+  created_at: number;
+}
+
+export interface ProviderLeaseRow {
+  provider: string;
+  owner_id: string;
+  expires_at: number;
+  updated_at: number;
+}
+
+export interface XNewsPostRow {
+  id: string;
+  source_id: string;
+  text: string;
+  links_json: string;
+  created_at: number;
+  expires_at: number;
+  author_name: string;
+  author_handle: string;
+  author_avatar_url: string | null;
+  permalink: string;
+  updated_at: number;
+}
+
+export interface ProviderHealthRow {
+  provider: string;
+  owner_id: string;
+  connected: Generated<0 | 1>;
+  last_success_at: number;
+  checked_at: number;
+  updated_at: number;
+}
+
 export interface DatabaseSchema {
   accounts: AccountRow;
   auth_challenges: AuthChallengeRow;
@@ -144,4 +204,9 @@ export interface DatabaseSchema {
   moderation_reports: ModerationReportRow;
   moderation_actions: ModerationActionRow;
   provider_budgets: ProviderBudgetRow;
+  x_news_sources: XNewsSourceRow;
+  x_news_worlds: XNewsWorldRow;
+  x_news_posts: XNewsPostRow;
+  provider_leases: ProviderLeaseRow;
+  provider_health: ProviderHealthRow;
 }

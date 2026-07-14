@@ -37,7 +37,7 @@ import {
   type ParkourRespawnMessage,
   type SpawnAssignment,
 } from '@tickerworld/shared';
-import { CloseCode, Room, validate, type AuthContext, type Client } from '@colyseus/core';
+import { CloseCode, Room, validate, type AuthContext, type Client, type Deferred } from '@colyseus/core';
 import { z } from 'zod';
 import { createId } from '../services/crypto.js';
 import { AdmissionError } from '../services/admission.js';
@@ -191,6 +191,8 @@ export class MarketRoom extends Room<{ state: MarketRoomState; client: MarketCli
   override state = new MarketRoomState();
   private market: MarketSlug = 'btc';
   private readonly occupiedSpawnSlots = new Set<number>();
+  /** Lets an explicit same-actor takeover invalidate a seat already awaiting reconnection. */
+  private readonly pendingReconnections = new Map<string, Deferred>();
   private stopMarketRelay: (() => void) | null = null;
   /** Global epoch shared by every room, shard, and server process. */
   private readonly worldTimelineEpochMs = WORLD_ENVIRONMENT_EPOCH_MS;
@@ -322,6 +324,11 @@ export class MarketRoom extends Room<{ state: MarketRoomState; client: MarketCli
         // packet is sent. The incoming join can therefore never observe two
         // players for the same actor, and chat routing drops the old client in
         // the same synchronous takeover transition.
+        const pendingReconnection = this.pendingReconnections.get(client.sessionId);
+        if (pendingReconnection) {
+          this.pendingReconnections.delete(client.sessionId);
+          pendingReconnection.reject(false);
+        }
         this.removeClientState(client);
         client.leave(code, reason);
       },
@@ -396,11 +403,17 @@ export class MarketRoom extends Room<{ state: MarketRoomState; client: MarketCli
     if (code !== CloseCode.CONSENTED
       && code !== 4_201
       && code !== SESSION_REPLACED_CLOSE_CODE) {
+      const reconnection = this.allowReconnection(client, 8);
+      this.pendingReconnections.set(client.sessionId, reconnection);
       try {
-        await this.allowReconnection(client, 8);
+        await reconnection;
         return;
       } catch {
         // Reconnection window expired; remove the player below.
+      } finally {
+        if (this.pendingReconnections.get(client.sessionId) === reconnection) {
+          this.pendingReconnections.delete(client.sessionId);
+        }
       }
     }
     this.removeClientState(client);
@@ -413,6 +426,7 @@ export class MarketRoom extends Room<{ state: MarketRoomState; client: MarketCli
     getRoomServices().chatRelay.unregister(this.roomId);
     this.stopMarketRelay?.();
     this.stopMarketRelay = null;
+    this.pendingReconnections.clear();
     this.occupiedSpawnSlots.clear();
   }
 

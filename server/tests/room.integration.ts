@@ -132,6 +132,43 @@ describe.sequential('Colyseus market rooms', () => {
     await replacement.leave();
   });
 
+  it('invalidates a dropped actor reconnection token when a newer tab takes over', async () => {
+    const identity = runtime.anonymous.issue();
+    const options = {
+      protocolVersion: PROTOCOL_VERSION,
+      market: 'test' as const,
+      animal: identity.animal,
+      anonymousToken: identity.token,
+      sessionTakeover: true,
+    };
+    const first = await testServer.sdk.joinOrCreate('market', options);
+    const staleReconnectionToken = first.reconnectionToken;
+    first.reconnection.enabled = false;
+    const transport = first.connection.transport as unknown as { ws: { close(): void } };
+    // A close without a status code is the portable browser/Node equivalent of
+    // a dropped transport and enters the room's allowReconnection path.
+    transport.ws.close();
+
+    const authoritativeRoom = testServer.getRoomById(first.roomId) as unknown as {
+      clients: { length: number };
+      state: { players: Map<string, { actorId: string }> };
+      pendingReconnections: Map<string, unknown>;
+    };
+    for (let attempt = 0; attempt < 50 && authoritativeRoom.pendingReconnections.size === 0; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(authoritativeRoom.pendingReconnections.size).toBe(1);
+
+    const replacement = await testServer.sdk.joinOrCreate('market', options);
+    expect(authoritativeRoom.pendingReconnections.size).toBe(0);
+    await expect(testServer.sdk.reconnect(staleReconnectionToken)).rejects.toThrow();
+    expect(authoritativeRoom.clients.length).toBe(1);
+    expect([...authoritativeRoom.state.players.values()]
+      .filter((player) => player.actorId === identity.actorId)).toHaveLength(1);
+    expect(runtime.admissions.snapshot()).toMatchObject({ activeConnections: 1 });
+    await replacement.leave();
+  });
+
   it('creates one correctly filtered room for every supported market slug', async () => {
     const rooms = [];
     for (const market of MARKET_SLUGS) {

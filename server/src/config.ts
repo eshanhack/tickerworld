@@ -127,9 +127,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
   const databaseUrl = envString(env, 'DATABASE_URL');
   const sensitiveFeaturesEnabled = launchSwitches.publicWalletAuth
     || launchSwitches.purchases
-    || launchSwitches.adminActions;
+    || launchSwitches.adminActions
+    || launchSwitches.newsIngest;
   if (production && !databaseUrl && (!managedCloudBootstrap || sensitiveFeaturesEnabled)) {
     throw new Error('DATABASE_URL is required in production; SQLite is development-only');
+  }
+  const xBearerToken = envString(env, 'X_BEARER_TOKEN');
+  if (production && launchSwitches.newsIngest && !xBearerToken) {
+    throw new Error('X_BEARER_TOKEN is required when production news ingestion is enabled');
   }
   const databaseSslValue = envString(env, 'DATABASE_SSL');
   if (databaseSslValue && databaseSslValue !== 'disable' && databaseSslValue !== 'verify-full') {
@@ -244,7 +249,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     devSolUsdPrice,
     launchSwitches,
     marketRelayEnabled: booleanValue(env, 'MARKET_RELAY_ENABLED', production),
-    xBearerToken: envString(env, 'X_BEARER_TOKEN'),
+    xBearerToken,
     xTrackedHandles: (envString(env, 'X_TRACKED_HANDLES') ?? 'DeItaone')
       .split(',')
       .map((handle) => handle.replace(/^@/, '').trim())

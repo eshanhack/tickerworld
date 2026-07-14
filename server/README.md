@@ -20,6 +20,9 @@ purchase, and admin features remain disabled. Browser-local anonymous identity,
 username, character, skin, and settings still persist; durable accounts,
 moderation history, and payments require Postgres plus stable secrets. Wallet
 sign-in is verified locally with Ed25519.
+Enabling production X ingestion ends that bootstrap exception: both
+`DATABASE_URL` and `X_BEARER_TOKEN` are mandatory so rolling instances share one
+catalog, ten-minute post cache, provider-health record, request budget, and lease.
 Production requires explicit `DATABASE_SSL=verify-full` and a non-empty
 `TRUSTED_PROXY_CIDRS`; there is no insecure production escape hatch. Forwarding
 headers remain ignored unless the immediate peer is in that trusted proxy set.
@@ -42,11 +45,13 @@ authentication, purchases, news ingestion, and admin actions off.
 bootstraps bounded 30-candle windows, publishes active charts at 2.5Hz, and
 freezes the last genuine state with an age/stale marker during outages. The
 `directMarketFallback` capability tells clients whether active-market-only
-browser fallback is allowed. X reads are likewise centralized: configure the
-paid token only here, set `ENABLE_NEWS_INGEST=true`, and point Vercel's
-`NEWS_CACHE_ORIGIN` at this service. No token means `unconfigured`, never demo
-headlines. Reset headers, exponential backoff, a daily request limit, and the
-runtime kill switch bound spend.
+browser fallback is allowed. X reads are likewise centralized through one
+leased filtered stream with timeline gap recovery and a shared ten-minute
+cache. Configure the paid token only here, set `ENABLE_NEWS_INGEST=true`, and
+provide the shared production `DATABASE_URL`, then point Vercel's
+`NEWS_CACHE_ORIGIN` at this service. No token means
+`unconfigured`, never demo headlines. Reset headers, exponential backoff, a
+daily request limit, catalog caps, and the runtime kill switch bound spend.
 
 A six-hour retention job removes ordinary auth/IP challenge records after 24
 hours, report evidence after 90 days, expired moderation audit records after 12

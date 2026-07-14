@@ -71,6 +71,19 @@ export type PartyJoinResult =
 
 export type NewsScope = AssetSymbol | 'global';
 
+export type NewsAccountStatus = 'live' | 'reconnecting' | 'unavailable';
+
+/** Public, secret-free representation of an X source available in one world. */
+export interface NewsTrackedAccount {
+  id: string;
+  handle: string;
+  name: string;
+  avatarUrl: string | null;
+  isDefault: boolean;
+  status: NewsAccountStatus;
+  lastPostAt: number | null;
+}
+
 export interface RelayedMarketCandle {
   openTime: number;
   open: number;

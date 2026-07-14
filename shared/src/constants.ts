@@ -69,6 +69,12 @@ export const ACCEPTED_PROTOCOL_VERSIONS = [PROTOCOL_VERSION, PREVIOUS_PROTOCOL_V
 
 export const MARKET_ROOM_NAME = 'market';
 export const MARKET_ROOM_MAX_CLIENTS = 50;
+/** Maximum number of accounts one client can surface in its local news stack. */
+export const NEWS_CLIENT_ACCOUNT_MAX = 8;
+/** Bounded shared acquisition catalog per ticker world. */
+export const NEWS_WORLD_ACCOUNT_MAX = 16;
+/** Hard process/database ceiling for paid X acquisition. */
+export const NEWS_CATALOG_ACCOUNT_MAX = 64;
 /**
  * A newer, valid connection for the same actor owns the single live seat.
  * This application close code is terminal: clients must not attempt to
