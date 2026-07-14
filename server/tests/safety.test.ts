@@ -1,4 +1,9 @@
-import { MARKET_SLUGS, normalizeYaw } from '@tickerworld/shared';
+import {
+  MARKET_SLUGS,
+  SESSION_REPLACED_CLOSE_CODE,
+  SESSION_REPLACED_REASON,
+  normalizeYaw,
+} from '@tickerworld/shared';
 import { createServer } from 'node:http';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { installTrustedPeerCapture } from '../src/app.js';
@@ -186,6 +191,39 @@ describe('launch safety controls', () => {
     expect(() => admissions.reserve('anon_c', 'ip_c', 'eth', 1_005)).toThrowError('process_capacity');
     admissions.releaseConnection('btc-room:one');
     expect(admissions.reserve('anon_a', 'ip_a', 'btc', 1_006)).toBeTruthy();
+  });
+
+  it('atomically replaces an active actor only when the new client opts in', () => {
+    const admissions = new AdmissionControl({
+      maxProcessConnections: 2,
+      maxRooms: 2,
+      maxMarketShards: 1,
+      maxConcurrentConnectionsPerIp: 2,
+      actorJoinsPerMinute: 5,
+      ipJoinsPerMinute: 10,
+    });
+    admissions.registerRoom('btc-room', 'btc');
+    admissions.registerRoom('eth-room', 'eth');
+    const disconnect = vi.fn();
+    const first = admissions.reserve('anon_a', 'ip_a', 'btc', 1_000);
+    admissions.activate(first, 'anon_a', 'btc', 'btc-room:old', 1_001, disconnect);
+
+    expect(() => admissions.reserve('anon_a', 'ip_a', 'eth', 1_002))
+      .toThrowError('actor_already_connected');
+    expect(disconnect).not.toHaveBeenCalled();
+
+    const replacement = admissions.reserve('anon_a', 'ip_a', 'eth', 1_003, true);
+    expect(disconnect).toHaveBeenCalledExactlyOnceWith(
+      SESSION_REPLACED_CLOSE_CODE,
+      SESSION_REPLACED_REASON,
+    );
+    expect(admissions.snapshot()).toMatchObject({ activeConnections: 0, reservations: 1 });
+
+    admissions.activate(replacement, 'anon_a', 'eth', 'eth-room:new', 1_004);
+    // The displaced room's delayed onLeave is idempotent and cannot release
+    // the newly activated seat.
+    admissions.releaseConnection('btc-room:old');
+    expect(admissions.snapshot()).toMatchObject({ activeConnections: 1, reservations: 0 });
   });
 
   it('reserves a room for every other market even when BTC is hot', () => {

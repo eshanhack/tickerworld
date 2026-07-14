@@ -2,8 +2,11 @@ import {
   CLIENT_MESSAGES,
   MARKET_SLUGS,
   PROTOCOL_VERSION,
+  SESSION_REPLACED_CLOSE_CODE,
+  SESSION_REPLACED_REASON,
   SERVER_MESSAGES,
   sampleBoundedTerrainHeight,
+  type ChatMessage,
 } from '@tickerworld/shared';
 import { boot, type ColyseusTestServer } from '@colyseus/testing';
 import { generateKeyPairSync, sign } from 'node:crypto';
@@ -76,6 +79,57 @@ describe.sequential('Colyseus market rooms', () => {
       maxPlayersPerShard: 50,
       maxProcessConnections: 400,
     });
+  });
+
+  it('lets an opted-in same-actor connection replace the older seat and chat immediately', async () => {
+    const identity = runtime.anonymous.issue();
+    const options = {
+      protocolVersion: PROTOCOL_VERSION,
+      market: 'test' as const,
+      animal: identity.animal,
+      anonymousToken: identity.token,
+      sessionTakeover: true,
+    };
+    const first = await testServer.sdk.joinOrCreate('market', options);
+    const firstLeft = new Promise<{ code: number; reason?: string }>((resolve) => {
+      first.onLeave.once((code, reason) => resolve({ code, reason }));
+    });
+
+    const replacement = await testServer.sdk.joinOrCreate('market', options);
+    await expect(firstLeft).resolves.toEqual({
+      code: SESSION_REPLACED_CLOSE_CODE,
+      reason: SESSION_REPLACED_REASON,
+    });
+    const authoritativeRoom = testServer.getRoomById(replacement.roomId);
+    const actorIds = [...authoritativeRoom.state.players.values()]
+      .map((player: { actorId: string }) => player.actorId);
+    expect(actorIds.filter((actorId: string) => actorId === identity.actorId)).toHaveLength(1);
+    const occupiedSpawnSlots = (authoritativeRoom as unknown as {
+      occupiedSpawnSlots: Set<number>;
+    }).occupiedSpawnSlots;
+    expect(occupiedSpawnSlots.size).toBe(authoritativeRoom.state.players.size);
+    expect(runtime.admissions.snapshot()).toMatchObject({ activeConnections: 1 });
+
+    const text = 'replacement chat is live';
+    const echoed = new Promise<ChatMessage>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('replacement chat timed out')), 1_000);
+      replacement.onMessage<ChatMessage>(SERVER_MESSAGES.chat, (message) => {
+        if (message.actorId !== identity.actorId || message.text !== text) return;
+        clearTimeout(timer);
+        resolve(message);
+      });
+    });
+    replacement.send(CLIENT_MESSAGES.chat, {
+      protocolVersion: PROTOCOL_VERSION,
+      text,
+      scope: 'world',
+    });
+    await expect(echoed).resolves.toMatchObject({
+      actorId: identity.actorId,
+      text,
+      scope: 'world',
+    });
+    await replacement.leave();
   });
 
   it('creates one correctly filtered room for every supported market slug', async () => {

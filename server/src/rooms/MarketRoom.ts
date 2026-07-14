@@ -4,6 +4,7 @@ import {
   MARKET_ROOM_MAX_CLIENTS,
   PARKOUR_CHECKPOINT_IDS,
   PROTOCOL_VERSION,
+  SESSION_REPLACED_CLOSE_CODE,
   SERVER_MESSAGES,
   STATE_PATCH_RATE_MS,
   WORLD_DAY_DURATION_SECONDS,
@@ -252,6 +253,8 @@ export class MarketRoom extends Room<{ state: MarketRoomState; client: MarketCli
         identity.actorId,
         identity.ipHash,
         options.market,
+        Date.now(),
+        options.sessionTakeover === true,
       );
     } catch (error) {
       services.logger.warn('admission_rejected', {
@@ -313,6 +316,15 @@ export class MarketRoom extends Room<{ state: MarketRoomState; client: MarketCli
       identity.actorId,
       this.market,
       connectionKey,
+      Date.now(),
+      (code, reason) => {
+        // Remove the displaced actor from authoritative state before the close
+        // packet is sent. The incoming join can therefore never observe two
+        // players for the same actor, and chat routing drops the old client in
+        // the same synchronous takeover transition.
+        this.removeClientState(client);
+        client.leave(code, reason);
+      },
     );
     let partyAnchor: { x: number; z: number } | null = null;
     if (options.partyToken) {
@@ -381,7 +393,9 @@ export class MarketRoom extends Room<{ state: MarketRoomState; client: MarketCli
   }
 
   override async onLeave(client: MarketClient, code?: number): Promise<void> {
-    if (code !== CloseCode.CONSENTED && code !== 4_201) {
+    if (code !== CloseCode.CONSENTED
+      && code !== 4_201
+      && code !== SESSION_REPLACED_CLOSE_CODE) {
       try {
         await this.allowReconnection(client, 8);
         return;
@@ -389,13 +403,7 @@ export class MarketRoom extends Room<{ state: MarketRoomState; client: MarketCli
         // Reconnection window expired; remove the player below.
       }
     }
-    this.state.players.delete(client.sessionId);
-    const connectionKey = `${this.roomId}:${client.sessionId}`;
-    const data = client.userData;
-    if (data) this.occupiedSpawnSlots.delete(data.spawnSlot);
-    getRoomServices().moderation.unregisterConnection(connectionKey);
-    getRoomServices().admissions.releaseConnection(connectionKey);
-    getRoomServices().populations.update(this.roomId, this.state.players.size);
+    this.removeClientState(client);
   }
 
   override onDispose(): void {
@@ -712,5 +720,20 @@ export class MarketRoom extends Room<{ state: MarketRoomState; client: MarketCli
   private clientData(client: MarketClient): MarketClientData {
     if (!client.userData) throw new Error('missing_client_data');
     return client.userData;
+  }
+
+  /** Idempotent so terminal takeover cleanup and the later onLeave may both call it. */
+  private removeClientState(client: MarketClient): void {
+    // The replacement may deterministically reuse this actor's spawn slot
+    // before the displaced socket's eventual onLeave callback arrives. Only
+    // the first removal owns cleanup; a second pass must not free the live
+    // replacement's slot or perturb its population count.
+    if (!this.state.players.delete(client.sessionId)) return;
+    const connectionKey = `${this.roomId}:${client.sessionId}`;
+    const data = client.userData;
+    if (data) this.occupiedSpawnSlots.delete(data.spawnSlot);
+    getRoomServices().moderation.unregisterConnection(connectionKey);
+    getRoomServices().admissions.releaseConnection(connectionKey);
+    getRoomServices().populations.update(this.roomId, this.state.players.size);
   }
 }

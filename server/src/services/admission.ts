@@ -1,4 +1,9 @@
-import { MARKET_ROOM_MAX_CLIENTS, type MarketSlug } from '@tickerworld/shared';
+import {
+  MARKET_ROOM_MAX_CLIENTS,
+  SESSION_REPLACED_CLOSE_CODE,
+  SESSION_REPLACED_REASON,
+  type MarketSlug,
+} from '@tickerworld/shared';
 import { randomToken } from './crypto.js';
 import { SlidingWindowRateLimiter } from './rateLimits.js';
 
@@ -32,6 +37,7 @@ interface ActiveConnection {
   ipHash: string;
   x: number | null;
   z: number | null;
+  disconnect?: (code: number, reason: string) => void;
 }
 
 export interface AdmissionLimits {
@@ -54,18 +60,32 @@ export class AdmissionControl {
 
   constructor(private readonly limits: AdmissionLimits, private readonly reservationTtlMs = 15_000) {}
 
-  reserve(actorId: string, ipHash: string, market: MarketSlug, now = Date.now()): string {
+  reserve(
+    actorId: string,
+    ipHash: string,
+    market: MarketSlug,
+    now = Date.now(),
+    sessionTakeover = false,
+  ): string {
     this.cleanup(now);
-    if (this.activeByActor.has(actorId)) throw new AdmissionError('actor_already_connected');
+    const active = this.activeByActor.get(actorId);
     const pendingId = this.reservationByActor.get(actorId);
     const pending = pendingId ? this.reservations.get(pendingId) : undefined;
-    if (pending) {
+    if ((active || pending) && !sessionTakeover) {
       throw new AdmissionError('actor_already_connected');
     }
-    if (this.activeByActor.size + this.reservations.size >= this.limits.maxProcessConnections) {
+    // Capacity checks evaluate the state that will exist after this actor's
+    // older seat/reservation is replaced. Nothing is mutated until every
+    // admission check passes, so a rejected newcomer cannot evict a healthy
+    // incumbent.
+    const otherActive = [...this.activeByActor.values()]
+      .filter((entry) => entry.actorId !== actorId);
+    const otherReservations = [...this.reservations.values()]
+      .filter((entry) => entry.actorId !== actorId);
+    if (otherActive.length + otherReservations.length >= this.limits.maxProcessConnections) {
       throw new AdmissionError('process_capacity');
     }
-    const ipConnections = [...this.activeByActor.values(), ...this.reservations.values()]
+    const ipConnections = [...otherActive, ...otherReservations]
       .filter((entry) => entry.ipHash === ipHash).length;
     if (ipConnections >= this.limits.maxConcurrentConnectionsPerIp) {
       throw new AdmissionError('ip_capacity');
@@ -78,7 +98,7 @@ export class AdmissionControl {
     );
     if (!actorRate.allowed || !ipRate.allowed) throw new AdmissionError('join_rate_limited');
 
-    const marketConnections = [...this.activeByActor.values(), ...this.reservations.values()]
+    const marketConnections = [...otherActive, ...otherReservations]
       .filter((entry) => entry.market === market).length;
     const marketRooms = [...this.rooms.values()].filter((entry) => entry === market).length;
     const existingCapacity = marketRooms * MARKET_ROOM_MAX_CLIENTS;
@@ -89,14 +109,46 @@ export class AdmissionControl {
         : 'process_capacity');
     }
 
+    // The replacement is one synchronous state transition: invalidate an
+    // older pending handshake, release the active admission slot, install the
+    // newcomer's reservation, and only then notify the displaced socket. Its
+    // eventual onLeave cleanup is consequently idempotent and cannot release
+    // the newly reserved/activated seat.
+    if (pending) {
+      this.reservations.delete(pending.id);
+      if (this.reservationByActor.get(actorId) === pending.id) {
+        this.reservationByActor.delete(actorId);
+      }
+    }
+    if (active) {
+      this.activeByActor.delete(actorId);
+      this.actorByConnection.delete(active.connectionKey);
+    }
+
     const id = randomToken(18);
     const reservation = { id, actorId, ipHash, market, expiresAt: now + this.reservationTtlMs };
     this.reservations.set(id, reservation);
     this.reservationByActor.set(actorId, id);
+    if (active?.disconnect) {
+      try {
+        active.disconnect(SESSION_REPLACED_CLOSE_CODE, SESSION_REPLACED_REASON);
+      } catch {
+        // The admission state is already safe. A socket that cannot receive
+        // the terminal close will still be removed by its normal transport
+        // lifecycle without owning the actor's replacement seat.
+      }
+    }
     return id;
   }
 
-  activate(reservationId: string, actorId: string, market: MarketSlug, connectionKey: string, now = Date.now()): void {
+  activate(
+    reservationId: string,
+    actorId: string,
+    market: MarketSlug,
+    connectionKey: string,
+    now = Date.now(),
+    disconnect?: (code: number, reason: string) => void,
+  ): void {
     this.cleanup(now);
     const reservation = this.reservations.get(reservationId);
     if (!reservation || reservation.actorId !== actorId || reservation.market !== market) {
@@ -107,7 +159,7 @@ export class AdmissionControl {
     this.reservations.delete(reservation.id);
     this.reservationByActor.delete(actorId);
     this.activeByActor.set(actorId, {
-      actorId, market, connectionKey, ipHash: reservation.ipHash, x: null, z: null,
+      actorId, market, connectionKey, ipHash: reservation.ipHash, x: null, z: null, disconnect,
     });
     this.actorByConnection.set(connectionKey, actorId);
   }

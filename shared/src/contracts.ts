@@ -267,6 +267,12 @@ export interface ReportSendMessage {
 export interface JoinOptions {
   protocolVersion: number;
   market: MarketSlug;
+  /**
+   * Explicitly lets this authenticated connection replace an older seat for
+   * the same actor. Omission preserves legacy reject-on-duplicate behavior so
+   * an older client cannot reclaim a seat after being displaced.
+   */
+  sessionTakeover?: boolean;
   /** Signed opaque identity from POST /api/anonymous/session. */
   anonymousToken?: string;
   /** Revocable wallet account session. Raw wallet addresses never enter room state. */

@@ -69,6 +69,13 @@ export const ACCEPTED_PROTOCOL_VERSIONS = [PROTOCOL_VERSION, PREVIOUS_PROTOCOL_V
 
 export const MARKET_ROOM_NAME = 'market';
 export const MARKET_ROOM_MAX_CLIENTS = 50;
+/**
+ * A newer, valid connection for the same actor owns the single live seat.
+ * This application close code is terminal: clients must not attempt to
+ * reconnect the displaced room token.
+ */
+export const SESSION_REPLACED_CLOSE_CODE = 4_202;
+export const SESSION_REPLACED_REASON = 'session_replaced';
 export const STATE_PATCH_RATE_MS = 100;
 export const MOVE_SEND_RATE_HZ = 10;
 export const REMOTE_INTERPOLATION_DELAY_MS = 150;
