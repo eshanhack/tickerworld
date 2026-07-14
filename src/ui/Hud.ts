@@ -1,5 +1,6 @@
 import type { AnimalKind, EmoteKind, SkinId } from '../../shared/src/index.js';
 import type { AssetSymbol, FeedMode } from '../types';
+import type { NewsAccountAddResult, NewsWatchlistSnapshot } from '../news';
 import { MARKET_TRADE_CONFIG } from '../trades/config';
 import type { TradeTapeMode } from '../trades/types';
 import { formatPrice } from '../monuments';
@@ -14,6 +15,11 @@ import {
   NewsOverlayView,
   type NewsOverlayViewState,
 } from './NewsOverlayView';
+import { NewsWatchlistView } from './NewsWatchlistView';
+import {
+  NewsInteractionAggregate,
+  type NewsInteractionSurface,
+} from './NewsInteractionAggregate';
 import {
   OnboardingJourney,
   type OnboardingAction,
@@ -62,6 +68,9 @@ export interface HudCallbacks {
   onContextRetry?: () => void;
   onNewsDismiss?: (itemId: string) => void;
   onNewsInteractionChange?: (active: boolean) => void;
+  onNewsAccountSelect?: (handle: string) => void;
+  onNewsAccountAdd?: (handle: string) => Promise<NewsAccountAddResult>;
+  onNewsAccountRemove?: (handle: string) => void;
 }
 
 export interface NearbyView {
@@ -185,6 +194,7 @@ export class Hud {
   private readonly contextLossOverlay: HTMLElement;
   private readonly contextRetryButton: HTMLButtonElement;
   private readonly newsOverlay: NewsOverlayView;
+  private readonly newsWatchlist: NewsWatchlistView;
   private readonly wardrobe: WardrobeView;
   private readonly onboarding = new OnboardingJourney();
   private readonly overlays = new OverlayCoordinator();
@@ -192,6 +202,7 @@ export class Hud {
   private readonly activeJumpPointers = new Set<number>();
   private readonly stopOnboardingSubscription: () => void;
   private pendingNewsState: NewsOverlayViewState | null = null;
+  private readonly newsInteractions = new NewsInteractionAggregate();
   private joystickPointer: number | null = null;
   private joystickCenter = { x: 0, y: 0 };
   private compassEnabled = true;
@@ -342,7 +353,14 @@ export class Hud {
     this.contextRetryButton = this.required<HTMLButtonElement>('[data-context-retry]');
     this.newsOverlay = new NewsOverlayView(this.root, {
       onDismiss: (itemId) => this.callbacks.onNewsDismiss?.(itemId),
-      onInteractionChange: (active) => this.callbacks.onNewsInteractionChange?.(active),
+      onInteractionChange: (active) => this.setNewsInteraction('overlay', active),
+    });
+    this.newsWatchlist = new NewsWatchlistView(this.root, {
+      onSelect: (handle) => this.callbacks.onNewsAccountSelect?.(handle),
+      onAdd: (handle) => this.callbacks.onNewsAccountAdd?.(handle)
+        ?? Promise.resolve({ ok: false, error: 'News account controls are unavailable.' }),
+      onRemove: (handle) => this.callbacks.onNewsAccountRemove?.(handle),
+      onInteractionChange: (active) => this.setNewsInteraction('sources', active),
     });
     this.wardrobe = new WardrobeView(this.root, {
       selectedAnimal: options.initialAnimal,
@@ -428,7 +446,7 @@ export class Hud {
   public setEntered(): void {
     this.entered = true;
     this.root.classList.remove('is-awaiting-entry');
-    this.onboardingHint.classList.remove('is-hidden');
+    this.renderOnboarding(this.onboarding.snapshot);
     this.enterOverlay.classList.add('is-entered');
     window.setTimeout(() => this.enterOverlay.remove(), 900);
   }
@@ -610,6 +628,10 @@ export class Hud {
     this.syncOverlayState();
   }
 
+  public setNewsWatchlist(state: NewsWatchlistSnapshot): void {
+    this.newsWatchlist.setState(state);
+  }
+
   /** Mounts an independently-owned HUD layer inside the existing safe UI root. */
   public mountLayer(className: string): HTMLDivElement {
     const layer = document.createElement('div');
@@ -666,6 +688,8 @@ export class Hud {
     this.extensionLayers.clear();
     this.overlays.clear();
     this.newsOverlay.dispose();
+    this.newsWatchlist.dispose();
+    if (this.newsInteractions.clear()) this.callbacks.onNewsInteractionChange?.(false);
     this.wardrobe.dispose();
     this.root.remove();
   }
@@ -697,7 +721,17 @@ export class Hud {
     this.onboardingCta.textContent = copy.cta ?? '';
     this.onboardingCta.classList.toggle('is-hidden', copy.cta === null);
     this.onboardingHint.classList.toggle('is-complete', snapshot.completed);
-    this.onboardingHint.classList.toggle('is-hidden', snapshot.completed || snapshot.dismissed || !this.entered);
+    const active = !snapshot.completed && !snapshot.dismissed && this.entered;
+    this.root.classList.toggle('is-onboarding-active', active);
+    this.onboardingHint.classList.toggle('is-hidden', !active);
+  }
+
+  private setNewsInteraction(surface: NewsInteractionSurface, active: boolean): void {
+    const changed = this.newsInteractions.set(surface, active);
+    if (surface === 'sources') {
+      this.root.classList.toggle('is-managing-news-sources', active);
+    }
+    if (changed) this.callbacks.onNewsInteractionChange?.(this.newsInteractions.active);
   }
 
   private setOwnedOverlay(owner: 'settings' | 'wardrobe' | 'emote' | 'context', open: boolean): void {

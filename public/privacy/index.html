@@ -8,7 +8,7 @@
 </head><body>
   <header class="site-header"><a class="brand" href="/btc">Tickerworld</a><a class="back-link" href="/btc">Enter BTC world</a></header>
   <main>
-    <p class="kicker">Plain-language policy · 12 July 2026</p>
+    <p class="kicker">Plain-language policy · 14 July 2026</p>
     <h1>Privacy, without surprises.</h1>
     <p class="lede">Tickerworld is an independent browser game. You can explore anonymously, without an account or wallet. This policy explains the limited information the Tickerworld service handles, why it is needed, where it may go, and how to ask a question or make a complaint.</p>
     <div class="notice"><strong>Launch boundary</strong>Public wallet login and purchases are disabled. If those features are ever enabled, this policy and the in-product notice will be updated before they collect information.</div>
@@ -21,7 +21,8 @@
       <li><strong>Anonymous play data:</strong> a random opaque actor identifier, chosen animal, room, movement snapshots, emotes, and connection state needed to show a shared world. Raw wallet addresses are not placed in room state.</li>
       <li><strong>Chat and safety data:</strong> room chat is held in memory, up to 50 recent messages. If a report is made, the server attaches its own recent room context. Blocks are stored in your browser.</li>
       <li><strong>Security data:</strong> the service sees network and request information such as IP address and user agent. Where throttling is active, IPs are converted to keyed, non-public identifiers rather than synchronized into the game.</li>
-      <li><strong>Preferences:</strong> volume, mute, accessibility, quality, animal, blocks, and last market may be stored locally in your browser.</li>
+      <li><strong>Preferences:</strong> volume, mute, accessibility, quality, animal, blocks, last market, and the public X account identifiers and handles you choose to follow in each world may be stored locally in your browser. Your personal watchlist is not uploaded as a user profile.</li>
+      <li><strong>Public X news data:</strong> to provide the live news feature, the shared service may hold public account identifiers, handles, display names, profile images, per-world source associations, and the exact public posts shown in the game. The shared catalog is not linked to the player who first requested an account.</li>
       <li><strong>Aggregate product data:</strong> page visits, performance measurements, and coarse events such as game ready, first movement, emote used, invite created, or session duration. Event properties exclude chat, player names, actor IDs, wallet data, party tokens, query strings, fragments, and raw IP addresses.</li>
     </ul>
 
@@ -29,7 +30,7 @@
     <p>Information is collected from your browser and network connection only as you use the service. It is used to deliver live multiplayer play, remember local choices, show market and news content, prevent abuse, investigate reports, measure aggregate reliability and activation, and comply with law. Tickerworld does not sell personal information or use chat contents for advertising.</p>
 
     <h2>Sharing and overseas processing</h2>
-    <p>Information may be processed by infrastructure and service providers used to run Tickerworld, including Vercel for web hosting and privacy-oriented analytics, a Colyseus hosting provider for multiplayer, a managed database provider for safety records, and public market/news providers. These providers may process data outside Australia, primarily in the United States and in the hosting region selected for the multiplayer service. The active region and providers will be kept current on the <a href="/status">service-status page</a>.</p>
+    <p>Information may be processed by infrastructure and service providers used to run Tickerworld, including Vercel for web hosting and privacy-oriented analytics, a Colyseus hosting provider for multiplayer, a managed database provider for safety and live-news records, X for requested public account and post data, and public market providers. These providers may process data outside Australia, primarily in the United States and in the hosting region selected for the multiplayer service. The active region and providers will be kept current on the <a href="/status">service-status page</a>.</p>
 
     <h2>Retention</h2>
     <ul>
@@ -38,7 +39,9 @@
       <li>HMAC-derived IP throttling identifiers: up to 24 hours unless attached to an active ban.</li>
       <li>Report evidence: up to 90 days.</li>
       <li>Moderation audit actions: up to 12 months.</li>
-      <li>Browser preferences and blocks: until you clear site data.</li>
+      <li>Public X posts shown in the game: up to 10 minutes.</li>
+      <li>Custom public X account-to-world associations: removed after approximately 24 hours without a request; configured default sources remain while configured. Unused public profile records are removed with their final association.</li>
+      <li>Browser preferences, per-world X watchlists, and blocks: until you clear site data.</li>
     </ul>
 
     <h2>Access, correction, deletion, and complaints</h2>

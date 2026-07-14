@@ -13,7 +13,9 @@ not evidence that multiplayer, news, DNS, moderation, or a human soft launch is 
 - Multiplayer: one capped Colyseus process, maximum 400 connected players and 50 per shard
 - Market data: one process-wide Hyperliquid relay; direct browsers load only the active market when
   the relay is unavailable and the remote fallback switch permits it
-- News: one server X ingestor and ten-minute cache; Vercel reads only `NEWS_CACHE_ORIGIN`
+- News: one leased server-side X filtered stream, per-world account catalog, and ten-minute cache;
+  browsers keep private watchlists and Vercel reads only `NEWS_CACHE_ORIGIN`; every rolling server
+  instance uses the same production `DATABASE_URL`
 - Public wallet authentication and purchases: off
 
 ## Launch switches

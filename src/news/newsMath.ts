@@ -6,7 +6,9 @@ import {
   type NewsLink,
   type NewsLinkKind,
   type NewsSource,
+  type TrackedNewsAccount,
 } from './types.js';
+import { NEWS_CLIENT_ACCOUNT_MAX } from '../../shared/src/index.js';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -23,6 +25,48 @@ function finiteTimestamp(value: unknown): number | undefined {
 
 function nullableString(value: unknown): string | null | undefined {
   return value === null || typeof value === 'string' ? value : undefined;
+}
+
+function safeAvatarUrl(value: unknown): string | null | undefined {
+  if (value === null) return null;
+  if (typeof value !== 'string') return undefined;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' && !url.username && !url.password ? url.href : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function parseTrackedNewsAccount(value: unknown): TrackedNewsAccount | undefined {
+  if (!isRecord(value)) return undefined;
+  const avatarUrl = safeAvatarUrl(value.avatarUrl);
+  const lastPostAt = value.lastPostAt === null ? null : finiteTimestamp(value.lastPostAt);
+  const status = value.status === 'live'
+    || value.status === 'reconnecting'
+    || value.status === 'unavailable'
+    ? value.status
+    : undefined;
+  const handle = typeof value.handle === 'string' ? value.handle.replace(/^@/, '') : '';
+  const id = typeof value.id === 'string' ? value.id.trim() : '';
+  if (
+    !/^[^\s\u0000-\u001f\u007f]{1,128}$/.test(id)
+    || !/^[A-Za-z0-9_]{1,15}$/.test(handle)
+    || typeof value.name !== 'string'
+    || value.name.trim() === ''
+    || avatarUrl === undefined
+    || lastPostAt === undefined
+    || !status
+  ) return undefined;
+  return {
+    id,
+    handle,
+    name: value.name,
+    avatarUrl,
+    isDefault: value.isDefault === true,
+    status,
+    lastPostAt,
+  };
 }
 
 function parseNewsSource(value: unknown): NewsSource | undefined {
@@ -94,6 +138,12 @@ function parseNewsItem(value: unknown): NewsItem | undefined {
   const avatar = nullableString(value.authorAvatarUrl);
   const permalink = nullableString(value.permalink);
   const links = parseNewsLinks(value.links);
+  const authorId = value.authorId === undefined || value.authorId === null
+    ? undefined
+    : typeof value.authorId === 'string'
+      && /^[^\s\u0000-\u001f\u007f]{1,128}$/.test(value.authorId.trim())
+      ? value.authorId.trim()
+      : null;
   const scope = value.scope === 'global'
     || value.scope === 'BTC'
     || value.scope === 'ETH'
@@ -125,6 +175,7 @@ function parseNewsItem(value: unknown): NewsItem | undefined {
     || avatar === undefined
     || permalink === undefined
     || links === undefined
+    || authorId === null
   ) {
     return undefined;
   }
@@ -137,6 +188,7 @@ function parseNewsItem(value: unknown): NewsItem | undefined {
     createdAt,
     // The client owns the ten-minute lifetime invariant instead of trusting an API value.
     expiresAt: createdAt + NEWS_ITEM_TTL_MS,
+    ...(authorId ? { authorId } : {}),
     authorName: value.authorName,
     authorHandle: value.authorHandle.replace(/^@/, ''),
     authorAvatarUrl: avatar,
@@ -183,10 +235,20 @@ export function parseNewsApiResponse(payload: unknown, now = Date.now()): NewsAp
   const parsed = payload.items
     .map(parseNewsItem)
     .filter((item): item is NewsItem => item !== undefined);
+  const accounts = Array.isArray(payload.accounts)
+    ? payload.accounts
+      .map(parseTrackedNewsAccount)
+      .filter((account): account is TrackedNewsAccount => account !== undefined)
+    : undefined;
+  const maxAccounts = Number.isInteger(payload.maxAccounts) && (payload.maxAccounts as number) > 0
+    ? Math.min(NEWS_CLIENT_ACCOUNT_MAX, payload.maxAccounts as number)
+    : undefined;
   return {
     mode,
     items: pruneExpiredNewsItems(parsed, now),
     checkedAt,
+    ...(accounts ? { accounts } : {}),
+    ...(maxAccounts ? { maxAccounts } : {}),
   };
 }
 

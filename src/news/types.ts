@@ -1,4 +1,9 @@
-import type { AssetSymbol, NewsScope as SharedNewsScope } from '../../shared/src/index.js';
+import type {
+  AssetSymbol,
+  NewsAccountStatus,
+  NewsScope as SharedNewsScope,
+  NewsTrackedAccount,
+} from '../../shared/src/index.js';
 
 export type NewsScope = SharedNewsScope;
 
@@ -10,6 +15,8 @@ export type NewsSource = 'x' | 'simulation';
 export type NewsApiMode = 'live' | 'unconfigured' | 'unavailable';
 export type NewsFeedMode = 'connecting' | NewsApiMode | 'simulated';
 export type NewsLinkKind = 'url' | 'mention' | 'hashtag' | 'cashtag';
+export type TrackedNewsAccountStatus = NewsAccountStatus;
+export type TrackedNewsAccount = NewsTrackedAccount;
 
 export interface NewsLink {
   kind: NewsLinkKind;
@@ -31,6 +38,8 @@ export interface NewsItem {
   links: readonly NewsLink[];
   createdAt: number;
   expiresAt: number;
+  /** Immutable X author id when supplied by the canonical ingestion service. */
+  authorId?: string;
   authorName: string;
   authorHandle: string;
   authorAvatarUrl: string | null;
@@ -44,6 +53,10 @@ export interface NewsApiResponse {
   mode: NewsApiMode;
   items: readonly NewsItem[];
   checkedAt: number;
+  /** Optional during the compatible server rollout. */
+  accounts?: readonly TrackedNewsAccount[];
+  /** Server policy can lower, but never raise, the client's eight-account cap. */
+  maxAccounts?: number;
 }
 
 export interface NewsFeedUpdate {
@@ -53,6 +66,8 @@ export interface NewsFeedUpdate {
   /** Only genuinely new items from this event. Initial/backfill events always leave this empty. */
   added: readonly NewsItem[];
   updatedAt: number;
+  accounts: readonly TrackedNewsAccount[];
+  maxAccounts: number;
 }
 
 export type NewsFeedListener = (update: NewsFeedUpdate) => void;

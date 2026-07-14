@@ -192,6 +192,15 @@ export class MonumentSystem implements GameSystem {
     return dismissed;
   }
 
+  /** Selects one candle-linked post at every grand presentation of its market. */
+  selectNewsItem(itemId: string): boolean {
+    let selected = false;
+    for (const monument of this.monuments) {
+      if (monument.discoverable) selected = monument.selectNewsItem(itemId) || selected;
+    }
+    return selected;
+  }
+
   getForSymbol(symbol: AssetSymbol): readonly Monument[] {
     return [...this.monuments].filter((monument) => monument.symbol === symbol);
   }

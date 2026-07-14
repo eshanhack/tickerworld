@@ -13,9 +13,11 @@ import {
   type NewsFeedMode,
   type NewsFeedUpdate,
   type NewsItem,
+  type TrackedNewsAccount,
 } from './types.js';
 import { QA_MODE_ALLOWED } from '../config';
 import type { AssetSymbol } from '../types';
+import { NEWS_CLIENT_ACCOUNT_MAX } from '../../shared/src/index.js';
 
 type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
@@ -74,6 +76,8 @@ export class BrowserNewsFeed implements NewsFeed {
       items: [],
       added: [],
       updatedAt: this.now(),
+      accounts: [],
+      maxAccounts: NEWS_CLIENT_ACCOUNT_MAX,
     };
   }
 
@@ -99,7 +103,7 @@ export class BrowserNewsFeed implements NewsFeed {
     if (this.pollTimer !== undefined) clearTimeout(this.pollTimer);
     this.pollTimer = undefined;
     this.requestController?.abort();
-    this.publish('connecting', [], [], this.now());
+    this.publish('connecting', [], [], this.now(), [], NEWS_CLIENT_ACCOUNT_MAX);
     void this.pollAndSchedule();
   }
 
@@ -165,12 +169,19 @@ export class BrowserNewsFeed implements NewsFeed {
       if (this.paused || this.disposed || controller.signal.aborted) return;
 
       if (parsed.mode === 'unconfigured') {
+        this.acceptAccountCatalog(parsed.accounts, parsed.maxAccounts);
         this.enterDemo();
       } else if (parsed.mode === 'unavailable') {
+        this.acceptAccountCatalog(parsed.accounts, parsed.maxAccounts);
         this.enterDemo();
       } else {
         this.leaveDemo();
-        this.acceptLiveItems(parsed.items, parsed.checkedAt);
+        this.acceptLiveItems(
+          parsed.items,
+          parsed.checkedAt,
+          parsed.accounts,
+          parsed.maxAccounts,
+        );
       }
     } catch (error) {
       if (this.paused || this.disposed || controller.signal.aborted || isAbortError(error)) return;
@@ -188,7 +199,12 @@ export class BrowserNewsFeed implements NewsFeed {
     return /^https?:/i.test(this.endpoint) ? url.toString() : `${url.pathname}${url.search}`;
   }
 
-  private acceptLiveItems(incoming: readonly NewsItem[], checkedAt: number): void {
+  private acceptLiveItems(
+    incoming: readonly NewsItem[],
+    checkedAt: number,
+    accounts?: readonly TrackedNewsAccount[],
+    maxAccounts?: number,
+  ): void {
     const result = findGenuinelyNewItems(
       incoming,
       { seenIds: this.seenIds, newestCreatedAt: this.newestCreatedAt },
@@ -204,7 +220,26 @@ export class BrowserNewsFeed implements NewsFeed {
       : Math.max(result.newestCreatedAt, checkedAt);
     this.liveBaselineEstablished = true;
     const items = mergeNewsItems(this.xItems(), incoming, this.now());
-    this.publish('live', items, result.added, checkedAt);
+    this.publish(
+      'live',
+      items,
+      result.added,
+      checkedAt,
+      accounts ?? this.snapshot.accounts,
+      maxAccounts ?? this.snapshot.maxAccounts,
+    );
+  }
+
+  private acceptAccountCatalog(
+    accounts?: readonly TrackedNewsAccount[],
+    maxAccounts?: number,
+  ): void {
+    if (!accounts && maxAccounts === undefined) return;
+    this.snapshot = {
+      ...this.snapshot,
+      accounts: accounts ?? this.snapshot.accounts,
+      maxAccounts: maxAccounts ?? this.snapshot.maxAccounts,
+    };
   }
 
   private enterDemo(): void {
@@ -261,11 +296,23 @@ export class BrowserNewsFeed implements NewsFeed {
     items: readonly NewsItem[],
     added: readonly NewsItem[],
     updatedAt: number,
+    accounts: readonly TrackedNewsAccount[] = this.snapshot.accounts,
+    maxAccounts = this.snapshot.maxAccounts,
   ): void {
     const activeItems = pruneExpiredNewsItems(items, this.now());
     const activeIds = new Set(activeItems.map((item) => `${item.source}:${item.id}`));
     const activeAdded = added.filter((item) => activeIds.has(`${item.source}:${item.id}`));
-    const event: NewsFeedUpdate = { mode, items: activeItems, added: activeAdded, updatedAt };
+    const event: NewsFeedUpdate = {
+      mode,
+      items: activeItems,
+      added: activeAdded,
+      updatedAt,
+      accounts,
+      maxAccounts: Math.min(
+        NEWS_CLIENT_ACCOUNT_MAX,
+        Math.max(1, Math.floor(maxAccounts)),
+      ),
+    };
     // New subscribers and getSnapshot() must not replay a historical notification.
     this.snapshot = { ...event, added: [] };
     this.listeners.forEach((listener) => listener(event));

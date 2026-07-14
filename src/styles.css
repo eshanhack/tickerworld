@@ -146,6 +146,7 @@ canvas {
 
 .hud.is-awaiting-entry .nearby-panel,
 .hud.is-awaiting-entry .world-clock,
+.hud.is-awaiting-entry .news-watchlist,
 .hud.is-awaiting-entry .compass,
 .hud.is-awaiting-entry .hud-actions,
 .hud.is-awaiting-entry .hud-toast,
@@ -643,6 +644,142 @@ canvas {
   overflow: hidden;
   pointer-events: none;
 }
+
+/* The source manager and tweet card are both large news surfaces. Keeping the
+   card mounted but inert avoids card/manager overlap without losing selection. */
+.hud.is-managing-news-sources .news-overlay-layer {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.news-watchlist {
+  position: fixed;
+  z-index: 11;
+  top: calc(max(1.15rem, env(safe-area-inset-top)) + 5.25rem);
+  right: max(1.15rem, env(safe-area-inset-right));
+  display: grid;
+  justify-items: end;
+  gap: .48rem;
+  pointer-events: none;
+  transition: opacity .2s ease, visibility .2s ease;
+}
+
+/* The compact source rail remains usable during the first-run journey. Opening
+   its full manager temporarily yields the onboarding prompt, just like the
+   other large HUD surfaces, without stranding the account controls. */
+.hud.is-managing-news-sources .onboarding-hint {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.news-watchlist-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  max-height: clamp(5rem, calc(100dvh - 27rem), 18rem);
+  padding: .12rem;
+  overflow: auto;
+  scrollbar-width: none;
+  pointer-events: none;
+}
+
+.news-watchlist-rail::-webkit-scrollbar { display: none; }
+
+.news-watchlist-avatar,
+.news-watchlist-add {
+  position: relative;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 2.65rem;
+  height: 2.65rem;
+  padding: 0;
+  overflow: hidden;
+  border: 2px solid rgba(255, 241, 207, .92);
+  border-radius: 50%;
+  color: #fff6df;
+  background: rgba(53, 64, 67, .94);
+  box-shadow: 0 .38rem 1rem rgba(35, 45, 47, .2);
+  cursor: pointer;
+  font: 900 .82rem/1 Nunito, system-ui, sans-serif;
+  pointer-events: auto;
+  transition: transform .16s ease, filter .16s ease, box-shadow .16s ease;
+}
+
+.news-watchlist-avatar + .news-watchlist-avatar { margin-top: -.62rem; }
+.news-watchlist-avatar:hover,
+.news-watchlist-avatar:focus-visible,
+.news-watchlist-add:hover,
+.news-watchlist-add:focus-visible {
+  z-index: 2;
+  outline: none;
+  transform: translateX(-.18rem) scale(1.08);
+  filter: saturate(1.08);
+}
+.news-watchlist-avatar[data-status="live"] { box-shadow: 0 0 0 2px rgba(111, 211, 148, .8), 0 .38rem 1rem rgba(35, 45, 47, .22); }
+.news-watchlist-avatar[data-status="reconnecting"] { box-shadow: 0 0 0 2px rgba(238, 190, 102, .88), 0 .38rem 1rem rgba(35, 45, 47, .22); }
+.news-watchlist-avatar[data-status="unavailable"] { filter: grayscale(.72); box-shadow: 0 0 0 2px rgba(167, 177, 177, .68), 0 .38rem 1rem rgba(35, 45, 47, .2); }
+.news-watchlist-avatar img,
+.news-watchlist-row-avatar img { width: 100%; height: 100%; display: block; object-fit: cover; }
+.news-watchlist-add { overflow: visible; color: #4f5b59; background: rgba(255, 241, 207, .9); font-size: 1.42rem; }
+
+.news-watchlist-manager {
+  position: absolute;
+  top: 1.2rem;
+  right: 3.35rem;
+  width: min(19.5rem, calc(100vw - 5.5rem));
+  box-sizing: border-box;
+  padding: .85rem;
+  border: 1px solid rgba(255, 255, 255, .48);
+  border-radius: 1.25rem;
+  color: #fff1cf;
+  background: rgba(42, 51, 55, .95);
+  box-shadow: 0 1rem 3rem rgba(34, 43, 44, .3);
+  backdrop-filter: blur(16px) saturate(.9);
+  pointer-events: auto;
+}
+.news-watchlist-manager[hidden] { display: none; }
+.news-watchlist-manager header { display: flex; align-items: center; justify-content: space-between; gap: .75rem; }
+.news-watchlist-manager header div { display: grid; gap: .08rem; }
+.news-watchlist-manager header small { color: rgba(255, 241, 207, .5); font-size: .52rem; font-weight: 900; letter-spacing: .12em; }
+.news-watchlist-manager header strong { font-size: .92rem; }
+.news-watchlist-manager header > button,
+.news-watchlist-account-row > button {
+  display: grid;
+  place-items: center;
+  width: 1.9rem;
+  height: 1.9rem;
+  padding: 0;
+  border: 1px solid rgba(255, 241, 207, .16);
+  border-radius: 50%;
+  color: rgba(255, 241, 207, .72);
+  background: rgba(255, 241, 207, .07);
+  cursor: pointer;
+}
+.news-watchlist-manager form { display: grid; gap: .32rem; margin-top: .8rem; }
+.news-watchlist-manager form label { color: rgba(255, 241, 207, .68); font-size: .67rem; font-weight: 800; }
+.news-watchlist-manager form > div { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; overflow: hidden; border: 1px solid rgba(255, 241, 207, .16); border-radius: .8rem; background: rgba(255, 255, 255, .06); }
+.news-watchlist-manager form span { padding-left: .7rem; color: rgba(255, 241, 207, .48); font-weight: 900; }
+.news-watchlist-manager input { min-width: 0; padding: .65rem .35rem; border: 0; outline: 0; color: #fff1cf; background: transparent; font: 800 .78rem Nunito, system-ui, sans-serif; }
+.news-watchlist-manager form button { align-self: stretch; padding: 0 .75rem; border: 0; color: #33413f; background: #9bdcad; cursor: pointer; font-weight: 900; }
+.news-watchlist-manager form button:disabled { cursor: default; opacity: .45; }
+.news-watchlist-status { min-height: 1em; margin: .45rem .12rem .35rem; color: rgba(255, 241, 207, .55); font-size: .61rem; line-height: 1.35; }
+.news-watchlist-accounts { display: grid; gap: .32rem; max-height: 12rem; overflow: auto; scrollbar-width: thin; }
+.news-watchlist-account-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: .45rem; padding: .3rem .35rem; border-radius: .75rem; background: rgba(255, 255, 255, .045); }
+.news-watchlist-profile { display: grid; grid-template-columns: 2rem minmax(0, 1fr); align-items: center; gap: .55rem; min-width: 0; padding: .05rem; border-radius: .65rem; color: inherit; text-decoration: none; }
+.news-watchlist-profile:hover { background: rgba(255, 241, 207, .06); }
+.news-watchlist-profile:focus-visible { outline: 2px solid rgba(155, 220, 173, .8); outline-offset: 1px; }
+.news-watchlist-row-avatar { display: grid; place-items: center; width: 1.9rem; height: 1.9rem; overflow: hidden; border-radius: 50%; color: #fff6df; background: #c9744f; font-size: .68rem; font-weight: 900; }
+.news-watchlist-profile > span:nth-child(2) { min-width: 0; display: grid; }
+.news-watchlist-account-row strong,
+.news-watchlist-account-row small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.news-watchlist-account-row strong { font-size: .72rem; }
+.news-watchlist-account-row small { color: rgba(255, 241, 207, .48); font-size: .58rem; }
+.news-watchlist-account-row > button:hover,
+.news-watchlist-account-row > button:focus-visible { outline: none; color: #fff1cf; background: rgba(239, 160, 154, .22); }
+.news-watchlist-empty { margin: .25rem; color: rgba(255, 241, 207, .56); font-size: .68rem; line-height: 1.4; }
 
 .news-safe-area-probe {
   position: fixed;
@@ -1302,6 +1439,12 @@ html.is-launch-capture body::after {
   visibility: hidden;
 }
 
+.hud[data-large-overlay]:not([data-large-overlay=""]):not([data-large-overlay="news"]) .news-watchlist {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
 /* News is a draggable companion card, so its reserved safe area keeps the
    footer controls usable instead of treating the post like a blocking modal. */
 .hud[data-large-overlay="news"]:not([data-large-overlay=""]) :is(.hud-actions, .social-chat-toggle, .share-toggle) {
@@ -1431,4 +1574,82 @@ html.is-launch-capture body::after {
   .mobile-jump { display: grid; }
   .rotate-device { display: none !important; }
   .news-overlay-card { max-height: min(48dvh, 22rem); }
+}
+
+/* Phones and touch portrait tablets use the quiet middle-right lane. This is
+   below the top HUD/onboarding region and above the bottom action controls. */
+.news-watchlist[data-layout="touch-side"] {
+  top: auto;
+  right: max(.55rem, env(safe-area-inset-right));
+  bottom: 45dvh;
+  left: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: .38rem;
+  transform: none;
+}
+.news-watchlist[data-layout="touch-side"] .news-watchlist-rail {
+  max-width: none;
+  max-height: min(16rem, calc(100dvh - 15rem));
+  flex-direction: column;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+.news-watchlist[data-layout="touch-side"] .news-watchlist-avatar,
+.news-watchlist[data-layout="touch-side"] .news-watchlist-add { width: 2.45rem; height: 2.45rem; }
+.news-watchlist[data-layout="touch-side"] .news-watchlist-avatar + .news-watchlist-avatar { margin-top: -.58rem; margin-left: 0; }
+.news-watchlist[data-layout="touch-side"] .news-watchlist-avatar:hover,
+.news-watchlist[data-layout="touch-side"] .news-watchlist-avatar:focus-visible,
+.news-watchlist[data-layout="touch-side"] .news-watchlist-add:hover,
+.news-watchlist[data-layout="touch-side"] .news-watchlist-add:focus-visible { transform: translateX(-.12rem) scale(1.06); }
+.news-watchlist[data-layout="touch-side"] .news-watchlist-manager {
+  position: fixed;
+  top: auto;
+  right: max(.5rem, env(safe-area-inset-right));
+  bottom: calc(max(.5rem, env(safe-area-inset-bottom)) + 8.4rem);
+  left: max(.5rem, env(safe-area-inset-left));
+  width: auto;
+  max-height: min(58dvh, 28rem);
+  overflow: auto;
+  border-radius: 1.45rem;
+}
+
+/* Touch landscape keeps the source stack between the movement controls. */
+.news-watchlist[data-layout="touch-landscape-bottom"] {
+  top: auto;
+  right: max(8.75rem, env(safe-area-inset-right));
+  bottom: max(.55rem, env(safe-area-inset-bottom));
+  left: max(8.75rem, env(safe-area-inset-left));
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: .38rem;
+  transform: none;
+}
+.news-watchlist[data-layout="touch-landscape-bottom"] .news-watchlist-rail {
+  max-width: min(22rem, calc(100vw - 18rem));
+  max-height: none;
+  flex-direction: row;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.news-watchlist[data-layout="touch-landscape-bottom"] .news-watchlist-avatar,
+.news-watchlist[data-layout="touch-landscape-bottom"] .news-watchlist-add { width: 2.45rem; height: 2.45rem; }
+.news-watchlist[data-layout="touch-landscape-bottom"] .news-watchlist-avatar + .news-watchlist-avatar { margin-top: 0; margin-left: -.58rem; }
+.news-watchlist[data-layout="touch-landscape-bottom"] .news-watchlist-avatar:hover,
+.news-watchlist[data-layout="touch-landscape-bottom"] .news-watchlist-avatar:focus-visible,
+.news-watchlist[data-layout="touch-landscape-bottom"] .news-watchlist-add:hover,
+.news-watchlist[data-layout="touch-landscape-bottom"] .news-watchlist-add:focus-visible { transform: translateY(-.12rem) scale(1.06); }
+.news-watchlist[data-layout="touch-landscape-bottom"] .news-watchlist-manager {
+  position: fixed;
+  top: max(.5rem, env(safe-area-inset-top));
+  right: max(.5rem, env(safe-area-inset-right));
+  bottom: calc(max(.5rem, env(safe-area-inset-bottom)) + 4.1rem);
+  left: max(.5rem, env(safe-area-inset-left));
+  width: auto;
+  max-height: calc(100dvh - 5.1rem);
+  overflow: auto;
+  border-radius: 1.35rem;
 }

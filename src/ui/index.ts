@@ -57,6 +57,20 @@ export {
   type NewsOverlayViewOptions,
   type NewsOverlayViewState,
 } from './NewsOverlayView';
+export {
+  NewsWatchlistView,
+  newsAccountProfileUrl,
+  type NewsWatchlistViewOptions,
+} from './NewsWatchlistView';
+export {
+  NewsInteractionAggregate,
+  type NewsInteractionSurface,
+} from './NewsInteractionAggregate';
+export {
+  newsWatchlistLayout,
+  type NewsWatchlistLayout,
+  type NewsWatchlistViewport,
+} from './newsWatchlistLayout';
 export { worldClockPresentation, type WorldClockPresentation } from './worldClock';
 export {
   ParkourHudView,

@@ -56,9 +56,14 @@ in truthful solo mode until the room service is ready. Follow
 
 ## X news feed
 
-One multiplayer server process ingests recent posts from configured headline accounts and stores
-only the ten-minute cache. Put the paid `X_BEARER_TOKEN` on that process with
-`ENABLE_NEWS_INGEST=true`, a bounded `X_DAILY_REQUEST_LIMIT`, and the provider-side spend controls.
+One multiplayer server process owns the official X filtered stream for the shared account catalog,
+uses user timelines for startup/gap recovery, and stores only the ten-minute post cache. Each browser
+keeps an independent, per-world watchlist (up to eight accounts); adding a handle resolves it on the
+server and safely expands the shared stream without exposing the X credential. Put the paid
+`X_BEARER_TOKEN` on that process with `ENABLE_NEWS_INGEST=true`, a bounded
+`X_DAILY_REQUEST_LIMIT`, the shared production `DATABASE_URL`, and the provider-side spend
+controls. Live news deliberately refuses to start from production SQLite because rolling server
+overlap must share the catalog, ten-minute cache, provider health, and stream lease.
 Vercel receives only `NEWS_CACHE_ORIGIN=https://us-lax-489a84b6.colyseus.cloud`; its `/api/news`
 function reads the shared cache and never contacts X or holds an X credential.
 

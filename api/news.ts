@@ -1,5 +1,6 @@
 import {
   dedupeNewsItems,
+  parseNewsApiResponse,
   pruneExpiredNewsItems,
 } from '../src/news/newsMath.js';
 import {
@@ -223,6 +224,7 @@ export function normalizeXTimelineResponse(
     }
     items.push({
       id: value.id,
+      authorId,
       source: 'x',
       text: content.text,
       links: normalizeXEntityLinks(content.entities),
@@ -290,8 +292,21 @@ export async function fetchXNews(
   return normalizeXTimelineResponse(payload, author, now);
 }
 
-function jsonResponse(mode: NewsApiMode, items: readonly NewsItem[], checkedAt: number, status = 200): Response {
-  const body: NewsApiResponse = { mode, items, checkedAt };
+function jsonResponse(
+  mode: NewsApiMode,
+  items: readonly NewsItem[],
+  checkedAt: number,
+  status = 200,
+  accounts?: NewsApiResponse['accounts'],
+  maxAccounts?: number,
+): Response {
+  const body: NewsApiResponse = {
+    mode,
+    items,
+    checkedAt,
+    ...(accounts ? { accounts } : {}),
+    ...(maxAccounts ? { maxAccounts } : {}),
+  };
   return Response.json(body, {
     status,
     headers: {
@@ -352,11 +367,16 @@ export async function handleNewsRequest(
     });
     if (!response.ok) throw new Error('news_cache_unavailable');
     const payload = await response.json() as unknown;
-    if (!isRecord(payload)
-      || (payload.mode !== 'live' && payload.mode !== 'unavailable' && payload.mode !== 'unconfigured')
-      || !Array.isArray(payload.items)
-      || typeof payload.checkedAt !== 'number') throw new Error('invalid_news_cache');
-    return jsonResponse(payload.mode, payload.items as NewsItem[], payload.checkedAt);
+    const parsed = parseNewsApiResponse(payload, checkedAt);
+    if (!parsed) throw new Error('invalid_news_cache');
+    return jsonResponse(
+      parsed.mode,
+      parsed.items,
+      parsed.checkedAt,
+      200,
+      parsed.accounts,
+      parsed.maxAccounts,
+    );
   } catch {
     // Do not expose provider/cache errors or credentials to the browser.
     return jsonResponse('unavailable', [], checkedAt);

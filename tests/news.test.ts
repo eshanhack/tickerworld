@@ -62,6 +62,7 @@ describe('news item helpers', () => {
       checkedAt: NOW,
       items: [{
         ...item('1', NOW - 1_000),
+        authorId: '123456789',
         links: [validLink, { ...validLink, href: 'https://evil.example/story' }],
         expiresAt: NOW + 99_000_000,
       }],
@@ -72,9 +73,14 @@ describe('news item helpers', () => {
       id: '1',
       expiresAt: NOW - 1_000 + NEWS_ITEM_TTL_MS,
       demo: false,
+      authorId: '123456789',
       links: [validLink],
     });
     expect(parseNewsApiResponse({ mode: 'live', checkedAt: NOW, items: 'bad' }, NOW)).toBeUndefined();
+
+    const invalidAuthor = { ...item('invalid-author', NOW - 1_000), authorId: '   ' };
+    expect(parseNewsApiResponse({ mode: 'live', checkedAt: NOW, items: [invalidAuthor] }, NOW)?.items)
+      .toEqual([]);
 
     const legacyItem = { ...item('legacy', NOW - 1_000) } as Record<string, unknown>;
     delete legacyItem.links;
@@ -220,6 +226,32 @@ describe('BrowserNewsFeed lifecycle', () => {
     feed.dispose();
   });
 
+  it('keeps the real account catalog available while showing labelled demo news', async () => {
+    const fetcher = vi.fn(async () => Response.json({
+      mode: 'unconfigured',
+      items: [],
+      checkedAt: NOW,
+      maxAccounts: 8,
+      accounts: [{
+        id: 'x-user-1',
+        handle: 'DeItaone',
+        name: 'Delta One',
+        avatarUrl: 'https://pbs.twimg.com/profile_images/delta.jpg',
+        isDefault: true,
+        status: 'unavailable',
+        lastPostAt: null,
+      }],
+    }));
+    const feed = new BrowserNewsFeed({ fetcher, activeMarket: 'BTC' });
+    await feed.start();
+    expect(feed.getSnapshot()).toMatchObject({
+      mode: 'simulated',
+      accounts: [expect.objectContaining({ handle: 'DeItaone', status: 'unavailable' })],
+      maxAccounts: 8,
+    });
+    feed.dispose();
+  });
+
   it('keeps a labelled demo visible when the player changes markets while X is unconfigured', async () => {
     const fetcher = vi.fn(async () => response('unconfigured', []));
     const feed = new BrowserNewsFeed({ fetcher, activeMarket: 'BTC' });
@@ -297,6 +329,7 @@ describe('X timeline endpoint helpers', () => {
 
     expect(items).toEqual([expect.objectContaining({
       id: '456',
+      authorId: '123',
       text: fullText,
       authorName: 'Walter Bloomberg',
       authorHandle: 'DeItaone',
@@ -443,6 +476,16 @@ describe('X timeline endpoint helpers', () => {
       mode: 'live',
       items: [],
       checkedAt: NOW - 250,
+      maxAccounts: 8,
+      accounts: [{
+        id: 'x-user-1',
+        handle: 'DeItaone',
+        name: 'Delta One',
+        avatarUrl: 'https://pbs.twimg.com/profile_images/delta.jpg',
+        isDefault: true,
+        status: 'live',
+        lastPostAt: NOW - 500,
+      }],
     }));
     const result = await handleNewsRequest(
       new Request('https://tickerworld.test/api/news?scope=BTC'),
@@ -452,7 +495,13 @@ describe('X timeline endpoint helpers', () => {
       cacheFetch,
     );
     expect(result.status).toBe(200);
-    expect(await result.json()).toEqual({ mode: 'live', items: [], checkedAt: NOW - 250 });
+    expect(await result.json()).toEqual({
+      mode: 'live',
+      items: [],
+      checkedAt: NOW - 250,
+      maxAccounts: 8,
+      accounts: [expect.objectContaining({ handle: 'DeItaone', isDefault: true })],
+    });
     expect(cacheFetch).toHaveBeenCalledTimes(1);
     expect(String(cacheFetch.mock.calls[0]?.[0])).toBe(
       'https://multiplayer.tickerworld.test/api/news?scope=BTC',

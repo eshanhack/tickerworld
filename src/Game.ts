@@ -28,7 +28,13 @@ import {
   type GuestIdentity,
   type RoomClientSnapshot,
 } from './net';
-import { BrowserNewsFeed, type NewsFeedMode, type NewsFeedUpdate } from './news';
+import {
+  BrowserNewsFeed,
+  NewsWatchlistClient,
+  type NewsFeedMode,
+  type NewsFeedUpdate,
+  type NewsWatchlistSnapshot,
+} from './news';
 import {
   OnlinePopulationBadgeView,
   PortalSystem,
@@ -155,6 +161,7 @@ export class Game {
   private readonly market = new HyperliquidMarketFeed();
   private readonly tradeTape: TradeTapeFeed;
   private readonly news = new BrowserNewsFeed();
+  private readonly newsWatchlist: NewsWatchlistClient;
   private readonly telemetry = new TelemetrySystem();
   private readonly monuments: MonumentSystem;
   private readonly audio = new AudioEngine();
@@ -418,6 +425,10 @@ export class Game {
       onPartyJoinStatus: (status) => this.onPartyJoinStatus(status),
       partyToken,
     });
+    this.newsWatchlist = new NewsWatchlistClient({
+      activeMarket: this.activeMarket,
+      anonymousToken: () => this.roomClient.anonymousToken,
+    });
     this.placeAtSpawn(this.activeMarket);
 
     this.activeMonument = this.monuments.add({
@@ -454,6 +465,11 @@ export class Game {
       onMovementVolumeChange: (value) => this.audio.setMovementVolume(value),
       onNewsDismiss: (itemId) => this.monuments.dismissNewsOverlay(itemId),
       onNewsInteractionChange: (active) => this.setUiInteraction('news', active),
+      onNewsAccountSelect: (handle) => this.selectNewsAccount(handle),
+      onNewsAccountAdd: (handle) => this.newsWatchlist.add(handle),
+      onNewsAccountRemove: (handle) => {
+        this.newsWatchlist.remove(handle);
+      },
       onAppearanceSelect: (animal, skin) => this.updateGuestAppearance({
         ...this.guestAppearance,
         animal,
@@ -722,6 +738,7 @@ export class Game {
       this.latestTradeTapeSnapshot = state;
     });
     this.news.subscribe((update) => this.onNewsUpdate(update));
+    this.newsWatchlist.subscribe((snapshot) => this.onNewsWatchlistUpdate(snapshot));
     this.refreshAudioSources();
     this.audio.updateProximityPosition(this.player.position);
     this.prewarmWorld();
@@ -883,6 +900,7 @@ export class Game {
       this.lastTapeImbalanceSurgeAt = Number.NEGATIVE_INFINITY;
       this.lastMinuteMoveSurgeAt = Number.NEGATIVE_INFINITY;
       for (const history of Object.values(this.tradeTierTimes)) history.length = 0;
+      this.newsWatchlist.setActiveMarket(destination);
       this.news.setActiveMarket(destination);
       if (this.disposed || switchGeneration !== this.marketSwitchGeneration) return false;
       this.world.setActiveMarket(destination);
@@ -1251,20 +1269,23 @@ export class Game {
     if (state.connection !== 'online') {
       this.appearanceSyncKey = null;
       this.latestRelayMids = [];
-    } else if (!this.roomClient.sessionToken) {
-      const appearanceKey = this.guestAppearanceSyncKey(state.market);
-      if (appearanceKey !== this.appearanceSyncKey
-        && this.roomClient.setAppearance(
-          this.guestAppearance.animal,
-          this.guestAppearance.skin,
-          this.guestAppearance.username,
-        )) {
-        this.appearanceSyncKey = appearanceKey;
-      }
     } else {
-      // Account identity refresh remains authoritative if that dormant flow is
-      // re-enabled; anonymous browser preferences must not overwrite it.
-      this.appearanceSyncKey = `account:${state.market}:${this.roomClient.identity.actorId}`;
+      this.newsWatchlist.refreshAssociations();
+      if (!this.roomClient.sessionToken) {
+        const appearanceKey = this.guestAppearanceSyncKey(state.market);
+        if (appearanceKey !== this.appearanceSyncKey
+          && this.roomClient.setAppearance(
+            this.guestAppearance.animal,
+            this.guestAppearance.skin,
+            this.guestAppearance.username,
+          )) {
+          this.appearanceSyncKey = appearanceKey;
+        }
+      } else {
+        // Account identity refresh remains authoritative if that dormant flow is
+        // re-enabled; anonymous browser preferences must not overwrite it.
+        this.appearanceSyncKey = `account:${state.market}:${this.roomClient.identity.actorId}`;
+      }
     }
     this.remoteAvatars?.setPlayers(state.remotes);
     this.emotes?.setActors(state.remotes.map((player) => player.actorId));
@@ -1661,15 +1682,50 @@ export class Game {
 
   private onNewsUpdate(update: NewsFeedUpdate): void {
     this.newsMode = update.mode;
-    this.activeNewsCount = update.items.length;
-    this.monuments.setNewsItems(update.items, Date.now());
+    this.newsWatchlist.setCatalog(update.accounts, update.maxAccounts);
+    const items = this.newsWatchlist.filterItems(update.items);
+    const added = this.newsWatchlist.filterItems(update.added);
+    this.activeNewsCount = items.length;
+    this.monuments.setNewsItems(items, Date.now());
     const freshAdditionCount = countFreshNewsAdditions(
-      update.added,
+      added,
       this.newsSoundCreatedAtCutoff,
     );
     if (this.entered && this.visible && freshAdditionCount > 0) {
       this.audio.playNewsAlert(Math.min(1, 0.66 + (freshAdditionCount - 1) * 0.08));
     }
+  }
+
+  private onNewsWatchlistUpdate(snapshot: NewsWatchlistSnapshot): void {
+    this.hud.setNewsWatchlist(snapshot);
+    const items = this.newsWatchlist.filterItems(this.news.getSnapshot().items);
+    this.activeNewsCount = items.length;
+    this.monuments.setNewsItems(items, Date.now());
+  }
+
+  private selectNewsAccount(handle: string): void {
+    const item = this.newsWatchlist.latestItemFor(this.news.getSnapshot().items, handle);
+    if (!item) {
+      this.hud.showToast(`No recent post from @${handle}.`);
+      return;
+    }
+    if (!this.monuments.selectNewsItem(item.id)) {
+      this.hud.showToast(`@${handle}'s latest post is not on the visible chart yet.`);
+      return;
+    }
+    const overlay = this.monuments.getNearestNewsOverlay(this.player.position, 48);
+    if (!overlay || overlay.item.id !== item.id) {
+      this.hud.showToast(`Post selected — walk closer to the ${this.activeMarket} chart to open it.`);
+      return;
+    }
+    this.camera.updateMatrixWorld();
+    this.newsCameraSpace.copy(overlay.candleAnchor).applyMatrix4(this.camera.matrixWorldInverse);
+    this.newsNdc.copy(overlay.candleAnchor).project(this.camera);
+    if (this.newsCameraSpace.z >= 0 || this.newsNdc.z < -1 || this.newsNdc.z > 1) {
+      this.hud.showToast(`Post selected — face the ${this.activeMarket} chart to open it.`);
+      return;
+    }
+    this.updateNewsOverlay();
   }
 
   private refreshAudioSources(): void {
@@ -2005,6 +2061,7 @@ export class Game {
     this.market.dispose();
     this.tradeTape.dispose();
     this.news.dispose();
+    this.newsWatchlist.dispose();
     this.telemetry.dispose();
     this.roomClient.dispose();
     this.canvasInteractions?.dispose();
