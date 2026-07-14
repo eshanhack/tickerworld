@@ -1,6 +1,8 @@
 import {
   CLIENT_MESSAGES,
   MARKET_SLUGS,
+  SESSION_REPLACED_CLOSE_CODE,
+  SESSION_REPLACED_REASON,
   SERVER_MESSAGES,
   type AccountProfile,
 } from '../shared/src/index.js';
@@ -54,6 +56,7 @@ class FakeRoom {
   private readonly messages = new Map<string, (payload: any) => void>();
   private dropListener: (() => void) | null = null;
   private reconnectListener: (() => void) | null = null;
+  private leaveListener: ((code: number, reason?: string) => void) | null = null;
   readonly removeAllListeners = vi.fn(() => this.messages.clear());
 
   constructor(
@@ -89,11 +92,15 @@ class FakeRoom {
     return () => { this.reconnectListener = null; };
   }
   onError(_listener: () => void): () => void { return () => undefined; }
-  onLeave(_listener: () => void): () => void { return () => undefined; }
+  onLeave(listener: (code: number, reason?: string) => void): () => void {
+    this.leaveListener = listener;
+    return () => { this.leaveListener = null; };
+  }
   send(type: string, payload: unknown): void { this.sent.push({ type, payload }); }
   emit(type: string, payload: unknown): void { this.messages.get(type)?.(payload); }
   drop(): void { this.dropListener?.(); }
   reconnect(): void { this.reconnectListener?.(); }
+  leaveFromServer(code: number, reason?: string): void { this.leaveListener?.(code, reason); }
 }
 
 const anonymous = {
@@ -197,6 +204,43 @@ describe('RoomClientSystem identity transitions', () => {
       payload: {
         protocolVersion: 2,
         text: 'wait for me',
+      },
+    });
+    system.dispose();
+  });
+
+  it('does not steal a displaced seat back automatically and reconnects on an explicit chat', async () => {
+    vi.useFakeTimers();
+    const room = new FakeRoom('anon-a');
+    const replacement = new FakeRoom('anon-a');
+    const { system, joinOrCreate } = createSystem([room, replacement]);
+    await expect(system.connect('btc')).resolves.toBe(true);
+
+    room.leaveFromServer(SESSION_REPLACED_CLOSE_CODE, SESSION_REPLACED_REASON);
+    expect(system.state).toMatchObject({
+      connection: 'offline',
+      lastError: SESSION_REPLACED_REASON,
+      currentRoomId: null,
+    });
+
+    // An ordinary retry would have fired after roughly one second. Five
+    // seconds proves the terminal handoff stays parked without expiring the
+    // short-lived identity used by this focused test.
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(joinOrCreate).toHaveBeenCalledTimes(1);
+
+    expect(system.sendChat('use chat in this tab', 'world')).toBe(true);
+    await vi.advanceTimersByTimeAsync(0);
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(0);
+    await flushMicrotasks();
+    expect(system.state.connection).toBe('online');
+    expect(joinOrCreate).toHaveBeenCalledTimes(2);
+    expect(replacement.sent.at(-1)).toEqual({
+      type: CLIENT_MESSAGES.chat,
+      payload: {
+        protocolVersion: 2,
+        text: 'use chat in this tab',
       },
     });
     system.dispose();

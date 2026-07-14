@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AccountProfile } from '../shared/src/index.js';
 import {
   DEFAULT_GUEST_APPEARANCE,
@@ -35,6 +35,33 @@ const profile: AccountProfile = {
 };
 
 describe('signed room identity', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('keeps room credentials tab-scoped while sharing the saved appearance', () => {
+    const browser = new MemoryStorage();
+    writeGuestAppearance({ animal: 'cat', skin: 'tide-cat', username: 'Magic_Cat' }, browser);
+    vi.stubGlobal('localStorage', browser);
+
+    const firstTab = new MemoryStorage();
+    vi.stubGlobal('sessionStorage', firstTab);
+    const first = readGuestIdentity();
+    const signed = {
+      actorId: 'anon_12345678901234567890123456789012',
+      animal: 'cat' as const,
+      token: 'signed-token-with-enough-entropy',
+      expiresAt: Date.now() + 60_000,
+    };
+    writeSignedGuestIdentity(signed);
+    expect(readSignedGuestIdentity()).toEqual(signed);
+
+    const secondTab = new MemoryStorage();
+    vi.stubGlobal('sessionStorage', secondTab);
+    const second = readGuestIdentity();
+    expect(second.actorId).not.toBe(first.actorId);
+    expect(second.animal).toBe('cat');
+    expect(readSignedGuestIdentity()).toBeNull();
+  });
+
   it('starts as fox and preserves a complete browser appearance independently from room credentials', () => {
     const session = new MemoryStorage();
     const browser = new MemoryStorage();
@@ -83,7 +110,7 @@ describe('signed room identity', () => {
     });
   });
 
-  it('persists a signed anonymous token across browser restarts until it expires', () => {
+  it('persists a signed anonymous token across tab reloads until it expires', () => {
     const storage = new MemoryStorage();
     const identity = {
       actorId: 'anon_12345678901234567890123456789012',
@@ -105,7 +132,12 @@ describe('signed room identity', () => {
       token: 'server-signed-token-value',
       expiresAt: Date.now() + 60_000,
     }, null);
-    expect(anonymous).toMatchObject({ market: 'btc', animal: 'cat', anonymousToken: 'server-signed-token-value' });
+    expect(anonymous).toMatchObject({
+      market: 'btc',
+      animal: 'cat',
+      anonymousToken: 'server-signed-token-value',
+      sessionTakeover: true,
+    });
     expect('actorId' in anonymous).toBe(false);
 
     const account = createRoomJoinOptions('eth', null, { token: 'account-session', profile });
@@ -114,6 +146,7 @@ describe('signed room identity', () => {
       animal: 'rabbit',
       skin: 'amethyst-rabbit',
       sessionToken: 'account-session',
+      sessionTakeover: true,
     });
     expect('actorId' in account).toBe(false);
 

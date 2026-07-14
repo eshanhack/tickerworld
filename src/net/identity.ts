@@ -57,7 +57,7 @@ function randomId(): string {
 }
 
 export function readGuestIdentity(
-  storage: Storage | null = safeLocalStorage(),
+  storage: Storage | null = safeSessionStorage(),
   appearanceStorage: Storage | null = safeLocalStorage(),
 ): GuestIdentity {
   let actorId = '';
@@ -119,7 +119,7 @@ export function writeGuestAppearance(
 }
 
 export function readSignedGuestIdentity(
-  storage: Storage | null = safeLocalStorage(),
+  storage: Storage | null = safeSessionStorage(),
   now = Date.now(),
 ): SignedGuestIdentity | null {
   try {
@@ -147,7 +147,7 @@ export function readSignedGuestIdentity(
 
 export function writeSignedGuestIdentity(
   identity: SignedGuestIdentity,
-  storage: Storage | null = safeLocalStorage(),
+  storage: Storage | null = safeSessionStorage(),
 ): void {
   try {
     storage?.setItem(SIGNED_IDENTITY_KEY, JSON.stringify(identity));
@@ -157,11 +157,26 @@ export function writeSignedGuestIdentity(
   }
 }
 
-export function clearSignedGuestIdentity(storage: Storage | null = safeLocalStorage()): void {
+export function clearSignedGuestIdentity(storage: Storage | null = safeSessionStorage()): void {
   try {
     storage?.removeItem(SIGNED_IDENTITY_KEY);
   } catch {
     // A failed cleanup still allows the in-memory refresh to proceed.
+  }
+}
+
+/**
+ * Anonymous room credentials belong to one browser tab. Appearance and
+ * settings remain browser-wide in localStorage, but sharing an actor token
+ * across tabs makes the room's one-seat safety rule lock out the newer tab.
+ * sessionStorage survives reloads and portal travel without creating that
+ * cross-tab collision.
+ */
+function safeSessionStorage(): Storage | null {
+  try {
+    return typeof sessionStorage === 'undefined' ? null : sessionStorage;
+  } catch {
+    return null;
   }
 }
 

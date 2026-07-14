@@ -736,6 +736,7 @@ export class Game {
     this.telemetry.emitOnce({ name: 'game_ready', market: this.activeMarket });
 
     addEventListener('resize', this.resize);
+    addEventListener('focus', this.focus);
     document.addEventListener('visibilitychange', this.visibility);
     addEventListener('beforeunload', this.dispose);
     this.renderer.domElement.addEventListener('webglcontextlost', this.webglContextLost);
@@ -1278,6 +1279,7 @@ export class Game {
     this.social?.setConnectionState(
       state.connection,
       state.connection === 'online' ? state.channelOnline : 0,
+      state.lastError,
     );
     this.refreshPopulationViews(state);
     const connectionMode = state.connection === 'online'
@@ -1922,6 +1924,11 @@ export class Game {
     this.renderer.setPixelRatio(this.pixelRatio);
   };
 
+  /** A displaced background tab may reclaim its seat as soon as the user returns. */
+  private readonly focus = (): void => {
+    if (!document.hidden) this.roomClient.setVisible(true);
+  };
+
   private readonly visibility = (): void => {
     this.visible = !document.hidden;
     this.audio.setVisible(this.visible);
@@ -1987,6 +1994,7 @@ export class Game {
     this.disposed = true;
     cancelAnimationFrame(this.frameHandle);
     removeEventListener('resize', this.resize);
+    removeEventListener('focus', this.focus);
     document.removeEventListener('visibilitychange', this.visibility);
     removeEventListener('beforeunload', this.dispose);
     this.renderer.domElement.removeEventListener('webglcontextlost', this.webglContextLost);

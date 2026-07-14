@@ -7,6 +7,7 @@ import {
 } from '../src/social';
 import {
   ChatReplayGuard,
+  chatConnectionStatus,
   chatMessageIdentity,
   chatMessageScope,
   isChatScopeAvailable,
@@ -25,6 +26,12 @@ class MemoryStorage implements Storage {
 }
 
 describe('social policy', () => {
+  it('distinguishes a deliberate tab handoff from a network reconnect', () => {
+    expect(chatConnectionStatus('online', 1)).toBe('1 PLAYER · THIS ROOM');
+    expect(chatConnectionStatus('reconnecting', 0)).toBe('CHAT RECONNECTING…');
+    expect(chatConnectionStatus('offline', 0, 'session_replaced')).toBe('CHAT OPEN IN ANOTHER TAB');
+  });
+
   it('keeps world available while proximity waits for explicit room confirmation', () => {
     expect(isChatScopeAvailable('world', false)).toBe(true);
     expect(isChatScopeAvailable('proximity', false)).toBe(false);

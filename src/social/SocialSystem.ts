@@ -2,6 +2,7 @@ import {
   CHAT_CLIENT_ROW_LIMIT,
   CHAT_MAX_LENGTH,
   MODERATION_REASONS,
+  SESSION_REPLACED_REASON,
   type ChatScope,
   type ChatMessage,
   type ChatRejection,
@@ -37,6 +38,17 @@ export function visibleChatMessages(
 
 export function isChatScopeAvailable(scope: ChatScope, scopedChatAvailable: boolean): boolean {
   return scope === 'world' || scopedChatAvailable;
+}
+
+export function chatConnectionStatus(
+  state: RoomConnectionState,
+  online: number,
+  detail: string | null = null,
+): string {
+  if (state === 'online') return `${online} ${online === 1 ? 'PLAYER' : 'PLAYERS'} · THIS ROOM`;
+  if (detail === SESSION_REPLACED_REASON) return 'CHAT OPEN IN ANOTHER TAB';
+  if (state === 'incompatible') return 'CHAT UPDATING';
+  return 'CHAT RECONNECTING…';
 }
 
 export function chatMessageIdentity(message: ChatMessage): string {
@@ -173,6 +185,7 @@ export class SocialSystem implements GameSystem {
   private activeScope: ChatScope = 'world';
   private soloView = false;
   private connectionState: RoomConnectionState = 'connecting';
+  private connectionDetail: string | null = null;
   private roomOnline = 0;
   private scopedChatAvailable = false;
   private visible = true;
@@ -354,19 +367,15 @@ export class SocialSystem implements GameSystem {
     this.showStatus(reportRejectionMessage(rejection));
   }
 
-  setConnectionState(state: RoomConnectionState, online = 0): void {
+  setConnectionState(state: RoomConnectionState, online = 0, detail: string | null = null): void {
     this.connectionState = state;
+    this.connectionDetail = detail;
     this.roomOnline = online;
     if (this.soloView) {
       this.status.textContent = 'SOLO VIEW · ONLY YOU ARE SHOWN';
-    } else this.status.textContent = state === 'online'
-      ? `${online} ${online === 1 ? 'PLAYER' : 'PLAYERS'} · THIS ROOM`
-      : state === 'connecting' || state === 'reconnecting'
-        ? 'CHAT RECONNECTING…'
-        : state === 'incompatible'
-          ? 'CHAT UPDATING'
-          : 'CHAT RECONNECTING…';
+    } else this.status.textContent = chatConnectionStatus(state, online, detail);
     this.root.dataset.connection = state;
+    this.root.dataset.connectionDetail = detail ?? '';
   }
 
   setScopedChatAvailable(available: boolean): void {
@@ -552,7 +561,7 @@ export class SocialSystem implements GameSystem {
       this.closePlayerCard();
     }
     this.options.onSoloViewChange?.(this.soloView);
-    this.setConnectionState(this.connectionState, this.roomOnline);
+    this.setConnectionState(this.connectionState, this.roomOnline, this.connectionDetail);
   };
 
   private readonly keydown = (event: KeyboardEvent): void => {

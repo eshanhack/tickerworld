@@ -6,6 +6,8 @@ import {
   MARKET_ROOM_MAX_CLIENTS,
   MOVE_SEND_RATE_HZ,
   PROTOCOL_VERSION,
+  SESSION_REPLACED_CLOSE_CODE,
+  SESSION_REPLACED_REASON,
   SERVER_MESSAGES,
   type AnimalKind,
   type AccountProfile,
@@ -369,6 +371,7 @@ export function createRoomJoinOptions(
     return {
       protocolVersion: PROTOCOL_VERSION,
       market,
+      sessionTakeover: true,
       animal: accountSession.profile.selectedAnimal,
       skin: accountSession.profile.selectedSkin,
       sessionToken: accountSession.token,
@@ -379,6 +382,7 @@ export function createRoomJoinOptions(
   return {
     protocolVersion: PROTOCOL_VERSION,
     market,
+    sessionTakeover: true,
     animal: anonymousIdentity.animal,
     skin: 'base',
     anonymousToken: anonymousIdentity.token,
@@ -1035,8 +1039,10 @@ export class RoomClientSystem implements GameSystem {
       room.onError((_code, message) => {
         if (isCurrentRoom() && message) this.lastError = message;
       });
-      room.onLeave(() => {
+      room.onLeave((code, reason) => {
         if (room !== this.room || this.disposed || generation !== this.generation) return;
+        const replaced = code === SESSION_REPLACED_CLOSE_CODE
+          || reason === SESSION_REPLACED_REASON;
         this.room = null;
         this.currentRoomId = null;
         this.boundActorId = null;
@@ -1046,8 +1052,15 @@ export class RoomClientSystem implements GameSystem {
         this.finishIdentityRefresh(false);
         this.finishPartyInvite(null);
         this.clearPendingMarketState();
-        this.setConnection('offline', this.lastError ?? 'Room connection lost.');
-        this.scheduleRetry();
+        this.setConnection(
+          'offline',
+          replaced ? SESSION_REPLACED_REASON : this.lastError ?? 'Room connection lost.',
+        );
+        // A replacement is a deliberate ownership transfer, not an outage.
+        // Retrying from the displaced tab would steal the seat back and make
+        // both tabs bounce forever. Returning to this tab (visibility/focus)
+        // or sending a world message explicitly reclaims it instead.
+        if (!replaced) this.scheduleRetry();
       });
       this.setConnection('online', null);
       if (partyToken) {
