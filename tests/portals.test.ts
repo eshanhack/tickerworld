@@ -85,13 +85,14 @@ describe('fixed portal routes', () => {
     expect(createPortalLabelModel(route, {
       price: 1234.5,
       population: 1_204,
+      capacity: 1_250,
       connectionMode: 'online',
       feedMode: 'live',
     })).toMatchObject({
       priceText: '$1,234.5',
-      populationText: '1,204 ONLINE',
+      populationText: '1,204 / 1,250 PEOPLE INSIDE',
       marketText: 'LIVE',
-      text: `${route.destination}\n$1,234.5 · LIVE\n1,204 ONLINE`,
+      text: `${route.destination}\n$1,234.5 · LIVE\n1,204 / 1,250 PEOPLE INSIDE`,
     });
     expect(createPortalLabelModel(route, {
       price: null,
@@ -100,15 +101,18 @@ describe('fixed portal routes', () => {
       feedMode: 'live',
     })).toMatchObject({
       priceText: '$—',
-      populationText: 'SOLO WORLD',
-      text: `${route.destination}\n$— · LIVE\nSOLO WORLD`,
+      populationText: '— / 50 PEOPLE INSIDE',
+      text: `${route.destination}\n$— · LIVE\n— / 50 PEOPLE INSIDE`,
     });
-    expect(formatPortalPopulation(0, 'online')).toBe('0 ONLINE');
-    expect(formatPortalPopulation(1, 'online')).toBe('1 ONLINE');
-    expect(formatPortalPopulation(Number.NaN, 'online')).toBe('— ONLINE');
-    expect(formatPortalPopulation(-4, 'online')).toBe('— ONLINE');
+    expect(formatPortalPopulation(0, 'online')).toBe('0 / 50 PEOPLE INSIDE');
+    expect(formatPortalPopulation(1, 'online')).toBe('1 / 50 PEOPLE INSIDE');
+    expect(formatPortalPopulation(30, 'online', 100)).toBe('30 / 100 PEOPLE INSIDE');
+    expect(formatPortalPopulation(51, 'online')).toBe('51 / 100 PEOPLE INSIDE');
+    expect(formatPortalPopulation(1_204, 'online', 1_250)).toBe('1,204 / 1,250 PEOPLE INSIDE');
+    expect(formatPortalPopulation(Number.NaN, 'online')).toBe('— / 50 PEOPLE INSIDE');
+    expect(formatPortalPopulation(-4, 'online')).toBe('— / 50 PEOPLE INSIDE');
     expect(formatPortalPopulation(null, 'connecting')).toBe('CONNECTING');
-    expect(formatPortalPopulation(null, 'offline')).toBe('SOLO WORLD');
+    expect(formatPortalPopulation(null, 'offline')).toBe('— / 50 PEOPLE INSIDE');
   });
 
   it('shows truthful connected population labels for every destination in every world', () => {
@@ -121,7 +125,7 @@ describe('fixed portal routes', () => {
           connectionMode: 'online',
           feedMode: route.destination === 'TEST' ? 'simulated' : 'live',
         });
-        expect(label.populationText).toBe(`${population} ONLINE`);
+        expect(label.populationText).toBe(`${population} / 50 PEOPLE INSIDE`);
         expect(label.populationText).not.toContain('OFFLINE');
         expect(label.marketText).toBe(route.destination === 'TEST' ? 'DEMO' : 'LIVE');
       }
@@ -232,7 +236,7 @@ describe('PortalSystem presentation', () => {
       && material.opacity === 1
     ))).toBe(true);
     expect(texts.filter(({ text }) => text === route.destination)).toHaveLength(2);
-    expect(texts.filter(({ text }) => text === '18 ONLINE')).toHaveLength(2);
+    expect(texts.filter(({ text }) => text === '18 / 50 PEOPLE INSIDE')).toHaveLength(2);
     expect(texts.filter(({ text }) => text === '$42.25 · LIVE')).toHaveLength(2);
 
     system.setPlayerProbe({ x: route.x, z: route.z, grounded: true });

@@ -1,5 +1,5 @@
 import {
-  CHAT_HISTORY_LIMIT,
+  CHAT_SCOPES,
   CLIENT_MESSAGES,
   MARKET_ROOM_MAX_CLIENTS,
   PARKOUR_CHECKPOINT_IDS,
@@ -23,6 +23,7 @@ import {
   isProtocolVersionAccepted,
   EMOTE_KINDS,
   type ChatMessage,
+  type ChatScope,
   type EntitlementSku,
   type IdentityRefreshMessage,
   type JoinOptions,
@@ -85,6 +86,7 @@ const moveSchema = z.object({
 const chatSchema = z.object({
   protocolVersion: z.number().int(),
   text: z.string().max(560),
+  scope: z.enum(CHAT_SCOPES).optional(),
 });
 
 const appearanceSchema = z.object({
@@ -187,7 +189,6 @@ export class MarketRoom extends Room<{ state: MarketRoomState; client: MarketCli
   override autoDispose = true;
   override state = new MarketRoomState();
   private market: MarketSlug = 'btc';
-  private readonly chatHistory: ChatMessage[] = [];
   private readonly occupiedSpawnSlots = new Set<number>();
   private stopMarketRelay: (() => void) | null = null;
   /** Global epoch shared by every room, shard, and server process. */
@@ -280,6 +281,18 @@ export class MarketRoom extends Room<{ state: MarketRoomState; client: MarketCli
     directory.register(this.roomId, this.market, (populations) => {
       this.broadcast(SERVER_MESSAGES.population, populations);
     });
+    services.chatRelay.register(this.roomId, this.market, () => this.clients.flatMap((client) => {
+      const player = this.state.players.get(client.sessionId);
+      const data = client.userData;
+      if (!player || !data) return [];
+      return [{
+        actorId: player.actorId,
+        ipHash: data.ipHash,
+        x: player.x,
+        z: player.z,
+        send: (message: ChatMessage) => client.send(SERVER_MESSAGES.chat, message),
+      }];
+    }));
     this.stopMarketRelay = services.marketRelay.subscribe(this.market, (state, mids) => {
       this.broadcast(SERVER_MESSAGES.market, state);
       this.broadcast(SERVER_MESSAGES.marketMids, mids);
@@ -359,7 +372,11 @@ export class MarketRoom extends Room<{ state: MarketRoomState; client: MarketCli
       if (!this.clients.includes(client)) return;
       getRoomServices().populations.update(this.roomId, this.clients.length);
       client.send(SERVER_MESSAGES.population, getRoomServices().populations.snapshot());
-      for (const message of this.chatHistory) client.send(SERVER_MESSAGES.chat, message);
+      for (const message of getRoomServices().chatRelay.historyForJoin(
+        this.roomId,
+        this.market,
+        { x: player.x, z: player.z },
+      )) client.send(SERVER_MESSAGES.chat, message);
     }, 200);
   }
 
@@ -385,6 +402,7 @@ export class MarketRoom extends Room<{ state: MarketRoomState; client: MarketCli
     getRoomServices().moderation.unregisterRoom(this.roomId);
     getRoomServices().admissions.unregisterRoom(this.roomId);
     getRoomServices().populations.unregister(this.roomId);
+    getRoomServices().chatRelay.unregister(this.roomId);
     this.stopMarketRelay?.();
     this.stopMarketRelay = null;
     this.occupiedSpawnSlots.clear();
@@ -457,7 +475,7 @@ export class MarketRoom extends Room<{ state: MarketRoomState; client: MarketCli
 
   private handleChat(
     client: MarketClient,
-    payload: { protocolVersion: number; text: string },
+    payload: { protocolVersion: number; text: string; scope?: ChatScope },
   ): void {
     if (payload.protocolVersion !== PROTOCOL_VERSION && payload.protocolVersion !== PROTOCOL_VERSION - 1) {
       client.send(SERVER_MESSAGES.chatRejected, { code: 'protocol_mismatch' });
@@ -497,10 +515,17 @@ export class MarketRoom extends Room<{ state: MarketRoomState; client: MarketCli
       animal: data.animal,
       text: safe.text,
       sentAt: Date.now(),
+      scope: payload.scope ?? 'world',
     };
-    this.chatHistory.push(message);
-    if (this.chatHistory.length > CHAT_HISTORY_LIMIT) this.chatHistory.shift();
-    this.broadcast(SERVER_MESSAGES.chat, message);
+    const player = this.state.players.get(client.sessionId);
+    if (!player) return;
+    services.chatRelay.publish(message, {
+      roomId: this.roomId,
+      market: this.market,
+      actorId: data.actorId,
+      x: player.x,
+      z: player.z,
+    });
   }
 
   private handleAppearance(
@@ -546,9 +571,6 @@ export class MarketRoom extends Room<{ state: MarketRoomState; client: MarketCli
   private async handleReport(client: MarketClient, payload: ReportSendMessage): Promise<void> {
     const data = this.clientData(client);
     const now = Date.now();
-    const targetClient = this.clients.find(
-      (candidate) => this.clientData(candidate).actorId === payload.targetActorId,
-    );
     if (payload.protocolVersion !== PROTOCOL_VERSION) {
       client.send(SERVER_MESSAGES.reportRejected, { code: 'protocol_mismatch' });
       return;
@@ -566,13 +588,12 @@ export class MarketRoom extends Room<{ state: MarketRoomState; client: MarketCli
       client.send(SERVER_MESSAGES.reportRejected, { code: 'rate_limited', retryAfterMs: remaining });
       return;
     }
-    if (!targetClient) {
+    const target = getRoomServices().chatRelay.reportContext(this.market, payload.targetActorId);
+    if (!target) {
       client.send(SERVER_MESSAGES.reportRejected, { code: 'target_not_found' });
       return;
     }
     data.lastReportAt = now;
-    const targetData = this.clientData(targetClient);
-    const evidence = this.chatHistory.filter((message) => message.actorId === payload.targetActorId);
     try {
       const reportId = await getRoomServices().moderation.createReport({
         reporterActorId: data.actorId,
@@ -581,9 +602,9 @@ export class MarketRoom extends Room<{ state: MarketRoomState; client: MarketCli
         market: this.market,
         reason: payload.reason,
         ...(payload.note ? { note: payload.note } : {}),
-        evidence,
+        evidence: target.evidence,
         // Store the reported player's HMAC IP identifier, never the reporter's.
-        ipHash: targetData.ipHash,
+        ipHash: target.ipHash,
       });
       client.send(SERVER_MESSAGES.reportAccepted, { reportId });
     } catch {

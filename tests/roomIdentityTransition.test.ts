@@ -41,6 +41,7 @@ class FakeRoom {
   readonly roomId: string;
   readonly state: {
     players: Map<string, ReturnType<typeof player>>;
+    scopedChat?: boolean;
     environment?: {
       elapsedSeconds: number;
       updatedAt: number;
@@ -64,10 +65,12 @@ class FakeRoom {
       dayDurationSeconds: number;
     },
     roomId = 'room-default',
+    scopedChat = false,
   ) {
     this.roomId = roomId;
     this.state = {
       players: new Map([['local', player(actorId, animal)]]),
+      ...(scopedChat ? { scopedChat: true } : {}),
       ...(environment ? { environment } : {}),
     };
   }
@@ -174,6 +177,95 @@ describe('RoomClientSystem identity transitions', () => {
         },
       },
     ]);
+    system.dispose();
+  });
+
+  it('queues world chat across a brief room drop and flushes it after reconnect', async () => {
+    const room = new FakeRoom('anon-a');
+    const { system } = createSystem([room]);
+    await expect(system.connect('btc')).resolves.toBe(true);
+
+    room.drop();
+    expect(system.state.connection).toBe('reconnecting');
+    expect(system.sendChat('wait for me', 'world')).toBe(true);
+    expect(room.sent.filter(({ type }) => type === CLIENT_MESSAGES.chat)).toHaveLength(0);
+
+    room.reconnect();
+    expect(system.state.connection).toBe('online');
+    expect(room.sent.at(-1)).toEqual({
+      type: CLIENT_MESSAGES.chat,
+      payload: {
+        protocolVersion: 2,
+        text: 'wait for me',
+      },
+    });
+    system.dispose();
+  });
+
+  it('keeps an old protocol-v2 room on world chat when no capability handshake arrives', async () => {
+    const room = new FakeRoom('anon-a');
+    const { system } = createSystem([room]);
+    await expect(system.connect('btc')).resolves.toBe(true);
+
+    expect(system.state.scopedChatAvailable).toBe(false);
+    expect(system.sendChat('legacy world hello', 'world')).toBe(true);
+    expect(system.sendChat('must not leak as unscoped', 'proximity')).toBe(false);
+    expect(room.sent.filter(({ type }) => type === CLIENT_MESSAGES.chat)).toEqual([{
+      type: CLIENT_MESSAGES.chat,
+      payload: { protocolVersion: 2, text: 'legacy world hello' },
+    }]);
+    system.dispose();
+  });
+
+  it('enables and transmits proximity only after a valid room capability handshake', async () => {
+    const room = new FakeRoom('anon-a', 'fox', undefined, 'room-default', true);
+    const legacyNextRoom = new FakeRoom('anon-a', 'fox', undefined, 'room-legacy-next');
+    const { system } = createSystem([room, legacyNextRoom]);
+    await expect(system.connect('btc')).resolves.toBe(true);
+
+    expect(system.state.scopedChatAvailable).toBe(true);
+    expect(system.sendChat('nearby hello', 'proximity')).toBe(true);
+    expect(room.sent.at(-1)).toEqual({
+      type: CLIENT_MESSAGES.chat,
+      payload: { protocolVersion: 2, text: 'nearby hello', scope: 'proximity' },
+    });
+
+    await expect(system.switchMarket('eth')).resolves.toBe(true);
+    expect(system.state.scopedChatAvailable).toBe(false);
+    expect(system.sendChat('not confirmed here', 'proximity')).toBe(false);
+    expect(system.sendChat('world remains compatible', 'world')).toBe(true);
+    expect(legacyNextRoom.sent.at(-1)).toEqual({
+      type: CLIENT_MESSAGES.chat,
+      payload: { protocolVersion: 2, text: 'world remains compatible' },
+    });
+    system.dispose();
+  });
+
+  it('fails proximity chat closed during a drop so stale positions cannot receive it', async () => {
+    const room = new FakeRoom('anon-a', 'fox', undefined, 'room-default', true);
+    const { system } = createSystem([room]);
+    await expect(system.connect('btc')).resolves.toBe(true);
+    expect(system.state.scopedChatAvailable).toBe(true);
+
+    room.drop();
+    expect(system.sendChat('can anyone nearby hear me?', 'proximity')).toBe(false);
+    room.reconnect();
+
+    expect(room.sent.filter(({ type }) => type === CLIENT_MESSAGES.chat)).toHaveLength(0);
+    system.dispose();
+  });
+
+  it('drops queued world chat instead of carrying it into another market', async () => {
+    const btcRoom = new FakeRoom('anon-a', 'fox', undefined, 'room-btc');
+    const ethRoom = new FakeRoom('anon-a', 'fox', undefined, 'room-eth');
+    const { system } = createSystem([btcRoom, ethRoom]);
+    await expect(system.connect('btc')).resolves.toBe(true);
+
+    btcRoom.drop();
+    expect(system.sendChat('btc-only thought', 'world')).toBe(true);
+    await expect(system.switchMarket('eth')).resolves.toBe(true);
+
+    expect(ethRoom.sent).toHaveLength(0);
     system.dispose();
   });
 

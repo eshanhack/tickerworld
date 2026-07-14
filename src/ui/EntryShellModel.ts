@@ -61,6 +61,6 @@ export function entryRoomStatusLabel(status: EntryRoomStatus): string {
   switch (status) {
     case 'online': return 'Shared plaza online';
     case 'connecting': return 'Finding wanderers';
-    case 'offline': return 'Solo mode ready';
+    case 'offline': return 'Shared plaza reconnecting';
   }
 }

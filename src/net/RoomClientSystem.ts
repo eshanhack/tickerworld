@@ -12,6 +12,7 @@ import {
   type AppearanceMessage,
   type ChatMessage,
   type ChatRejection,
+  type ChatScope,
   type ChatSendMessage,
   type CorrectionMessage,
   type IdentityRefreshMessage,
@@ -68,6 +69,13 @@ import {
 import { resolveMultiplayerEndpoint } from './RuntimeCapabilitiesClient';
 
 const LIVE_MARKET_SYMBOLS = new Set<string>(ASSET_SYMBOLS.filter((symbol) => symbol !== 'TEST'));
+const MAX_QUEUED_CHAT_MESSAGES = 12;
+
+interface QueuedChatMessage {
+  readonly market: MarketSlug;
+  readonly text: string;
+  readonly scope: ChatScope;
+}
 
 function boundRelayedMarketMids(value: unknown): CompactMarketMid[] {
   if (!Array.isArray(value)) return [];
@@ -96,6 +104,8 @@ function boundRelayedMarketMids(value: unknown): CompactMarketMid[] {
 type RoomMatchClient = Pick<Client, 'joinOrCreate' | 'joinById'>;
 
 type RoomStateShape = {
+  /** Absent on the pre-scoped-chat protocol-v2 room schema. */
+  readonly scopedChat?: unknown;
   readonly environment?: unknown;
   readonly players?: {
     forEach?: (callback: (player: unknown, key: string) => void) => void;
@@ -127,7 +137,9 @@ export interface RoomClientSnapshot {
   readonly marketOnline: number;
   /** Exact replicated membership of the channel currently being rendered. */
   readonly channelOnline: number;
-  /** Null until an authoritative room clock arrives; solo mode stays local. */
+  /** False until this exact room positively confirms scoped-chat support. */
+  readonly scopedChatAvailable: boolean;
+  /** Null until an authoritative room clock arrives; reconnecting clients stay local. */
   readonly environment: SharedWorldEnvironment | null;
   readonly lastError: string | null;
 }
@@ -434,6 +446,8 @@ export class RoomClientSystem implements GameSystem {
   private readonly marketListeners = new Set<MarketRelayListener>();
   private readonly marketMidsListeners = new Set<MarketMidsListener>();
   private readonly populations = new Map<MarketSlug, RoomPopulation>();
+  private readonly queuedChats: QueuedChatMessage[] = [];
+  private queuedChatTimer: number | undefined;
   private readonly random: () => number;
   private readonly emoteGate = new EmoteRateGate();
   private readonly clientFactory: (endpoint: string) => RoomMatchClient;
@@ -469,6 +483,7 @@ export class RoomClientSystem implements GameSystem {
   private authoritativeSpawnReceived = false;
   private environment: SharedWorldEnvironment | null = null;
   private environmentReceivedAt = 0;
+  private scopedChatAvailable = false;
 
   constructor(options: RoomClientSystemOptions) {
     this.options = options;
@@ -507,6 +522,7 @@ export class RoomClientSystem implements GameSystem {
       totalOnline: [...this.populations.values()].reduce((sum, entry) => sum + entry.online, 0),
       marketOnline: population?.online ?? (this.connection === 'online' ? this.members.length : 0),
       channelOnline: this.connection === 'online' ? this.members.length : 0,
+      scopedChatAvailable: this.scopedChatAvailable,
       environment: this.environment,
       lastError: this.lastError,
     };
@@ -591,10 +607,12 @@ export class RoomClientSystem implements GameSystem {
   private async connectInternal(market: MarketSlug): Promise<boolean> {
     if (this.disposed) return false;
     this.market = market;
+    this.keepQueuedChatsFor(market);
     this.requestedChannelRoomId = null;
     this.clearWorldEnvironment();
     this.joinFromMarket = undefined;
     this.authoritativeSpawnReceived = false;
+    this.scopedChatAvailable = false;
     this.retryAttempt = 0;
     this.clearRetry();
     return this.join(++this.generation);
@@ -632,7 +650,7 @@ export class RoomClientSystem implements GameSystem {
     });
   }
 
-  /** Refreshes channels even while the player is browsing in solo mode. */
+  /** Refreshes channels even while the shared room connection is recovering. */
   async refreshPopulations(): Promise<readonly RoomPopulation[]> {
     if (!this.apiEndpoint) return [];
     try {
@@ -658,10 +676,12 @@ export class RoomClientSystem implements GameSystem {
     if (this.disposed) return false;
     const fromMarket = this.market;
     this.market = market;
+    this.keepQueuedChatsFor(market);
     this.requestedChannelRoomId = requestedChannelRoomId;
     this.clearWorldEnvironment();
     this.joinFromMarket = fromMarket === market ? undefined : fromMarket;
     this.authoritativeSpawnReceived = false;
+    this.scopedChatAvailable = false;
     const generation = ++this.generation;
     this.clearRetry();
     await this.leaveRoom();
@@ -726,10 +746,33 @@ export class RoomClientSystem implements GameSystem {
     this.room.send(CLIENT_MESSAGES.move, move);
   }
 
-  sendChat(text: string): boolean {
-    if (!this.room || this.connection !== 'online') return false;
-    const message: ChatSendMessage = { protocolVersion: PROTOCOL_VERSION, text };
-    this.room.send(CLIENT_MESSAGES.chat, message);
+  sendChat(text: string, scope: ChatScope = 'world'): boolean {
+    if (scope === 'proximity' && !this.scopedChatAvailable) return false;
+    const message: ChatSendMessage = this.scopedChatAvailable
+      ? { protocolVersion: PROTOCOL_VERSION, text, scope }
+      : { protocolVersion: PROTOCOL_VERSION, text };
+    if (this.room && this.connection === 'online' && this.queuedChats.length === 0) {
+      try {
+        this.room.send(CLIENT_MESSAGES.chat, message);
+        return true;
+      } catch {
+        this.setConnection('reconnecting', 'Chat connection interrupted.');
+      }
+    }
+    // Proximity delivery is defined by the server's current authoritative
+    // room position. Queuing it across a drop could route a message from the
+    // sender's stale pre-drop position, while retaining it across a channel
+    // handoff could expose it to an entirely different group. Fail closed and
+    // leave the composer text intact until this exact seat is online again.
+    if (scope === 'proximity') return false;
+    // A brief room handoff or network drop should not turn the composer into
+    // a dead control. Keep a small, market-bound world-chat queue and publish
+    // it after the automatic reconnect. Messages are never rerouted into a
+    // different tickerworld.
+    if (this.disposed || !this.endpoint || this.connection === 'incompatible') return false;
+    if (this.queuedChats.length >= MAX_QUEUED_CHAT_MESSAGES) return false;
+    this.queuedChats.push({ market: this.market, text, scope });
+    if (this.connection === 'offline') this.scheduleRetry(0);
     return true;
   }
 
@@ -810,6 +853,8 @@ export class RoomClientSystem implements GameSystem {
     this.members = [];
     this.currentRoomId = null;
     this.populations.clear();
+    this.queuedChats.length = 0;
+    this.clearQueuedChatTimer();
   }
 
   private async join(
@@ -817,6 +862,7 @@ export class RoomClientSystem implements GameSystem {
     identityOptions?: JoinIdentityOptions,
     refreshedAnonymousIdentity = false,
   ): Promise<boolean> {
+    this.scopedChatAvailable = false;
     if (!this.endpoint) {
       this.setConnection('offline', 'Multiplayer is not configured yet.');
       return false;
@@ -970,7 +1016,7 @@ export class RoomClientSystem implements GameSystem {
       });
       room.onMessage(SERVER_MESSAGES.protocolRejected, () => {
         if (!isCurrentRoom()) return;
-        this.setConnection('incompatible', 'Multiplayer is updating. Solo mode is still available.');
+        this.setConnection('incompatible', 'Multiplayer is updating. Reconnecting shortly.');
       });
       room.onDrop(() => {
         if (isCurrentRoom()) this.setConnection('reconnecting', null);
@@ -996,6 +1042,7 @@ export class RoomClientSystem implements GameSystem {
         this.boundActorId = null;
         this.remotes = [];
         this.members = [];
+        this.scopedChatAvailable = false;
         this.finishIdentityRefresh(false);
         this.finishPartyInvite(null);
         this.clearPendingMarketState();
@@ -1037,6 +1084,10 @@ export class RoomClientSystem implements GameSystem {
   }
 
   private acceptState(state: RoomStateShape): void {
+    // Replicated state is a silent positive handshake: older clients ignore
+    // the extra field, while an older v2 server has no field and therefore
+    // cannot accidentally receive a Proximity message as unscoped World chat.
+    this.scopedChatAvailable = state.scopedChat === true;
     const environment = parseSharedWorldEnvironment(state.environment);
     if (environment) this.acceptWorldEnvironment(environment);
     const next: NetPlayerState[] = [];
@@ -1324,6 +1375,7 @@ export class RoomClientSystem implements GameSystem {
     this.room = null;
     this.currentRoomId = null;
     this.members = [];
+    this.scopedChatAvailable = false;
     this.boundActorId = null;
     this.finishIdentityRefresh(false);
     this.finishPartyInvite(null);
@@ -1368,7 +1420,55 @@ export class RoomClientSystem implements GameSystem {
   private setConnection(connection: RoomConnectionState, error: string | null): void {
     this.connection = connection;
     this.lastError = error;
+    if (connection === 'online') this.flushQueuedChats();
     this.emit();
+  }
+
+  private keepQueuedChatsFor(market: MarketSlug): void {
+    this.clearQueuedChatTimer();
+    for (let index = this.queuedChats.length - 1; index >= 0; index -= 1) {
+      if (this.queuedChats[index]?.market !== market) this.queuedChats.splice(index, 1);
+    }
+  }
+
+  private flushQueuedChats(): void {
+    const room = this.room;
+    if (!room
+      || this.connection !== 'online'
+      || this.queuedChats.length === 0
+      || this.queuedChatTimer !== undefined) return;
+    const queued = this.queuedChats[0];
+    if (!queued) return;
+    if (queued.market !== this.market) {
+      this.queuedChats.shift();
+      this.flushQueuedChats();
+      return;
+    }
+    try {
+      const message: ChatSendMessage = this.scopedChatAvailable
+        ? { protocolVersion: PROTOCOL_VERSION, text: queued.text, scope: queued.scope }
+        : { protocolVersion: PROTOCOL_VERSION, text: queued.text };
+      room.send(CLIENT_MESSAGES.chat, message);
+      this.queuedChats.shift();
+      if (this.queuedChats.length > 0) {
+        // Replaying an outage backlog all at once would collide with the
+        // server's shared anti-spam bucket. Drain at its one-message refill
+        // cadence so accepted messages remain reliable and ordered.
+        this.queuedChatTimer = Number(globalThis.setTimeout(() => {
+          this.queuedChatTimer = undefined;
+          this.flushQueuedChats();
+        }, 2_050));
+      }
+    } catch {
+      // Keep the unsent item at the front. The room lifecycle will move to
+      // reconnecting/offline and retry it against the next healthy socket.
+    }
+  }
+
+  private clearQueuedChatTimer(): void {
+    if (this.queuedChatTimer === undefined) return;
+    globalThis.clearTimeout(this.queuedChatTimer);
+    this.queuedChatTimer = undefined;
   }
 
   private emit(): void {

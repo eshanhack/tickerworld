@@ -220,6 +220,8 @@ describe.sequential('Colyseus market rooms', () => {
     const first = await testServer.sdk.joinOrCreate('market', options);
     first.onMessage(SERVER_MESSAGES.population, () => {});
     first.onMessage(SERVER_MESSAGES.chat, () => {});
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect((first.state as { scopedChat?: boolean }).scopedChat).toBe(true);
     const second = await testServer.sdk.joinOrCreate('market', {
       ...options,
       animal: secondIdentity.animal,
@@ -514,8 +516,8 @@ describe.sequential('Colyseus market rooms', () => {
     await room.leave();
   });
 
-  it('fills one 50-player shard before creating a 25-player overflow shard', async () => {
-    const clients = [];
+  it('fills overflow shards and accepts canonical reports for world chat across channels', async () => {
+    const participants = [];
     for (let index = 0; index < 75; index += 1) {
       const identity = runtime.anonymous.issue();
       const room = await testServer.sdk.joinOrCreate('market', {
@@ -526,14 +528,48 @@ describe.sequential('Colyseus market rooms', () => {
       });
       room.onMessage(SERVER_MESSAGES.population, () => {});
       room.onMessage(SERVER_MESSAGES.chat, () => {});
-      clients.push(room);
+      participants.push({ room, identity });
     }
+    const clients = participants.map(({ room }) => room);
     const roomIds = new Set(clients.map((client) => client.roomId));
     expect(roomIds.size).toBe(2);
     const shardSizes = [...roomIds]
       .map((roomId) => testServer.getRoomById(roomId).clients.length)
       .sort((a, b) => b - a);
     expect(shardSizes).toEqual([50, 25]);
+
+    const reporter = participants[0]!;
+    const target = participants.find(({ room }) => room.roomId !== reporter.room.roomId)!;
+    const crossChannelChat = reporter.room.waitForMessage(SERVER_MESSAGES.chat);
+    target.room.send(CLIENT_MESSAGES.chat, {
+      protocolVersion: PROTOCOL_VERSION,
+      text: 'canonical cross-channel evidence',
+      scope: 'world',
+    });
+    await expect(crossChannelChat).resolves.toMatchObject({
+      actorId: target.identity.actorId,
+      text: 'canonical cross-channel evidence',
+      scope: 'world',
+    });
+    const reportAccepted = reporter.room.waitForMessage(SERVER_MESSAGES.reportAccepted);
+    reporter.room.send(CLIENT_MESSAGES.report, {
+      protocolVersion: PROTOCOL_VERSION,
+      targetActorId: target.identity.actorId,
+      reason: 'other',
+    });
+    const accepted = await reportAccepted as { reportId: string };
+    const storedReport = await runtime.db.selectFrom('moderation_reports')
+      .selectAll()
+      .where('id', '=', accepted.reportId)
+      .executeTakeFirstOrThrow();
+    expect(storedReport.target_actor_id).toBe(target.identity.actorId);
+    expect(JSON.parse(storedReport.evidence_json)).toEqual([
+      expect.objectContaining({
+        actorId: target.identity.actorId,
+        text: 'canonical cross-channel evidence',
+        scope: 'world',
+      }),
+    ]);
     for (const roomId of roomIds) {
       const room = testServer.getRoomById(roomId);
       const positions = [...(room.state as any).players.values()]

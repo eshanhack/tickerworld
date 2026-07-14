@@ -88,6 +88,12 @@ export const WORLD_ENVIRONMENT_SYNC_MS = 500;
 export const CHAT_MAX_LENGTH = 140;
 export const CHAT_HISTORY_LIMIT = 50;
 export const CHAT_CLIENT_ROW_LIMIT = 200;
+export const CHAT_SCOPES = ['world', 'proximity'] as const;
+/**
+ * Proximity chat is intentionally large enough to cover a plaza gathering,
+ * while keeping conversations at the parkour course or portals local.
+ */
+export const CHAT_PROXIMITY_RADIUS = 22;
 export const ACTOR_ID_MAX_LENGTH = 64;
 
 export const WORLD_RADIUS = 84;

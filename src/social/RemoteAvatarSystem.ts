@@ -306,6 +306,7 @@ export class RemoteAvatarSystem implements GameSystem {
   private readonly screenPoint = new THREE.Vector3();
   private readonly cameraPoint = new THREE.Vector3();
   private visible = true;
+  private remotePlayersVisible = true;
   private labelsVisible = true;
   private disposed = false;
 
@@ -493,7 +494,7 @@ export class RemoteAvatarSystem implements GameSystem {
   }
 
   pickAt(clientX: number, clientY: number, domElement: HTMLElement): NetPlayerState | null {
-    if (this.disposed || !this.visible) return null;
+    if (this.disposed || !this.visible || !this.remotePlayersVisible) return null;
     const rect = domElement.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return null;
     this.pointer.set(
@@ -501,14 +502,43 @@ export class RemoteAvatarSystem implements GameSystem {
       -((clientY - rect.top) / rect.height) * 2 + 1,
     );
     this.raycaster.setFromCamera(this.pointer, this.camera);
-    const hits = this.raycaster.intersectObjects([this.head.mesh, this.body.mesh], false);
+    // Treat the complete visible creature as clickable. Restricting selection
+    // to the shared head/body pools made small species and distinctive parts
+    // such as wings, tails, ears, or the Saylor limbs feel randomly inert.
+    // Hidden instance matrices have zero scale, so querying every pool keeps
+    // the same actor-slot mapping without introducing phantom hit targets.
+    const hits = this.raycaster.intersectObjects(
+      this.allPools.map((pool) => pool.mesh),
+      false,
+    );
     for (const hit of hits) {
       if (hit.instanceId === undefined) continue;
       const slot = this.slots[hit.instanceId];
       if (!slot?.active || !slot.rendered || this.blocked.has(slot.actorId)) continue;
       return slot.samples[slot.samples.length - 1]?.state ?? null;
     }
-    return null;
+
+    // Tiny and fast-moving species should not require pixel-perfect geometry
+    // clicks. Fall back to a bounded screen-space target centred on the
+    // rendered creature. This also makes touch selection dependable while
+    // still requiring the tap to land visibly on/around that avatar.
+    let nearest: { state: NetPlayerState; distanceSquared: number } | null = null;
+    for (const slot of this.slots) {
+      if (!slot.active || !slot.rendered || this.blocked.has(slot.actorId)) continue;
+      const state = slot.samples[slot.samples.length - 1]?.state;
+      if (!state) continue;
+      const profile = ANIMAL_PROFILES[slot.animal];
+      const height = profile.height * (animalMotionProfile(slot.animal).modelScale / 0.9);
+      this.screenPoint.set(state.x, state.y + height * 0.58, state.z).project(this.camera);
+      if (this.screenPoint.z < -1 || this.screenPoint.z > 1) continue;
+      const screenX = rect.left + (this.screenPoint.x + 1) * rect.width * 0.5;
+      const screenY = rect.top + (1 - this.screenPoint.y) * rect.height * 0.5;
+      const distanceSquared = (clientX - screenX) ** 2 + (clientY - screenY) ** 2;
+      const hitRadius = slot.animal === 'frog' ? 44 : 38;
+      if (distanceSquared > hitRadius ** 2) continue;
+      if (!nearest || distanceSquared < nearest.distanceSquared) nearest = { state, distanceSquared };
+    }
+    return nearest?.state ?? null;
   }
 
   update(deltaSeconds: number): void {
@@ -522,7 +552,7 @@ export class RemoteAvatarSystem implements GameSystem {
       const pose = sampleSlot(slot, targetTime);
       if (!pose) continue;
       const distanceSquared = (pose.x - local.x) ** 2 + (pose.z - local.z) ** 2;
-      const shouldRender = distanceSquared <= this.cullDistanceSquared;
+      const shouldRender = this.remotePlayersVisible && distanceSquared <= this.cullDistanceSquared;
       slot.rendered = shouldRender;
       // A visible friend is always their complete selected creature. We cull
       // at the room's configured horizon instead of swapping them to a proxy.
@@ -549,6 +579,21 @@ export class RemoteAvatarSystem implements GameSystem {
   setVisible(visible: boolean): void {
     this.visible = visible;
     this.root.visible = visible;
+  }
+
+  /** Hides connected players without hiding the controlled player's own label. */
+  setRemotePlayersVisible(visible: boolean): void {
+    if (this.remotePlayersVisible === visible) return;
+    this.remotePlayersVisible = visible;
+    if (visible) return;
+    for (const slot of this.slots) {
+      slot.rendered = false;
+      slot.detailVisible = false;
+      slot.nameplate.visible = false;
+      slot.speech.visible = false;
+      this.hideMatrices(slot.index);
+    }
+    this.flushMatrices();
   }
 
   /** Keeps staged captures private without removing the connected avatars. */

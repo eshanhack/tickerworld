@@ -38,6 +38,8 @@ export class WorldEnvironmentState extends Schema implements SharedWorldEnvironm
 export class MarketRoomState extends Schema {
   @type('string') market: MarketSlug = 'btc';
   @type('uint16') protocolVersion = PROTOCOL_VERSION;
+  /** Positive capability: absent on pre-scoped-chat protocol-v2 servers. */
+  @type('boolean') scopedChat = true;
   @type(WorldEnvironmentState) environment = new WorldEnvironmentState();
   @type({ map: PlayerState }) players = new MapSchema<PlayerState>();
 }

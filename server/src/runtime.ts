@@ -11,6 +11,7 @@ import {
   type WalletSignatureVerifier,
 } from './services/auth.js';
 import { ChatSafety, SharedChatRateLimiter } from './services/chatSafety.js';
+import { ChatRelay } from './services/chatRelay.js';
 import {
   DevelopmentQuoteAuthority,
   EconomyService,
@@ -48,6 +49,7 @@ export interface ServerRuntime {
   moderation: ModerationService;
   chatSafety: ChatSafety;
   chatLimits: SharedChatRateLimiter;
+  chatRelay: ChatRelay;
   populations: PopulationDirectory;
   admissions: AdmissionControl;
   clientIps: CanonicalIpResolver;
@@ -77,6 +79,7 @@ export async function createRuntime(
         : new UnavailableQuoteAuthority());
   const chatSafety = new ChatSafety();
   const chatLimits = new SharedChatRateLimiter();
+  const chatRelay = new ChatRelay();
   const paymentVerifier: ChainPaymentVerifier = overrides.paymentVerifier ?? (config.solanaRpcUrl
     ? new SolanaRpcPaymentVerifier(config.solanaRpcUrl, config.solanaCluster)
     : new UnavailableChainPaymentVerifier());
@@ -133,6 +136,7 @@ export async function createRuntime(
     moderation,
     chatSafety,
     chatLimits,
+    chatRelay,
     populations,
     admissions,
     clientIps,
@@ -148,6 +152,7 @@ export async function createRuntime(
       admissions.clear();
       requestLimits.clear();
       chatLimits.clear();
+      chatRelay.clear();
       invites.clear();
       marketRelay.dispose();
       news.dispose();
@@ -160,6 +165,7 @@ export async function createRuntime(
     anonymous,
     chatSafety,
     chatLimits,
+    chatRelay,
     moderation,
     populations,
     admissions,

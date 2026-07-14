@@ -317,6 +317,50 @@ describe('pooled remote avatar renderer', () => {
     expect(parent.children).toHaveLength(0);
   });
 
+  it('hides remote players for private view without hiding the local username', () => {
+    const parent = new Group();
+    const camera = new PerspectiveCamera(52, 1, 0.1, 100);
+    camera.position.set(0, 3, 8);
+    camera.lookAt(0, 1, 0);
+    camera.updateMatrixWorld(true);
+    let now = 500;
+    const system = new RemoteAvatarSystem({
+      parent,
+      camera,
+      maxPlayers: 1,
+      now: () => now,
+      localPosition: () => new Vector3(0, 0.5, 0),
+      localNameplate: { actorId: 'local', animal: () => 'fox', username: 'Local_Fox' },
+      viewport: () => ({ left: 0, top: 0, width: 800, height: 600 }),
+    });
+    system.setPlayers([remote('friend', 3)], now);
+    now += 200;
+    system.update(1 / 60);
+
+    const localNameplate = system.root.getObjectByName('local-player-nameplate');
+    const remoteBody = pool(system, 'remote-body-pool');
+    expect(localNameplate?.visible).toBe(true);
+    expect(instanceTransform(remoteBody).scale.length()).toBeGreaterThan(0);
+
+    system.setRemotePlayersVisible(false);
+    expect(system.root.visible).toBe(true);
+    expect(localNameplate?.visible).toBe(true);
+    expect(system.getDebugStats()).toMatchObject({ active: 1, rendered: 0, detailed: 0 });
+    expect(instanceTransform(remoteBody).scale.length()).toBe(0);
+
+    now += 200;
+    system.update(1 / 60);
+    expect(localNameplate?.visible).toBe(true);
+    expect(system.getDebugStats().rendered).toBe(0);
+
+    system.setRemotePlayersVisible(true);
+    now += 200;
+    system.update(1 / 60);
+    expect(system.getDebugStats()).toMatchObject({ rendered: 1, detailed: 1 });
+    expect(instanceTransform(remoteBody).scale.length()).toBeGreaterThan(0);
+    system.dispose();
+  });
+
   it('renders the room-echoed local chat above the local head and expires it', () => {
     const parent = new Group();
     const camera = new PerspectiveCamera(52, 1, 0.1, 100);

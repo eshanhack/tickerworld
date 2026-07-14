@@ -17,6 +17,7 @@ import type { RuntimeSwitchboard } from '../services/runtimeSwitches.js';
 import type { PartyInviteService } from '../services/partyInvites.js';
 import type { MarketRelay } from '../services/marketRelay.js';
 import type { SafeLogger } from '../services/safeLogger.js';
+import type { ChatRelay } from '../services/chatRelay.js';
 
 export interface RoomIdentity {
   actorId: string;
@@ -33,6 +34,7 @@ export interface RoomServices {
   anonymous: AnonymousIdentityService;
   chatSafety: ChatSafety;
   chatLimits: SharedChatRateLimiter;
+  chatRelay: ChatRelay;
   moderation: ModerationService;
   populations: PopulationDirectory;
   admissions: AdmissionControl;

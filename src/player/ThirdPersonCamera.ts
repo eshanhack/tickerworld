@@ -9,6 +9,8 @@ export interface ThirdPersonCameraOptions {
   readonly yaw?: number;
   readonly pitch?: number;
   readonly distance?: number;
+  /** Starts at the configured outer zoom bound while preserving normal wheel zoom thereafter. */
+  readonly startAtMaxDistance?: boolean;
   readonly minDistance?: number;
   readonly maxDistance?: number;
   readonly lookHeight?: number;
@@ -86,7 +88,10 @@ export class ThirdPersonCamera {
     );
     this.minDistance = options.minDistance ?? 4.2;
     this.maxDistance = options.maxDistance ?? 12.5;
-    this.distance = THREE.MathUtils.clamp(options.distance ?? 7.8, this.minDistance, this.maxDistance);
+    const initialDistance = options.startAtMaxDistance
+      ? this.maxDistance
+      : options.distance ?? 7.8;
+    this.distance = THREE.MathUtils.clamp(initialDistance, this.minDistance, this.maxDistance);
     this.resolvedDistance = this.distance;
     this.lookHeight = options.lookHeight ?? 0.85;
     this.collisionClearance = options.collisionClearance ?? 0.38;

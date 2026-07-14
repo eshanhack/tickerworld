@@ -48,10 +48,13 @@ describe('world and channel navigator model', () => {
     }]);
     expect(worldPopulationLabel({
       symbol: 'ETH', online: 73, shards: 2, connection: 'online',
-    })).toBe('73 ONLINE');
+    })).toBe('73 / 100 PEOPLE INSIDE');
+    expect(worldPopulationLabel({
+      symbol: 'ETH', online: 73, shards: null, connection: 'online',
+    })).toBe('73 / 100 PEOPLE INSIDE');
     expect(worldPopulationLabel({
       symbol: 'ETH', online: null, shards: 0, connection: 'offline',
-    })).toBe('SOLO');
+    })).toBe('— / 50 PEOPLE INSIDE');
   });
 
   it('offers overflow matchmaking when every advertised channel is full', () => {
@@ -77,26 +80,28 @@ describe('online population badge model', () => {
   it('shows total and current-world counts with a de-duplicated public roster', () => {
     const labels = populationBadgeLabels({
       totalOnline: 128,
+      totalCapacity: 400,
       worldOnline: 45,
+      worldCapacity: 100,
       world: 'BTC',
       connection: 'online',
       usernames: ['MossyRabbit', 'TinyFrog', 'MossyRabbit', '  CloudCat  ', ''],
     });
     expect(labels).toEqual({
-      total: '128 TOTAL ONLINE',
-      world: '45 IN BTC',
+      total: '128 / 400 ONLINE',
+      world: '45 / 100 IN BTC',
       roster: ['MossyRabbit', 'TinyFrog', 'CloudCat'],
       overflow: 0,
     });
   });
 
-  it('uses explicit solo copy rather than implying unavailable multiplayer counts', () => {
+  it('keeps unknown multiplayer counts neutral while reconnecting', () => {
     expect(populationBadgeLabels({
       totalOnline: null,
       worldOnline: null,
       world: 'SHFL',
       connection: 'offline',
       usernames: [],
-    })).toMatchObject({ total: 'SOLO MODE', world: '— IN SHFL' });
+    })).toMatchObject({ total: '— / 400 ONLINE', world: '— / 50 IN SHFL' });
   });
 });

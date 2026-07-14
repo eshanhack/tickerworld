@@ -57,6 +57,7 @@ import {
 import { TelemetrySystem } from './telemetry';
 import {
   allocateSpawnAssignment,
+  MARKET_ROOM_MAX_CLIENTS,
   type CompactMarketMid,
   type CorrectionMessage,
   type MarketSlug,
@@ -182,6 +183,7 @@ export class Game {
   private readonly latestStates = new Map<AssetSymbol, AssetState>();
   private readonly pendingRoomSpawns = new Map<MarketSlug, NetPlayerState>();
   private populationViewKey = '';
+  private blockedActors: ReadonlySet<string> = new Set();
   private readonly clock = new THREE.Clock();
   private readonly tempPosition = new THREE.Vector3();
   private readonly newsCameraSpace = new THREE.Vector3();
@@ -208,6 +210,7 @@ export class Game {
   private activeNewsCount = 0;
   private newsSoundCreatedAtCutoff = Number.NEGATIVE_INFINITY;
   private contextLost = false;
+  private soloView = false;
   private guestAppearance: GuestAppearance;
   private activeDisplayUsername: string | null;
   private appearanceSyncKey: string | null = null;
@@ -280,7 +283,7 @@ export class Game {
       domElement: this.renderer.domElement,
       yaw: 0,
       pitch: 0.28,
-      distance: 9,
+      startAtMaxDistance: true,
       reducedMotion: this.reducedMotion,
     });
 
@@ -608,9 +611,13 @@ export class Game {
       },
       onSpeech: (message) => this.remoteAvatars?.showSpeech(message),
       onBlocksChanged: (blocked) => {
+        this.blockedActors = new Set(blocked);
         this.remoteAvatars?.setBlockedActors(blocked);
         this.emotes?.setBlockedActors(blocked);
+        this.populationViewKey = '';
+        this.refreshPopulationViews(this.roomClient.state);
       },
+      onSoloViewChange: (active) => this.setSoloView(active),
     });
     this.share = new ShareSystem({
       root: this.hud.mountLayer('tickerworld-share-layer'),
@@ -846,7 +853,7 @@ export class Game {
 
       this.portalSystem.beginTransfer(destination);
       // Keep the old world behind the loading veil until matchmaking has either
-      // joined the destination room or deliberately resolved to solo mode. This
+      // joined the destination room or returned control to its reconnect path. This
       // prevents movement in a new world while the client is still in the old
       // room and keeps browser history travel consistent with physical portals.
       const channelResult = selectedChannelRoomId
@@ -863,7 +870,7 @@ export class Game {
             ? `That channel filled up — joined Channel ${channel}.`
             : 'That channel filled up — joined the best open channel.');
         } else if (channelResult?.status === 'offline') {
-          this.hud.showToast('Multiplayer is unavailable, so this world is running in solo mode.');
+          this.hud.showToast('The shared room is reconnecting.');
         } else if (channelResult?.status === 'joined') {
           const channel = this.roomClient.state.currentChannel?.channel;
           if (channel) this.hud.showToast(`Channel ${channel}`);
@@ -928,7 +935,7 @@ export class Game {
           ? `Selected channel filled up — joined Channel ${channel}.`
           : 'Selected channel filled up — joined the best open channel.');
       } else if (channelResult?.status === 'offline') {
-        this.hud.showToast('Multiplayer is unavailable, so travel continued in solo mode.');
+        this.hud.showToast('Travel complete. The shared room is reconnecting.');
       }
       if (destination !== originMarket) this.hud.recordOnboardingAction('portal');
       if (destination !== originMarket) {
@@ -959,6 +966,18 @@ export class Game {
     );
     if (travelled && selection.symbol !== previous) this.routeHistory?.push(selection.symbol);
     return travelled;
+  }
+
+  private setSoloView(active: boolean): void {
+    if (this.disposed || this.soloView === active) return;
+    this.soloView = active;
+    this.remoteAvatars?.setRemotePlayersVisible(!active);
+    this.emotes?.setVisible(this.visible && !active);
+    this.populationViewKey = '';
+    this.refreshPopulationViews(this.roomClient.state);
+    this.hud.showToast(active
+      ? 'Solo mode on — other players and their chat are hidden.'
+      : 'Back in the shared world.');
   }
 
   private setWorldNavigatorOpen(open: boolean): boolean {
@@ -1188,26 +1207,37 @@ export class Game {
         channels,
       });
     }
-    const usernames = state.members.map((member) => {
+    const usernames = state.members
+      .filter((member) => member.actorId === this.roomClient.identity.actorId
+        || (!this.soloView && !this.blockedActors.has(member.actorId)))
+      .map((member) => {
       if (member.username) return member.username;
       if (member.animal === 'saylor') return 'Michael Saylor (guest)';
       return `${member.animal.slice(0, 1).toUpperCase()}${member.animal.slice(1)} (guest)`;
-    });
+      });
     const nextKey = JSON.stringify({
       activeMarket: this.activeMarket,
       connection,
       totalOnline: state.totalOnline,
       marketOnline: state.marketOnline,
       currentRoomId: state.currentRoomId,
+      soloView: this.soloView,
       populations,
       usernames,
     });
     if (nextKey === this.populationViewKey) return;
     this.populationViewKey = nextKey;
     this.worldNavigator.setPopulations(populations);
+    const activePopulation = state.populations.get(marketSlugForSymbol(this.activeMarket));
+    const advertisedWorldCapacity = (activePopulation?.channels ?? [])
+      .reduce((sum, channel) => sum + Math.max(0, channel.capacity), 0);
+    const worldCapacity = advertisedWorldCapacity > 0
+      ? advertisedWorldCapacity
+      : Math.max(1, activePopulation?.shards ?? 1) * MARKET_ROOM_MAX_CLIENTS;
     this.onlinePopulationBadge.setSnapshot({
       totalOnline: connection === 'offline' ? null : state.totalOnline,
       worldOnline: connection === 'offline' ? null : state.marketOnline,
+      worldCapacity,
       world: this.activeMarket,
       usernames,
       connection,
@@ -1215,6 +1245,8 @@ export class Game {
   }
 
   private onRoomClientState(state: RoomClientSnapshot): void {
+    this.social?.setChatContext(state.market, state.currentRoomId);
+    this.social?.setScopedChatAvailable(state.scopedChatAvailable);
     if (state.connection !== 'online') {
       this.appearanceSyncKey = null;
       this.latestRelayMids = [];
@@ -1263,15 +1295,22 @@ export class Game {
   private refreshPortalLiveData(symbol: AssetSymbol): void {
     const state = this.market.getState(symbol);
     const room = this.roomClient.state;
+    const destinationPopulation = room.populations.get(marketSlugForSymbol(symbol));
     const connectionMode = room.connection === 'online'
       ? 'online'
       : room.connection === 'connecting' || room.connection === 'reconnecting'
         ? 'connecting'
         : 'offline';
+    const advertisedCapacity = (destinationPopulation?.channels ?? [])
+      .reduce((sum, channel) => sum + Math.max(0, channel.capacity), 0);
+    const capacity = advertisedCapacity > 0
+      ? advertisedCapacity
+      : Math.max(1, destinationPopulation?.shards ?? 1) * MARKET_ROOM_MAX_CLIENTS;
     this.portalSystem.setLiveData(symbol, {
       price: state.price,
       feedMode: state.mode,
-      population: room.populations.get(marketSlugForSymbol(symbol))?.online ?? null,
+      population: destinationPopulation?.online ?? null,
+      capacity,
       connectionMode,
     });
   }
@@ -1890,7 +1929,8 @@ export class Game {
     this.portalSystem.setVisible(this.visible && this.entered && !LAUNCH_CAPTURE_MODE);
     this.roomClient.setVisible(this.visible);
     this.remoteAvatars?.setVisible(this.visible);
-    this.emotes?.setVisible(this.visible);
+    this.remoteAvatars?.setRemotePlayersVisible(!this.soloView);
+    this.emotes?.setVisible(this.visible && !this.soloView);
     this.social?.setVisible(this.visible);
     this.share?.setVisible(this.visible);
     this.player.input.setEnabled(this.visible && this.entered && !this.uiInteractionLock.locked);

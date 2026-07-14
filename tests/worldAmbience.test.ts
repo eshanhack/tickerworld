@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three';
+import { PALETTE } from '../src/config';
 import {
   DEFAULT_DAY_DURATION_SECONDS,
   stormWindowForCycle,
@@ -19,6 +20,27 @@ describe('WorldSystem lamp ambience', () => {
     world.update({ x: 0, z: 0 }, DEFAULT_DAY_DURATION_SECONDS);
     expect(world.minutesSinceMidnight).toBe(12 * 60);
     expect(world.nightFactor).toBe(0);
+    world.dispose();
+  });
+
+  it('keeps full night blue but readable with a minimum ambient fill', () => {
+    const scene = new THREE.Scene();
+    const world = new WorldSystem(scene, {
+      activeRadius: 0,
+      loadBudgetPerUpdate: 1,
+      dayDurationSeconds: 600,
+    });
+    world.update({ x: 0, z: 0 }, 300);
+
+    const sky = scene.background as THREE.Color;
+    const unliftedNight = new THREE.Color(PALETTE.skyNight);
+    const hemisphere = world.root.getObjectByName('WorldHemisphereLight') as THREE.HemisphereLight;
+    const sun = world.root.getObjectByName('WorldSun') as THREE.DirectionalLight;
+    expect(world.nightFactor).toBeGreaterThan(0.99);
+    expect(sky.r).toBeGreaterThan(unliftedNight.r);
+    expect(sky.g).toBeGreaterThan(unliftedNight.g);
+    expect(hemisphere.intensity).toBeGreaterThanOrEqual(0.44);
+    expect(sun.intensity).toBeGreaterThanOrEqual(0.2);
     world.dispose();
   });
 

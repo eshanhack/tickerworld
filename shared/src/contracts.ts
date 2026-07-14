@@ -1,6 +1,7 @@
 import type {
   ANIMAL_KINDS,
   ASSET_SYMBOLS,
+  CHAT_SCOPES,
   ENTITLEMENT_SKUS,
   MARKET_SLUGS,
   MODERATION_REASONS,
@@ -16,6 +17,7 @@ export type SkinId = 'base' | PremiumSkinId;
 export type ModerationReason = (typeof MODERATION_REASONS)[number];
 export type EntitlementSku = (typeof ENTITLEMENT_SKUS)[number];
 export type ParkourCheckpointId = (typeof PARKOUR_CHECKPOINT_IDS)[number];
+export type ChatScope = (typeof CHAT_SCOPES)[number];
 export type RoomConnectionState =
   | 'connecting'
   | 'online'
@@ -133,6 +135,8 @@ export interface ChatMessage {
   animal: AnimalKind;
   text: string;
   sentAt: number;
+  /** Defaults to world when omitted by a previous-protocol sender. */
+  scope: ChatScope;
 }
 
 export type ChatRejectionCode =
@@ -249,6 +253,8 @@ export interface AppearanceMessage {
 export interface ChatSendMessage {
   protocolVersion: number;
   text: string;
+  /** Previous protocol clients omit this field and are routed to world chat. */
+  scope?: ChatScope;
 }
 
 export interface ReportSendMessage {

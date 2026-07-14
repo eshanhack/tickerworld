@@ -44,7 +44,7 @@ describe('route-specific entry shell', () => {
   it('keeps connection copy explicit rather than implying live data', () => {
     expect(entryFeedStatusLabel('connecting')).toBe('Market connecting');
     expect(entryFeedStatusLabel('reconnecting')).toBe('Market reconnecting');
-    expect(entryRoomStatusLabel('offline')).toBe('Solo mode ready');
+    expect(entryRoomStatusLabel('offline')).toBe('Shared plaza reconnecting');
     expect(entryRoomStatusLabel('online')).toBe('Shared plaza online');
   });
 });

@@ -7,6 +7,7 @@ import {
   PORTAL_ARRIVAL_OFFSET,
   PORTAL_RADIUS,
 } from '../../shared/src/portals.js';
+import { MARKET_ROOM_MAX_CLIENTS } from '../../shared/src/constants.js';
 import {
   createCanonicalRoadDescriptors,
   type CanonicalRoadDescriptor,
@@ -39,6 +40,8 @@ export interface PortalLiveData {
   readonly feedMode?: FeedMode;
   /** Aggregate population across every shard for this destination. */
   readonly population: number | null;
+  /** Sum of advertised channel seats for this destination. */
+  readonly capacity?: number | null;
   readonly connectionMode?: PortalConnectionMode;
 }
 
@@ -70,14 +73,28 @@ export const PORTAL_CENTRE_SPAWN = Object.freeze({
 export function formatPortalPopulation(
   population: number | null,
   connectionMode: PortalConnectionMode,
+  advertisedCapacity: number | null = null,
 ): string {
-  // A room outage never makes the destination world unavailable: portals keep
-  // routing locally with live direct market data, so describe that truthfully.
-  if (connectionMode === 'offline') return 'SOLO WORLD';
+  const populationCount = population !== null && Number.isFinite(population) && population >= 0
+    ? Math.floor(population)
+    : null;
+  const capacityCount = advertisedCapacity !== null
+    && Number.isFinite(advertisedCapacity)
+    && advertisedCapacity > 0
+    ? Math.floor(advertisedCapacity)
+    : MARKET_ROOM_MAX_CLIENTS;
+  const minimumCapacity = populationCount === null
+    ? MARKET_ROOM_MAX_CLIENTS
+    : Math.max(MARKET_ROOM_MAX_CLIENTS, Math.ceil(populationCount / MARKET_ROOM_MAX_CLIENTS) * MARKET_ROOM_MAX_CLIENTS);
+  const capacity = Math.max(capacityCount, minimumCapacity);
+  // A room outage never makes the destination world unavailable. Keep the
+  // occupancy unknown rather than rebranding the whole experience as solo.
+  if (connectionMode === 'offline') return `— / ${capacity.toLocaleString('en-US')} PEOPLE INSIDE`;
   if (connectionMode === 'connecting') return 'CONNECTING';
-  if (population === null || !Number.isFinite(population) || population < 0) return '— ONLINE';
-  const people = Math.floor(population);
-  return `${people.toLocaleString('en-US')} ONLINE`;
+  if (populationCount === null) {
+    return `— / ${capacity.toLocaleString('en-US')} PEOPLE INSIDE`;
+  }
+  return `${populationCount.toLocaleString('en-US')} / ${capacity.toLocaleString('en-US')} PEOPLE INSIDE`;
 }
 
 function asSlotMarket(symbol: AssetSymbol): Exclude<AssetSymbol, 'BTC'> {
@@ -121,7 +138,7 @@ export function createPortalLabelModel(
 ): PortalLabelModel {
   const connectionMode = live.connectionMode ?? (live.population === null ? 'offline' : 'online');
   const priceText = formatPrice(live.price);
-  const populationText = formatPortalPopulation(live.population, connectionMode);
+  const populationText = formatPortalPopulation(live.population, connectionMode, live.capacity ?? null);
   const marketText = live.feedMode === 'simulated'
     ? 'DEMO'
     : live.feedMode === 'live'

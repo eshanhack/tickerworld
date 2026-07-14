@@ -1,5 +1,6 @@
 import {
   ACCEPTED_PROTOCOL_VERSIONS,
+  CHAT_SCOPES,
   DEX_FIELD_PORTAL_RADIUS,
   MARKET_SLUGS,
   MAX_SPRINT_SPEED,
@@ -7,6 +8,7 @@ import {
   PORTAL_RADIUS,
   SPAWN_SLOT_COUNT,
   SPAWN_SLOT_SPACING,
+  SERVER_MESSAGES,
   WORLD_RADIUS,
   allocateSpawnAssignment,
   createSpawnAssignments,
@@ -24,6 +26,10 @@ import { describe, expect, it } from 'vitest';
 describe('shared multiplayer contracts', () => {
   it('accepts only current and previous protocol versions', () => {
     expect(ACCEPTED_PROTOCOL_VERSIONS).toEqual([2, 1]);
+  });
+
+  it('keeps the additive scoped-chat contract on protocol v2', () => {
+    expect(CHAT_SCOPES).toEqual(['world', 'proximity']);
   });
 
   it('accepts the free Saylor fan-tribute character without widening arbitrary values', () => {

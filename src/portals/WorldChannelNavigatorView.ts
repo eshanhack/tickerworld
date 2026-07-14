@@ -41,7 +41,11 @@ export interface WorldChannelNavigatorOptions {
 
 export interface OnlinePopulationSnapshot {
   readonly totalOnline: number | null;
+  /** Public launch admission ceiling across every tickerworld. */
+  readonly totalCapacity?: number | null;
   readonly worldOnline: number | null;
+  /** Sum of the advertised channel capacities in the active tickerworld. */
+  readonly worldCapacity?: number | null;
   readonly world: AssetSymbol;
   readonly usernames: readonly string[];
   readonly connection: WorldConnectionState;
@@ -54,6 +58,7 @@ export interface OnlinePopulationBadgeOptions {
 
 const WORLD_GRID_COLUMNS = 4;
 const MAX_VISIBLE_USERNAMES = 50;
+const DEFAULT_GAME_CAPACITY = 400;
 
 const WORLD_ACCENTS: Readonly<Record<AssetSymbol, string>> = {
   BTC: '#e7a869',
@@ -150,10 +155,15 @@ export function normalizeWorldChannels(
 }
 
 export function worldPopulationLabel(population: WorldPopulationSnapshot): string {
-  if (population.connection === 'offline') return 'SOLO';
   if (population.connection === 'connecting') return 'CONNECTING';
   const online = boundedCount(population.online);
-  return online === null ? 'ONLINE' : `${online.toLocaleString('en-US')} ONLINE`;
+  const shards = boundedCount(population.shards);
+  const minimumShards = online === null
+    ? 1
+    : Math.max(1, Math.ceil(online / MARKET_ROOM_MAX_CLIENTS));
+  const capacity = Math.max(minimumShards, shards ?? 1) * MARKET_ROOM_MAX_CLIENTS;
+  if (population.connection === 'offline') return `— / ${capacity} PEOPLE INSIDE`;
+  return `${online === null ? '—' : online.toLocaleString('en-US')} / ${capacity.toLocaleString('en-US')} PEOPLE INSIDE`;
 }
 
 export function populationBadgeLabels(snapshot: OnlinePopulationSnapshot): {
@@ -163,14 +173,14 @@ export function populationBadgeLabels(snapshot: OnlinePopulationSnapshot): {
   readonly overflow: number;
 } {
   const totalOnline = boundedCount(snapshot.totalOnline);
+  const totalCapacity = boundedCount(snapshot.totalCapacity) ?? DEFAULT_GAME_CAPACITY;
   const worldOnline = boundedCount(snapshot.worldOnline);
+  const worldCapacity = boundedCount(snapshot.worldCapacity) ?? MARKET_ROOM_MAX_CLIENTS;
   const unique = [...new Set(snapshot.usernames.map((name) => name.trim()).filter(Boolean))];
   const roster = unique.slice(0, MAX_VISIBLE_USERNAMES);
   return {
-    total: snapshot.connection === 'offline'
-      ? 'SOLO MODE'
-      : `${totalOnline === null ? '—' : totalOnline.toLocaleString('en-US')} TOTAL ONLINE`,
-    world: `${worldOnline === null ? '—' : worldOnline.toLocaleString('en-US')} IN ${snapshot.world}`,
+    total: `${totalOnline === null ? '—' : totalOnline.toLocaleString('en-US')} / ${totalCapacity.toLocaleString('en-US')} ONLINE`,
+    world: `${worldOnline === null ? '—' : worldOnline.toLocaleString('en-US')} / ${worldCapacity.toLocaleString('en-US')} IN ${snapshot.world}`,
     roster,
     overflow: Math.max(0, unique.length - roster.length),
   };
@@ -181,11 +191,11 @@ function emptyPopulation(symbol: AssetSymbol): WorldPopulationSnapshot {
 }
 
 function channelStatus(channel: WorldChannelSnapshot): string {
-  if (channel.state === 'offline') return 'SOLO';
+  const capacity = channel.capacity ?? MARKET_ROOM_MAX_CLIENTS;
+  if (channel.state === 'offline') return `— / ${capacity} PEOPLE INSIDE`;
   if (channel.state === 'full') return 'FULL';
-  if (channel.online === null) return channel.state === 'busy' ? 'MATCHING' : 'OPEN';
-  if (channel.capacity === null) return `${channel.online} HERE`;
-  return `${channel.online} / ${channel.capacity}`;
+  if (channel.online === null) return channel.state === 'busy' ? 'CONNECTING' : 'OPEN';
+  return `${channel.online} / ${capacity} PEOPLE INSIDE`;
 }
 
 /**
@@ -561,7 +571,7 @@ export class OnlinePopulationBadgeView {
     this.root.className = 'tickerworld-online-badge';
     this.root.innerHTML = `
       <button type="button" class="online-badge-summary" aria-expanded="false" aria-controls="tickerworld-online-roster" data-online-toggle>
-        <span aria-hidden="true"></span><div><strong data-online-total>— TOTAL ONLINE</strong><small data-online-world>— IN BTC</small></div><i aria-hidden="true">›</i>
+        <span aria-hidden="true"></span><div><strong data-online-total>— / ${DEFAULT_GAME_CAPACITY} ONLINE</strong><small data-online-world>— / ${MARKET_ROOM_MAX_CLIENTS} IN BTC</small></div><i aria-hidden="true">›</i>
       </button>
       <div class="online-badge-roster" id="tickerworld-online-roster" data-online-roster>
         <header><strong>In this channel</strong><small>VISIBLE HERE</small></header>
@@ -634,7 +644,7 @@ export class OnlinePopulationBadgeView {
       const empty = this.root.ownerDocument.createElement('p');
       empty.textContent = this.snapshot.connection === 'online'
         ? 'No public names in this channel yet.'
-        : 'Room roster unavailable in solo mode.';
+        : 'Room roster unavailable while reconnecting.';
       fragment.append(empty);
     } else {
       for (const username of labels.roster) {

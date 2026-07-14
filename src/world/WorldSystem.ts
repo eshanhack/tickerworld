@@ -304,7 +304,9 @@ export class WorldSystem {
   private readonly previousBackground: THREE.Scene['background'];
   private readonly previousFog: THREE.Scene['fog'];
   private readonly daySky = new THREE.Color(PALETTE.skyDay);
-  private readonly nightSky = new THREE.Color(PALETTE.skyNight);
+  // Keep midnight distinctly blue while retaining enough ambient fill for
+  // characters, terrain edges, and the chart to remain comfortably legible.
+  private readonly nightSky = new THREE.Color(PALETTE.skyNight).lerp(this.daySky, 0.16);
   private readonly sunsetSky = new THREE.Color(0xd99178);
   private readonly daySun = new THREE.Color(0xfff0cb);
   private readonly duskSun = new THREE.Color(0xe49a70);
@@ -1626,10 +1628,10 @@ export class WorldSystem {
     this.skyColor.lerp(this.sunsetSky, twilight * 0.18);
     this.fog.color.copy(this.skyColor);
     this.hemisphereLight.color.copy(this.skyColor).lerp(this.daySky, 0.42);
-    this.hemisphereLight.groundColor.set(0x485044).lerp(new THREE.Color(0x6b765d), this.daylight);
-    this.hemisphereLight.intensity = 0.32 + this.daylight * 0.76;
+    this.hemisphereLight.groundColor.set(0x565f51).lerp(new THREE.Color(0x6b765d), this.daylight);
+    this.hemisphereLight.intensity = 0.44 + this.daylight * 0.64;
     this.sunLight.color.copy(this.duskSun).lerp(this.daySun, this.daylight);
-    this.sunLight.intensity = 0.12 + this.daylight * 1.43;
+    this.sunLight.intensity = 0.2 + this.daylight * 1.35;
 
     if (this.cyberpunkTheme) {
       const palette = this.cyberpunkTheme.palette;

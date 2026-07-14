@@ -39,6 +39,22 @@ function advance(
 }
 
 describe('ThirdPersonCamera chase motion', () => {
+  it('can start at the outer zoom bound without changing subsequent zoom bounds', () => {
+    const controller = new ThirdPersonCamera({
+      camera: new THREE.PerspectiveCamera(),
+      distance: 8,
+      maxDistance: 14,
+      startAtMaxDistance: true,
+    });
+
+    expect(controller.zoomDistance).toBe(14);
+    controller.setOrbit(0, 0.35, 8);
+    expect(controller.zoomDistance).toBe(8);
+    controller.setOrbit(0, 0.35, 50);
+    expect(controller.zoomDistance).toBe(14);
+    controller.dispose();
+  });
+
   it('preserves the legacy default boom and fox framing', () => {
     const camera = new THREE.PerspectiveCamera();
     const controller = new ThirdPersonCamera({ camera, distance: 8 });
