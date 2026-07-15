@@ -295,7 +295,10 @@ export function xRuleTag(sourceId: string): string {
 }
 
 export function xRuleValue(handle: string): string {
-  return `from:${handle} -is:retweet -is:reply`;
+  // Replies are authored posts too, and people explicitly tracking an account
+  // expect them to appear. Keep reposts out so a busy account cannot flood a
+  // world's news rail with content it did not write.
+  return `from:${handle} -is:retweet`;
 }
 
 /** Reconciles only Tickerworld-owned rules and leaves every foreign app rule untouched. */
@@ -2158,7 +2161,9 @@ export class NewsIngestService {
     do {
       const url = new URL(`/2/users/${encodeURIComponent(source.id)}/tweets`, X_ORIGIN);
       url.searchParams.set('max_results', '100');
-      url.searchParams.set('exclude', 'replies,retweets');
+      // Match the filtered-stream rule: include authored replies while keeping
+      // reposts out of the world feed.
+      url.searchParams.set('exclude', 'retweets');
       url.searchParams.set('tweet.fields', 'created_at,author_id,note_tweet,entities');
       if (requestSinceId) url.searchParams.set('since_id', requestSinceId);
       else url.searchParams.set('start_time', new Date(now - NEWS_TTL_MS - 60_000).toISOString());

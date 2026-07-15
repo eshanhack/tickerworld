@@ -8,7 +8,9 @@ import type {
 export type NewsScope = SharedNewsScope;
 
 export const NEWS_ITEM_TTL_MS = 10 * 60_000;
-export const NEWS_POLL_INTERVAL_MS = 20_000;
+// The browser only reads Tickerworld's shared cache; it never fans out to X.
+// Five-second polling keeps a tracked post feeling live without increasing paid X calls.
+export const NEWS_POLL_INTERVAL_MS = 5_000;
 export const NEWS_DEMO_INTERVAL_MS = 5 * 60_000;
 
 export type NewsSource = 'x' | 'simulation';
@@ -79,5 +81,6 @@ export interface NewsFeed {
   resume(): void;
   subscribe(listener: NewsFeedListener): () => void;
   getSnapshot(): NewsFeedUpdate;
+  refreshNow(): Promise<void>;
   dispose(): void;
 }

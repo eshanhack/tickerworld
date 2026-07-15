@@ -20,9 +20,9 @@ const X_WEB_ORIGIN = 'https://x.com';
 const TRACKED_HANDLE = 'DeItaone';
 const X_REQUEST_TIMEOUT_MS = 8_000;
 const USER_CACHE_TTL_MS = 24 * 60 * 60_000;
-// The browser polls every 20 seconds. A short stale window lets a nearby request refresh the
-// shared edge entry, while forcing the next poll to revalidate synchronously if that did not happen.
-const CDN_CACHE_CONTROL = 'public, max-age=10, stale-while-revalidate=5';
+// Browsers poll every five seconds. This remains a shared cache in front of the
+// single X ingestor, while keeping post-to-world latency comfortably below one poll.
+const CDN_CACHE_CONTROL = 'public, max-age=2, stale-while-revalidate=2';
 
 interface XUser {
   id: string;
@@ -245,7 +245,9 @@ export function buildXTimelineUrl(userId: string, now = Date.now()): string {
   const url = new URL(`/2/users/${encodeURIComponent(userId)}/tweets`, X_API_ORIGIN);
   // Headline accounts can burst during major announcements; retain the full ten-minute window.
   url.searchParams.set('max_results', '100');
-  url.searchParams.set('exclude', 'replies,retweets');
+  // Keep the legacy direct-reader semantics aligned with the centralized
+  // ingestor: authored replies are news; reposts remain excluded.
+  url.searchParams.set('exclude', 'retweets');
   url.searchParams.set('start_time', new Date(now - NEWS_ITEM_TTL_MS - 60_000).toISOString());
   url.searchParams.set('tweet.fields', 'created_at,author_id,note_tweet,entities');
   url.searchParams.set('expansions', 'author_id');

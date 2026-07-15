@@ -99,7 +99,7 @@ describe('news item helpers', () => {
     expect(mergeNewsItems([first], [edited], NOW)[0]?.text).toBe('Edited');
   });
 
-  it('treats initial/backfill as silent and only forwards unknown items at the live edge', () => {
+  it('treats the initial response as silent and forwards every later unseen id', () => {
     const baseline = [item('2', NOW - 2_000), item('1', NOW - 3_000)];
     const first = findGenuinelyNewItems(
       baseline,
@@ -113,7 +113,7 @@ describe('news item helpers', () => {
       first,
       false,
     );
-    expect(next.added.map((value) => value.id)).toEqual(['3']);
+    expect(next.added.map((value) => value.id)).toEqual(['3', 'backfill']);
   });
 
   it('creates deterministic, clearly labelled fictional demo items', () => {
@@ -178,7 +178,7 @@ describe('BrowserNewsFeed lifecycle', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it('keeps initial live history silent and notifies only a subsequent forward item', async () => {
+  it('keeps initial live history silent and notifies every subsequent unseen item', async () => {
     const firstItems = [item('2', NOW - 2_000), item('1', NOW - 3_000)];
     const secondItems = [
       item('3', NOW + 500),
@@ -194,7 +194,7 @@ describe('BrowserNewsFeed lifecycle', () => {
     await feed.start();
     expect(updates.at(-1)).toMatchObject({ mode: 'live', added: [] });
     await vi.advanceTimersByTimeAsync(1_000);
-    expect(updates.at(-1)?.added.map((value) => value.id)).toEqual(['3']);
+    expect(updates.at(-1)?.added.map((value) => value.id)).toEqual(['3', 'older-backfill']);
     expect(feed.getSnapshot().added).toEqual([]);
 
     const lateSubscriber = vi.fn();
@@ -276,7 +276,7 @@ describe('BrowserNewsFeed lifecycle', () => {
     feed.dispose();
   });
 
-  it('seeds an empty initial response at its check time so delayed older backfill stays silent', async () => {
+  it('surfaces a delayed unseen post once after an empty silent baseline', async () => {
     const replies = [
       response('live', []),
       response('live', [item('delayed-backfill', NOW - 1_000)], NOW + 1_000),
@@ -289,17 +289,93 @@ describe('BrowserNewsFeed lifecycle', () => {
     await feed.start();
     await vi.advanceTimersByTimeAsync(1_000);
     expect(updates.at(-1)?.items.map((value) => value.id)).toEqual(['delayed-backfill']);
+    expect(updates.at(-1)?.added.map((value) => value.id)).toEqual(['delayed-backfill']);
+    await vi.advanceTimersByTimeAsync(1_000);
     expect(updates.at(-1)?.added).toEqual([]);
+    feed.dispose();
+  });
+
+  it('refreshes immediately and resets the background poll cadence', async () => {
+    const fetcher = vi.fn(async () => response('live', []));
+    const feed = new BrowserNewsFeed({ fetcher, pollIntervalMs: 5_000 });
+    await feed.start();
+
+    await feed.refreshNow();
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(fetcher).toHaveBeenLastCalledWith(
+      '/api/news',
+      expect.objectContaining({ cache: 'no-store' }),
+    );
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(fetcher).toHaveBeenCalledTimes(3);
+    feed.dispose();
+  });
+
+  it('keeps every active id in a burst larger than 512 without replaying alerts', async () => {
+    const burst = Array.from({ length: 600 }, (_, index) => (
+      item(`burst-${index}`, NOW - index)
+    ));
+    const fetcher = vi.fn(async () => response('live', burst));
+    const updates: NewsFeedUpdate[] = [];
+    const feed = new BrowserNewsFeed({ fetcher, pollIntervalMs: 1_000 });
+    feed.subscribe((update) => updates.push(update));
+
+    await feed.start();
+    expect(updates.at(-1)?.added).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(updates.at(-1)?.items).toHaveLength(600);
+    expect(updates.at(-1)?.added).toEqual([]);
+    feed.dispose();
+  });
+
+  it('lets an explicit refresh own the cadence when it supersedes a slow poll', async () => {
+    let call = 0;
+    let refreshSignal: AbortSignal | undefined;
+    let resolveRefresh!: () => void;
+    const fetcher = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+      call += 1;
+      if (call === 1 || call >= 4) return Promise.resolve(response('live', []));
+      if (call === 2) {
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => {
+            reject(new DOMException('Superseded', 'AbortError'));
+          }, { once: true });
+        });
+      }
+      refreshSignal = init?.signal ?? undefined;
+      return new Promise<Response>((resolve) => {
+        resolveRefresh = () => resolve(response('live', []));
+      });
+    });
+    const feed = new BrowserNewsFeed({ fetcher, pollIntervalMs: 1_000 });
+    await feed.start();
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    const refresh = feed.refreshNow();
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(3));
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(refreshSignal?.aborted).toBe(false);
+    expect(fetcher).toHaveBeenCalledTimes(3);
+
+    resolveRefresh();
+    await refresh;
+    await vi.advanceTimersByTimeAsync(999);
+    expect(fetcher).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(fetcher).toHaveBeenCalledTimes(4);
     feed.dispose();
   });
 });
 
 describe('X timeline endpoint helpers', () => {
-  it('requests recent authored posts with reply/repost exclusion and author expansion', () => {
+  it('requests authored posts including replies while excluding reposts', () => {
     const url = new URL(buildXTimelineUrl('123', NOW));
     expect(`${url.origin}${url.pathname}`).toBe('https://api.x.com/2/users/123/tweets');
     expect(url.searchParams.get('max_results')).toBe('100');
-    expect(url.searchParams.get('exclude')).toBe('replies,retweets');
+    expect(url.searchParams.get('exclude')).toBe('retweets');
     expect(url.searchParams.get('tweet.fields')).toContain('created_at');
     expect(url.searchParams.get('tweet.fields')).toContain('note_tweet');
     expect(url.searchParams.get('tweet.fields')).toContain('entities');
@@ -458,7 +534,7 @@ describe('X timeline endpoint helpers', () => {
     const result = await handleNewsRequest(new Request('https://tickerworld.test/api/news'), '', NOW);
     expect(result.status).toBe(200);
     expect(result.headers.get('Vercel-CDN-Cache-Control')).toBe(
-      'public, max-age=10, stale-while-revalidate=5',
+      'public, max-age=2, stale-while-revalidate=2',
     );
     expect(result.headers.get('Cross-Origin-Resource-Policy')).toBe('same-origin');
     expect(await result.json()).toEqual({ mode: 'unconfigured', items: [], checkedAt: NOW });

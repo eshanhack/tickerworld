@@ -61,6 +61,7 @@ export class BrowserNewsFeed implements NewsFeed {
   private demoTimer: ReturnType<typeof setTimeout> | undefined;
   private expiryTimer: ReturnType<typeof setTimeout> | undefined;
   private requestController: AbortController | undefined;
+  private pollGeneration = 0;
   private snapshot: NewsFeedUpdate;
 
   constructor(options: BrowserNewsFeedOptions = {}) {
@@ -89,8 +90,7 @@ export class BrowserNewsFeed implements NewsFeed {
       this.enterDemo();
       return;
     }
-    await this.pollOnce();
-    this.schedulePoll();
+    await this.pollAndSchedule();
   }
 
   setActiveMarket(symbol: AssetSymbol): void {
@@ -139,6 +139,16 @@ export class BrowserNewsFeed implements NewsFeed {
     return this.snapshot;
   }
 
+  /** Immediately revalidates the shared cache, resetting the normal poll cadence. */
+  async refreshNow(): Promise<void> {
+    if (this.paused || this.disposed || this.forceSimulation || !this.started) return;
+    if (this.pollTimer !== undefined) clearTimeout(this.pollTimer);
+    this.pollTimer = undefined;
+    // This user-driven read may follow an account mutation, so bypass the
+    // short shared edge entry and read the ingestor's repaired state directly.
+    await this.pollAndSchedule(true);
+  }
+
   dispose(): void {
     if (this.disposed) return;
     this.pause();
@@ -147,12 +157,15 @@ export class BrowserNewsFeed implements NewsFeed {
     this.seenIds.clear();
   }
 
-  private async pollAndSchedule(): Promise<void> {
-    await this.pollOnce();
-    this.schedulePoll();
+  private async pollAndSchedule(bypassCache = false): Promise<void> {
+    const generation = ++this.pollGeneration;
+    await this.pollOnce(bypassCache);
+    // A newer refresh owns the cadence. A superseded/aborted poll must never
+    // schedule a timer that can abort its replacement request.
+    if (generation === this.pollGeneration) this.schedulePoll();
   }
 
-  private async pollOnce(): Promise<void> {
+  private async pollOnce(bypassCache = false): Promise<void> {
     if (this.paused || this.disposed || this.forceSimulation) return;
     this.requestController?.abort();
     const controller = new AbortController();
@@ -162,6 +175,7 @@ export class BrowserNewsFeed implements NewsFeed {
         method: 'GET',
         headers: { Accept: 'application/json' },
         signal: controller.signal,
+        ...(bypassCache ? { cache: 'no-store' as const } : {}),
       });
       if (!response.ok) throw new Error(`News endpoint returned ${response.status}`);
       const parsed = parseNewsApiResponse(await response.json(), this.now());
@@ -210,14 +224,16 @@ export class BrowserNewsFeed implements NewsFeed {
       { seenIds: this.seenIds, newestCreatedAt: this.newestCreatedAt },
       !this.liveBaselineEstablished,
     );
+    const activeIds = new Set(
+      [...this.xItems(), ...incoming].map((item) => `${item.source}:${item.id}`),
+    );
     this.seenIds.clear();
-    // A bounded history is enough to reject all plausible ten-minute backfill duplicates.
-    [...result.seenIds].slice(-512).forEach((id) => this.seenIds.add(id));
-    // The first successful response is all backfill, including an empty response whose posts
-    // may appear on a later eventually-consistent poll. Seed the edge at the response time.
-    this.newestCreatedAt = this.liveBaselineEstablished
-      ? result.newestCreatedAt
-      : Math.max(result.newestCreatedAt, checkedAt);
+    // Retain every ID still inside the ten-minute window. The active item TTL
+    // provides the bound without dropping the newest IDs in a bursty feed.
+    for (const id of result.seenIds) if (activeIds.has(id)) this.seenIds.add(id);
+    // The first successful response is silent history. After that, immutable IDs
+    // own deduplication because X/cache delivery can arrive out of timestamp order.
+    this.newestCreatedAt = result.newestCreatedAt;
     this.liveBaselineEstablished = true;
     const items = mergeNewsItems(this.xItems(), incoming, this.now());
     this.publish(

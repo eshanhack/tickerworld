@@ -466,7 +466,17 @@ export class Game {
       onNewsDismiss: (itemId) => this.monuments.dismissNewsOverlay(itemId),
       onNewsInteractionChange: (active) => this.setUiInteraction('news', active),
       onNewsAccountSelect: (handle) => this.selectNewsAccount(handle),
-      onNewsAccountAdd: (handle) => this.newsWatchlist.add(handle),
+      onNewsAccountAdd: async (handle) => {
+        const result = await this.newsWatchlist.add(handle);
+        if (!result.ok) return result;
+        // addAccount waits for the server's immediate timeline repair. Revalidate
+        // now so the player does not have to wait for the next background poll.
+        await this.news.refreshNow();
+        if (this.newsWatchlist.latestItemFor(this.news.getSnapshot().items, result.account.handle)) {
+          this.selectNewsAccount(result.account.handle);
+        }
+        return result;
+      },
       onNewsAccountRemove: (handle) => {
         this.newsWatchlist.remove(handle);
       },
@@ -1687,6 +1697,10 @@ export class Game {
     const added = this.newsWatchlist.filterItems(update.added);
     this.activeNewsCount = items.length;
     this.monuments.setNewsItems(items, Date.now());
+    // A newly delivered post must become the visible card even when it arrived
+    // late and another tracked account has a newer timestamp.
+    const newestAddition = added[0];
+    if (newestAddition) this.monuments.selectNewsItem(newestAddition.id);
     const freshAdditionCount = countFreshNewsAdditions(
       added,
       this.newsSoundCreatedAtCutoff,

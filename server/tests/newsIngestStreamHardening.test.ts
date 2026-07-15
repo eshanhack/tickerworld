@@ -231,6 +231,112 @@ describe('X ingest stream and rule hardening', () => {
     expect(service.snapshot('BTC', NOW).mode).toBe('unavailable');
   });
 
+  it('hot-adds an account to the connected stream and accepts its next authored post exactly once', async () => {
+    const db = createDatabase(loadConfig({ NODE_ENV: 'test', SQLITE_PATH: ':memory:' }));
+    databases.push(db);
+    await migrateDatabase(db);
+    const rulesApi = createStatefulXRulesApi();
+    const timelineUrls: URL[] = [];
+    let streamController: ReadableStreamDefaultController<Uint8Array> | null = null;
+    let streamSignal: AbortSignal | null = null;
+    let streamAttempts = 0;
+    let resolveStreamOpened!: () => void;
+    const streamOpened = new Promise<void>((resolve) => { resolveStreamOpened = resolve; });
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const ruleResponse = rulesApi.respond(input, init);
+      if (ruleResponse) return ruleResponse;
+      const url = new URL(String(input));
+      if (url.pathname.includes('/users/by/username/WarmDesk')) {
+        return Response.json({ data: {
+          id: '1000000000000000501', name: 'Warm Desk', username: 'WarmDesk', protected: false,
+        } });
+      }
+      if (url.pathname.includes('/users/by/username/HotDesk')) {
+        return Response.json({ data: {
+          id: '1000000000000000502', name: 'Hot Desk', username: 'HotDesk', protected: false,
+        } });
+      }
+      if (url.pathname.endsWith('/tweets')) {
+        timelineUrls.push(url);
+        return Response.json({ data: [] });
+      }
+      if (url.pathname === '/2/tweets/search/stream') {
+        streamAttempts += 1;
+        streamSignal = init?.signal ?? null;
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            streamController = controller;
+            streamSignal?.addEventListener('abort', () => {
+              try { controller.error(new DOMException('Aborted', 'AbortError')); } catch { /* already closed */ }
+            }, { once: true });
+          },
+        });
+        resolveStreamOpened();
+        return new Response(body, { status: 200 });
+      }
+      throw new Error(`Unexpected X request: ${url}`);
+    });
+    const service = new NewsIngestService(
+      'token', ['WarmDesk'], 100, switchboard(), fetcher as typeof fetch, () => NOW, 60_000,
+      undefined, db,
+    );
+    services.push(service);
+    await service.initialize(NOW);
+    service.start();
+
+    await Promise.race([
+      streamOpened,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('stream did not open')), 1_000)),
+    ]);
+    expect(streamAttempts).toBe(1);
+    expect(streamSignal?.aborted).toBe(false);
+
+    const account = await service.addAccount('BTC', 'HotDesk', NOW);
+    expect(account).toMatchObject({
+      id: '1000000000000000502', handle: 'HotDesk', status: 'live',
+    });
+    expect(rulesApi.snapshot()).toContainEqual(expect.objectContaining({
+      tag: xRuleTag('1000000000000000502'),
+      value: 'from:HotDesk -is:retweet',
+    }));
+    const hotTimeline = timelineUrls.find((url) => (
+      url.pathname.endsWith('/users/1000000000000000502/tweets')
+    ));
+    expect(hotTimeline?.searchParams.get('exclude')).toBe('retweets');
+    expect(streamAttempts).toBe(1);
+    expect(streamSignal?.aborted).toBe(false);
+
+    const streamLine = `${JSON.stringify({
+      data: {
+        id: '2000000000000000502',
+        author_id: '1000000000000000502',
+        text: 'An authored reply belongs in the tracked world feed.',
+        created_at: new Date(NOW - 250).toISOString(),
+        referenced_tweets: [{ type: 'replied_to', id: '2000000000000000001' }],
+      },
+      includes: { users: [{
+        id: '1000000000000000502', name: 'Hot Desk', username: 'HotDesk', protected: false,
+      }] },
+    })}\n`;
+    streamController?.enqueue(new TextEncoder().encode(streamLine));
+    streamController?.enqueue(new TextEncoder().encode(streamLine));
+
+    await vi.waitFor(() => {
+      expect(service.snapshot('BTC', NOW).items.filter((item) => (
+        item.id === '2000000000000000502'
+      ))).toHaveLength(1);
+    });
+    expect(service.snapshot('ETH', NOW).items.some((item) => (
+      item.id === '2000000000000000502'
+    ))).toBe(false);
+    expect(await db.selectFrom('x_news_posts').select('id')
+      .where('id', '=', '2000000000000000502').execute()).toEqual([
+      { id: '2000000000000000502' },
+    ]);
+    expect(streamAttempts).toBe(1);
+    expect(streamSignal?.aborted).toBe(false);
+  });
+
   it('activates and verifies cold-start rules before opening the filtered stream', async () => {
     const events: string[] = [];
     const rulesApi = createStatefulXRulesApi();

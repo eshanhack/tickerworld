@@ -40,10 +40,10 @@ describe('X filtered-stream news ingestion', () => {
   it('reconciles namespaced rules without touching foreign rules or retaining duplicates', () => {
     const plan = planXRuleReconciliation([
       { id: 'foreign', tag: 'another-product', value: 'from:somebody' },
-      { id: 'keep', tag: 'tickerworld:account:123', value: 'from:DeItaone -is:retweet -is:reply' },
-      { id: 'duplicate', tag: 'tickerworld:account:123', value: 'from:DeItaone -is:retweet -is:reply' },
-      { id: 'renamed', tag: 'tickerworld:account:456', value: 'from:OldHandle -is:retweet -is:reply' },
-      { id: 'stale', tag: 'tickerworld:account:999', value: 'from:Gone -is:retweet -is:reply' },
+      { id: 'keep', tag: 'tickerworld:account:123', value: 'from:DeItaone -is:retweet' },
+      { id: 'duplicate', tag: 'tickerworld:account:123', value: 'from:DeItaone -is:retweet' },
+      { id: 'renamed', tag: 'tickerworld:account:456', value: 'from:OldHandle -is:retweet' },
+      { id: 'stale', tag: 'tickerworld:account:999', value: 'from:Gone -is:retweet' },
     ], [
       { id: '123', username: 'DeItaone' },
       { id: '456', username: 'NewHandle' },
@@ -52,8 +52,8 @@ describe('X filtered-stream news ingestion', () => {
 
     expect(plan.deleteIds).toEqual(['duplicate', 'renamed', 'stale']);
     expect(plan.add).toEqual([
-      { tag: 'tickerworld:account:456', value: 'from:NewHandle -is:retweet -is:reply' },
-      { tag: 'tickerworld:account:789', value: 'from:Watcher -is:retweet -is:reply' },
+      { tag: 'tickerworld:account:456', value: 'from:NewHandle -is:retweet' },
+      { tag: 'tickerworld:account:789', value: 'from:Watcher -is:retweet' },
     ]);
     expect(plan.deleteIds).not.toContain('foreign');
   });
@@ -99,7 +99,7 @@ describe('X filtered-stream news ingestion', () => {
     const rulesApi = createStatefulXRulesApi([{
       id: 'existing-default-rule',
       tag: 'tickerworld:account:1000000000000000001',
-      value: 'from:DeItaone -is:retweet -is:reply',
+      value: 'from:DeItaone -is:retweet',
     }]);
     const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const ruleResponse = rulesApi.respond(input, init);
@@ -187,7 +187,7 @@ describe('X filtered-stream news ingestion', () => {
     const ruleWrite = fetcher.mock.calls.find(([, init]) => init?.method === 'POST');
     expect(JSON.parse(String(ruleWrite?.[1]?.body))).toEqual({ add: [{
       tag: 'tickerworld:account:1000000000000000002',
-      value: 'from:MacroNews -is:retweet -is:reply',
+      value: 'from:MacroNews -is:retweet',
     }] });
     await service.addAccount('ETH', 'MacroNews', NOW + 1_000);
     expect(service.snapshot('ETH', NOW + 1_000).items).toEqual([
@@ -618,8 +618,8 @@ describe('X filtered-stream news ingestion', () => {
       { id: reclaimedId, handle: 'FooDesk', handle_normalized: 'foodesk' },
     ]);
     expect(rulesApi.snapshot()).toEqual(expect.arrayContaining([
-      expect.objectContaining({ value: 'from:BarDesk -is:retweet -is:reply' }),
-      expect.objectContaining({ value: 'from:FooDesk -is:retweet -is:reply' }),
+      expect.objectContaining({ value: 'from:BarDesk -is:retweet' }),
+      expect.objectContaining({ value: 'from:FooDesk -is:retweet' }),
     ]));
     await service.dispose();
   });
@@ -881,7 +881,7 @@ describe('X filtered-stream news ingestion', () => {
       handle: 'QuietNew', handle_normalized: 'quietnew', last_profile_at: NOW,
     });
     expect(rulesApi.snapshot()).toEqual([expect.objectContaining({
-      value: 'from:QuietNew -is:retweet -is:reply',
+      value: 'from:QuietNew -is:retweet',
     })]);
     await service.dispose();
   });
@@ -940,7 +940,7 @@ describe('X filtered-stream news ingestion', () => {
       { source_id: originalId, scope: 'BTC' },
     ]);
     expect(rulesApi.snapshot()).toEqual([expect.objectContaining({
-      value: 'from:CanonicalNew -is:retweet -is:reply',
+      value: 'from:CanonicalNew -is:retweet',
     })]);
     await service.dispose();
   });

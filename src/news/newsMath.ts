@@ -262,7 +262,12 @@ export interface NewItemResult extends NewItemCursor {
 }
 
 /**
- * Finds genuinely new forward-moving items. Unknown older records are backfill and never notify.
+ * Treats the first response as a silent baseline, then reports every unseen item.
+ *
+ * X delivery and the shared edge cache are eventually consistent, so a genuinely
+ * new post can first appear after a newer post or after the previous response's
+ * check time. The immutable source/id pair is the reliable event cursor; using a
+ * timestamp gate here caused those delayed posts to become invisible notifications.
  */
 export function findGenuinelyNewItems(
   incoming: readonly NewsItem[],
@@ -275,7 +280,6 @@ export function findGenuinelyNewItems(
     ? []
     : ordered.filter((item) => (
       !seenIds.has(`${item.source}:${item.id}`)
-      && item.createdAt >= cursor.newestCreatedAt
     ));
 
   for (const item of ordered) seenIds.add(`${item.source}:${item.id}`);
