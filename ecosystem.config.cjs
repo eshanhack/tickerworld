@@ -14,9 +14,11 @@ module.exports = {
       max_memory_restart: '768M',
       env: {
         NODE_ENV: 'production',
+        ENABLE_NEWS_INGEST: 'true',
       },
       env_production: {
         NODE_ENV: 'production',
+        ENABLE_NEWS_INGEST: 'true',
       },
     },
   ],

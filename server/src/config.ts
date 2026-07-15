@@ -119,12 +119,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
   const launchSwitches: RuntimeKillSwitches = {
     admissions: booleanValue(env, 'ENABLE_ADMISSIONS', true),
     chatSend: booleanValue(env, 'ENABLE_CHAT_SEND', true),
-    // Colyseus Cloud writes a generated .env.cloud file after its application
-    // environment. A paid token is therefore the durable production opt-in;
-    // the authenticated runtime switch remains available for emergency stops.
-    newsIngest: managedCloudBootstrap && env.ENABLE_NEWS_INGEST !== undefined
-      ? true
-      : booleanValue(env, 'ENABLE_NEWS_INGEST', false),
+    newsIngest: booleanValue(env, 'ENABLE_NEWS_INGEST', false),
     directMarketFallback: booleanValue(env, 'ENABLE_DIRECT_MARKET_FALLBACK', true),
     // Local/test tooling retains wallet coverage; production is fail-closed until explicitly enabled.
     publicWalletAuth: booleanValue(env, 'ENABLE_PUBLIC_WALLET_AUTH', !production),

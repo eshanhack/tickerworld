@@ -12,6 +12,10 @@ function readJson(relativePath: string): Record<string, unknown> {
 }
 
 describe('delivery configuration', () => {
+  it('keeps production X ingestion enabled in the tracked process config', () => {
+    const ecosystem = readFileSync(join(ROOT, 'ecosystem.config.cjs'), 'utf8');
+    expect(ecosystem).toContain("ENABLE_NEWS_INGEST: 'true'");
+  });
   it('uses one stable local client origin', () => {
     const packageJson = readJson('package.json');
     const scripts = packageJson.scripts as Record<string, string>;
