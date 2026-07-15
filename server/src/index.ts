@@ -1,5 +1,15 @@
-import app, { runtime } from './app.config.js';
+import { config as loadEnvironment } from 'dotenv';
 import { installTrustedPeerCapture } from './app.js';
+
+// Colyseus Cloud keeps application secrets in this generated file. Load it
+// before app.config creates the runtime; the platform's automatic dotenv hook
+// otherwise runs after ESM has already evaluated our configuration module.
+loadEnvironment({
+  path: ['../current/.env.cloud', '.env.production', '.env'],
+  override: true,
+  quiet: true,
+});
+const { default: app, runtime } = await import('./app.config.js');
 
 let disposed = false;
 app.onBeforeShutdown(async () => {

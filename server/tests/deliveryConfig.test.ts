@@ -16,6 +16,15 @@ describe('delivery configuration', () => {
     const ecosystem = readFileSync(join(ROOT, 'ecosystem.config.cjs'), 'utf8');
     expect(ecosystem).toContain("TICKERWORLD_LIVE_NEWS: 'true'");
   });
+
+  it('loads the managed Cloud environment before creating the server runtime', () => {
+    const entrypoint = readFileSync(join(ROOT, 'server/src/index.ts'), 'utf8');
+    const environmentLoad = entrypoint.indexOf('loadEnvironment({');
+    const runtimeImport = entrypoint.indexOf("await import('./app.config.js')");
+    expect(environmentLoad).toBeGreaterThan(-1);
+    expect(runtimeImport).toBeGreaterThan(environmentLoad);
+    expect(entrypoint).toContain("'../current/.env.cloud'");
+  });
   it('uses one stable local client origin', () => {
     const packageJson = readJson('package.json');
     const scripts = packageJson.scripts as Record<string, string>;
