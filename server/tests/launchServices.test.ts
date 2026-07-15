@@ -82,6 +82,7 @@ describe('viral launch services', () => {
       SERVER_HMAC_SECRET: 'server-production-secret-that-is-long-enough',
       IP_HMAC_SECRET: 'ip-production-secret-that-is-long-enough',
       X_BEARER_TOKEN: 'paid-production-token',
+      ENABLE_NEWS_INGEST: 'false',
     });
 
     expect(config.launchSwitches.newsIngest).toBe(true);
