@@ -72,6 +72,21 @@ describe('viral launch services', () => {
     expect(config.launchSwitches.newsIngest).toBe(true);
   });
 
+  it('uses a configured paid token as the production news opt-in', () => {
+    const config = loadConfig({
+      NODE_ENV: 'production',
+      DATABASE_URL: 'postgres://user:pass@db.example/tickerworld',
+      DATABASE_SSL: 'verify-full',
+      PUBLIC_ORIGIN: 'https://tickerworld.io',
+      TRUSTED_PROXY_CIDRS: '10.0.0.0/8',
+      SERVER_HMAC_SECRET: 'server-production-secret-that-is-long-enough',
+      IP_HMAC_SECRET: 'ip-production-secret-that-is-long-enough',
+      X_BEARER_TOKEN: 'paid-production-token',
+    });
+
+    expect(config.launchSwitches.newsIngest).toBe(true);
+  });
+
   it('keeps production wallet and purchases fail-closed without credentials', () => {
     const config = loadConfig({
       NODE_ENV: 'production',

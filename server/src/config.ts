@@ -122,7 +122,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     newsIngest: booleanValue(
       env,
       'TICKERWORLD_LIVE_NEWS',
-      booleanValue(env, 'ENABLE_NEWS_INGEST', false),
+      booleanValue(env, 'ENABLE_NEWS_INGEST', production && Boolean(xBearerToken)),
     ),
     directMarketFallback: booleanValue(env, 'ENABLE_DIRECT_MARKET_FALLBACK', true),
     // Local/test tooling retains wallet coverage; production is fail-closed until explicitly enabled.
