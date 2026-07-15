@@ -427,7 +427,7 @@ export class Game {
     });
     this.newsWatchlist = new NewsWatchlistClient({
       activeMarket: this.activeMarket,
-      anonymousToken: () => this.roomClient.anonymousToken,
+      anonymousToken: () => this.roomClient.ensureAnonymousToken(),
     });
     this.placeAtSpawn(this.activeMarket);
 

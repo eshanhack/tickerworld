@@ -475,6 +475,7 @@ export class RoomClientSystem implements GameSystem {
   private visible = true;
   private disposed = false;
   private anonymousIdentity: SignedGuestIdentity | null;
+  private anonymousIdentityRequest: Promise<void> | null = null;
   private accountSession: AccountRoomSession | null = null;
   private boundActorId: string | null = null;
   private pendingIdentityRefresh: PendingIdentityRefresh | null = null;
@@ -545,6 +546,19 @@ export class RoomClientSystem implements GameSystem {
   /** Signed server identity used to bind wallet auth to the visible anonymous actor. */
   get anonymousToken(): string | null {
     return this.anonymousIdentity?.token ?? null;
+  }
+
+  /**
+   * Ensures browser features that share the anonymous actor can safely start
+   * before room matchmaking finishes. Concurrent callers reuse one identity
+   * request so opening news controls during connection cannot mint two actors.
+   */
+  async ensureAnonymousToken(): Promise<string> {
+    if (this.disposed) throw new Error('Multiplayer identity service is unavailable.');
+    await this.ensureAnonymousIdentity();
+    const token = this.anonymousIdentity?.token;
+    if (!token) throw new Error('Could not establish a safe anonymous multiplayer identity.');
+    return token;
   }
 
   get sessionToken(): string | null {
@@ -1168,6 +1182,17 @@ export class RoomClientSystem implements GameSystem {
       this.anonymousIdentity = cached;
       return;
     }
+    if (this.anonymousIdentityRequest) return this.anonymousIdentityRequest;
+    const request = this.requestAnonymousIdentity();
+    this.anonymousIdentityRequest = request;
+    try {
+      await request;
+    } finally {
+      if (this.anonymousIdentityRequest === request) this.anonymousIdentityRequest = null;
+    }
+  }
+
+  private async requestAnonymousIdentity(): Promise<void> {
     if (!this.apiEndpoint) throw new Error('Multiplayer identity service is not configured.');
     const response = await this.fetchWithDeadline(`${this.apiEndpoint}/api/anonymous/session`, {
       method: 'POST',

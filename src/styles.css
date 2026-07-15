@@ -656,8 +656,9 @@ canvas {
 .news-watchlist {
   position: fixed;
   z-index: 11;
-  top: calc(max(1.15rem, env(safe-area-inset-top)) + 5.25rem);
+  top: auto;
   right: max(1.15rem, env(safe-area-inset-right));
+  bottom: calc(max(1.15rem, env(safe-area-inset-bottom)) + 3.4rem);
   display: grid;
   justify-items: end;
   gap: .48rem;
@@ -727,8 +728,9 @@ canvas {
 
 .news-watchlist-manager {
   position: absolute;
-  top: 1.2rem;
+  top: auto;
   right: 3.35rem;
+  bottom: 0;
   width: min(19.5rem, calc(100vw - 5.5rem));
   box-sizing: border-box;
   padding: .85rem;
@@ -793,6 +795,15 @@ canvas {
   padding-left: max(12px, env(safe-area-inset-left));
   visibility: hidden;
   pointer-events: none;
+}
+
+/* On desktop the account rail owns the narrow bottom-right lane. Reserving
+   that lane for every card position keeps both surfaces usable while the post
+   is open or dragged, instead of letting avatars cover its controls. */
+@media (hover: hover) and (pointer: fine) and (min-width: 701px) {
+  .news-safe-area-probe {
+    padding-right: max(76px, calc(env(safe-area-inset-right) + 64px));
+  }
 }
 
 .news-overlay-connector {

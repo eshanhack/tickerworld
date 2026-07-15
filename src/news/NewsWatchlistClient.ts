@@ -39,7 +39,7 @@ export interface NewsWatchlistClientOptions {
   readonly storage?: Storage | null;
   readonly fetcher?: Fetcher;
   readonly baseUrl?: string | null;
-  readonly anonymousToken?: () => string | null;
+  readonly anonymousToken?: () => string | null | Promise<string | null>;
   readonly requestTimeoutMs?: number;
 }
 
@@ -173,7 +173,7 @@ export class NewsWatchlistClient {
   private readonly storage: Storage | null;
   private readonly fetcher: Fetcher;
   private readonly baseUrl: string | null;
-  private readonly anonymousToken: () => string | null;
+  private readonly anonymousToken: () => string | null | Promise<string | null>;
   private readonly requestTimeoutMs: number;
   private readonly listeners = new Set<NewsWatchlistListener>();
   private readonly touchControllers = new Map<string, AbortController>();
@@ -355,10 +355,7 @@ export class NewsWatchlistClient {
       return this.fail(`Remove an account before adding another (maximum ${this.maxAccounts}).`);
     }
 
-    const anonymousToken = this.anonymousToken();
-    if (!this.baseUrl || !anonymousToken) {
-      return this.fail('Account controls are still connecting. Try again in a moment.');
-    }
+    if (!this.baseUrl) return this.fail('News account controls are unavailable right now.');
     const requestedMarket = this.market;
     const attemptKey = `${requestedMarket}:${handleKey(handle)}`;
     const now = Date.now();
@@ -375,6 +372,11 @@ export class NewsWatchlistClient {
     this.error = null;
     this.emit();
     try {
+      const anonymousToken = await this.anonymousToken();
+      if (!anonymousToken) throw new Error('Anonymous news identity is unavailable.');
+      if (this.disposed || generation !== this.addGeneration || this.market !== requestedMarket) {
+        return { ok: false, error: 'Account request was cancelled when the world changed.' };
+      }
       const response = await this.postAccount(
         requestedMarket,
         handle,
@@ -516,8 +518,9 @@ export class NewsWatchlistClient {
     market: AssetSymbol,
     selection: StoredNewsAccountSelection,
   ): Promise<void> {
-    const anonymousToken = this.anonymousToken();
-    if (this.disposed || !this.baseUrl || !anonymousToken) return;
+    if (this.disposed || !this.baseUrl) return;
+    const anonymousToken = await Promise.resolve(this.anonymousToken()).catch(() => null);
+    if (this.disposed || this.market !== market || !anonymousToken) return;
     const key = this.touchKey(market, selection);
     const now = Date.now();
     const succeededAt = this.touchSucceededAt.get(key) ?? Number.NEGATIVE_INFINITY;

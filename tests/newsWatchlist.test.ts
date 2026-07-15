@@ -224,6 +224,34 @@ describe('personal news watchlists', () => {
     expect(client.snapshot.selectedHandles).toContain('unusual_whales');
   });
 
+  it('waits for the shared anonymous identity before adding an account', async () => {
+    let resolveToken!: (token: string) => void;
+    const token = new Promise<string>((resolve) => { resolveToken = resolve; });
+    const fetcher = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const handle = (JSON.parse(String(init?.body)) as { handle: string }).handle;
+      return Response.json({ account: account(handle) });
+    });
+    const client = new NewsWatchlistClient({
+      activeMarket: 'BTC',
+      storage: memoryStorage(),
+      baseUrl: 'https://multiplayer.tickerworld.test',
+      anonymousToken: () => token,
+      fetcher,
+    });
+
+    const adding = client.add('unusual_whales');
+    expect(client.snapshot).toMatchObject({ adding: true, error: null });
+    expect(fetcher).not.toHaveBeenCalled();
+
+    resolveToken('signed-anonymous-token');
+    await expect(adding).resolves.toMatchObject({
+      ok: true,
+      account: { handle: 'unusual_whales' },
+    });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(client.snapshot).toMatchObject({ adding: false, error: null });
+  });
+
   it('uses the canonical acquire response instead of a stale catalog owner', async () => {
     const storage = memoryStorage();
     const stale = account('headline_alerts', { id: 'x-user-old-owner' });
@@ -307,6 +335,7 @@ describe('personal news watchlists', () => {
     client.setCatalog([account('stale_source', { isDefault: true })]);
     const pending = client.add('DeItaone');
     expect(client.snapshot.adding).toBe(true);
+    await vi.waitFor(() => expect(requestSignal).toBeDefined());
     client.setActiveMarket('ETH');
     client.setCatalog([account('WatcherGuru', { isDefault: true })]);
     expect(requestSignal?.aborted).toBe(true);

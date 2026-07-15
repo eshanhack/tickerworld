@@ -157,6 +157,39 @@ async function flushMicrotasks(): Promise<void> {
 describe('RoomClientSystem identity transitions', () => {
   afterEach(() => vi.useRealTimers());
 
+  it('shares one anonymous identity preflight between account controls and room connection', async () => {
+    let resolveIdentity!: (response: Response) => void;
+    const identityResponse = new Promise<Response>((resolve) => { resolveIdentity = resolve; });
+    const requestFetch = vi.fn(() => identityResponse);
+    const room = new FakeRoom('anon-shared');
+    const joinOrCreate = vi.fn(async () => room);
+    const system = new RoomClientSystem({
+      endpoint: 'ws://multiplayer.test',
+      apiEndpoint: 'https://multiplayer.test',
+      anonymousIdentity: { ...anonymous, expiresAt: 0 },
+      fetch: requestFetch as typeof fetch,
+      snapshot: () => ({
+        x: 0, y: 0, z: 0, yaw: 0, speed: 0, verticalSpeed: 0, grounded: true, gait: 'idle',
+      }),
+      clientFactory: () => ({ joinOrCreate, joinById: vi.fn() } as any),
+    });
+
+    const tokenRequest = system.ensureAnonymousToken();
+    const connection = system.connect('btc');
+    expect(requestFetch).toHaveBeenCalledTimes(1);
+    resolveIdentity(Response.json({
+      actorId: 'anon-shared',
+      animal: 'fox',
+      token: 'signed-anonymous-shared',
+      expiresAt: Date.now() + 60_000,
+    }));
+
+    await expect(tokenRequest).resolves.toBe('signed-anonymous-shared');
+    await expect(connection).resolves.toBe(true);
+    expect(requestFetch).toHaveBeenCalledTimes(1);
+    system.dispose();
+  });
+
   it('sends the complete free appearance and explicit display-name clearing', async () => {
     const room = new FakeRoom('anon-a');
     const { system } = createSystem([room]);
