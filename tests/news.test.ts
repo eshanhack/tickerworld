@@ -263,10 +263,11 @@ describe('BrowserNewsFeed lifecycle', () => {
     });
 
     feed.setActiveMarket('ETH');
-    for (let index = 0; index < 5; index += 1) await Promise.resolve();
-    expect(feed.getSnapshot()).toMatchObject({
-      mode: 'simulated',
-      items: [expect.objectContaining({ source: 'simulation', demo: true })],
+    await vi.waitFor(() => {
+      expect(feed.getSnapshot()).toMatchObject({
+        mode: 'simulated',
+        items: [expect.objectContaining({ source: 'simulation', demo: true })],
+      });
     });
     expect(fetcher).toHaveBeenLastCalledWith(
       '/api/news?scope=ETH',
