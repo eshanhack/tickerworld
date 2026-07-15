@@ -114,10 +114,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
       : 'development';
   const production = nodeEnv === 'production';
   const managedCloudBootstrap = production && env.COLYSEUS_CLOUD !== undefined;
+  const xBearerToken = envString(env, 'X_BEARER_TOKEN');
   const launchSwitches: RuntimeKillSwitches = {
     admissions: booleanValue(env, 'ENABLE_ADMISSIONS', true),
     chatSend: booleanValue(env, 'ENABLE_CHAT_SEND', true),
-    newsIngest: booleanValue(env, 'ENABLE_NEWS_INGEST', false),
+    // Colyseus Cloud writes a generated .env.cloud file after its application
+    // environment. A paid token is therefore the durable production opt-in;
+    // the authenticated runtime switch remains available for emergency stops.
+    newsIngest: managedCloudBootstrap && Boolean(xBearerToken)
+      ? true
+      : booleanValue(env, 'ENABLE_NEWS_INGEST', false),
     directMarketFallback: booleanValue(env, 'ENABLE_DIRECT_MARKET_FALLBACK', true),
     // Local/test tooling retains wallet coverage; production is fail-closed until explicitly enabled.
     publicWalletAuth: booleanValue(env, 'ENABLE_PUBLIC_WALLET_AUTH', !production),
@@ -132,7 +138,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
   if (production && !databaseUrl && (!managedCloudBootstrap || sensitiveFeaturesEnabled)) {
     throw new Error('DATABASE_URL is required in production; SQLite is development-only');
   }
-  const xBearerToken = envString(env, 'X_BEARER_TOKEN');
   if (production && launchSwitches.newsIngest && !xBearerToken) {
     throw new Error('X_BEARER_TOKEN is required when production news ingestion is enabled');
   }

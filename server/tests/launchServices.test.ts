@@ -55,6 +55,19 @@ describe('viral launch services', () => {
     });
   });
 
+  it('treats a paid X token as the durable Colyseus Cloud news opt-in', () => {
+    const config = loadConfig({
+      NODE_ENV: 'production',
+      COLYSEUS_CLOUD: '1',
+      DATABASE_URL: 'postgres://user:pass@db.example/tickerworld',
+      DATABASE_SSL: 'verify-full',
+      X_BEARER_TOKEN: 'paid-production-token',
+      ENABLE_NEWS_INGEST: 'false',
+    });
+
+    expect(config.launchSwitches.newsIngest).toBe(true);
+  });
+
   it('keeps production wallet and purchases fail-closed without credentials', () => {
     const config = loadConfig({
       NODE_ENV: 'production',
