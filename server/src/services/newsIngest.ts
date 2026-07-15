@@ -27,7 +27,9 @@ const RULE_NAMESPACE = 'tickerworld:account:';
 const STREAM_PATH = '/2/tweets/search/stream';
 const RULES_PATH = '/2/tweets/search/stream/rules';
 const REQUEST_TIMEOUT_MS = 8_000;
-const STREAM_HANDSHAKE_TIMEOUT_MS = 15_000;
+// X may wait up to 20 seconds before the first idle keep-alive. Leave enough
+// room for that documented heartbeat plus normal network scheduling latency.
+export const X_STREAM_HANDSHAKE_TIMEOUT_MS = 30_000;
 const STREAM_HEARTBEAT_DEADLINE_MS = 45_000;
 const LEASE_TTL_MS = 45_000;
 const LEASE_RENEW_MS = 15_000;
@@ -2058,7 +2060,7 @@ export class NewsIngestService {
         method: 'GET',
         headers: { Accept: 'application/json' },
         signal: controller.signal,
-      }, this.now(), STREAM_HANDSHAKE_TIMEOUT_MS, false);
+      }, this.now(), X_STREAM_HANDSHAKE_TIMEOUT_MS, false);
       this.assertLeadership(leadershipGeneration);
       if (!response.body) throw new XProviderError(0, 0);
       this.streamConnected = true;

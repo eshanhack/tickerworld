@@ -1,7 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { loadConfig } from '../src/config.js';
 import { createDatabase, migrateDatabase } from '../src/db/database.js';
-import { NewsIngestService, xRuleTag, xRuleValue } from '../src/services/newsIngest.js';
+import {
+  NewsIngestService,
+  X_STREAM_HANDSHAKE_TIMEOUT_MS,
+  xRuleTag,
+  xRuleValue,
+} from '../src/services/newsIngest.js';
 import { RuntimeSwitchboard } from '../src/services/runtimeSwitches.js';
 import { createStatefulXRulesApi } from './helpers/xRules.js';
 
@@ -24,6 +29,10 @@ describe('X ingest stream and rule hardening', () => {
     vi.useRealTimers();
     await Promise.allSettled(services.splice(0).map((service) => service.dispose()));
     await Promise.all(databases.splice(0).map((db) => db.destroy()));
+  });
+
+  it('keeps the handshake open beyond X idle stream keep-alives', () => {
+    expect(X_STREAM_HANDSHAKE_TIMEOUT_MS).toBeGreaterThan(20_000);
   });
 
   it('marks only rules verified by reread ready when a provider mutation is partially applied', async () => {
