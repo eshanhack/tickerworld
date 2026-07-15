@@ -122,7 +122,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     // Colyseus Cloud writes a generated .env.cloud file after its application
     // environment. A paid token is therefore the durable production opt-in;
     // the authenticated runtime switch remains available for emergency stops.
-    newsIngest: managedCloudBootstrap && Boolean(databaseUrl)
+    newsIngest: managedCloudBootstrap && env.ENABLE_NEWS_INGEST !== undefined
       ? true
       : booleanValue(env, 'ENABLE_NEWS_INGEST', false),
     directMarketFallback: booleanValue(env, 'ENABLE_DIRECT_MARKET_FALLBACK', true),

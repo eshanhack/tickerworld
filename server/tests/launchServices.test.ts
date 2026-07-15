@@ -55,7 +55,7 @@ describe('viral launch services', () => {
     });
   });
 
-  it('treats the configured production database as the durable Colyseus Cloud news opt-in', () => {
+  it('treats the configured Colyseus Cloud news flag as a durable opt-in', () => {
     const config = loadConfig({
       NODE_ENV: 'production',
       COLYSEUS_CLOUD: '1',
