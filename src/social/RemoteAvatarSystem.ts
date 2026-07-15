@@ -2,7 +2,6 @@ import * as THREE from 'three';
 import { Text } from 'troika-three-text';
 import {
   ANIMAL_KINDS,
-  MAX_SPRINT_SPEED,
   REMOTE_INTERPOLATION_DELAY_MS,
   type AnimalKind,
   type ChatMessage,
@@ -10,8 +9,9 @@ import {
   type SkinId,
 } from '../../shared/src/index.js';
 import type { GameSystem } from '../types';
-import { resolveAnimalAppearance } from '../player/animalAppearance';
 import { animalMotionProfile } from '../player/animalProfiles';
+import { FoxRig } from '../player/FoxRig';
+import type { FoxAirPose } from '../player/foxMotion';
 import {
   clipSpeech,
   interpolateRemotePose,
@@ -21,61 +21,30 @@ import {
 } from './avatarMath';
 
 const MAX_REMOTE_PLAYERS = 49;
-// The sacred chart overlay begins at render order 40. Social labels render
-// immediately beneath it so they can never paint over candles or price UI.
+const MAX_PARTS_PER_AVATAR = 64;
+const MAX_BATCHED_PARTS = MAX_REMOTE_PLAYERS * MAX_PARTS_PER_AVATAR;
+// The batch stores one canonical copy of every low-poly part used by all nine
+// creatures. These bounds deliberately leave headroom for future accessories.
+const MAX_BATCH_VERTICES = 220_000;
+const MAX_BATCH_INDICES = 660_000;
 const LABEL_RENDER_ORDER = 38;
 const BUBBLE_RENDER_ORDER = 39;
 const SPEECH_LIFETIME_MS = 5_000;
 const SAMPLE_LIMIT = 6;
-const HIDDEN_SCALE = new THREE.Vector3(0, 0, 0);
+const DOUBLE_POSE_SECONDS = 0.46;
+const LAND_RECOVERY_SECONDS = 0.22;
 
-interface AnimalProfile {
-  readonly body: number;
-  readonly cream: number;
-  readonly bodyScale: readonly [number, number, number];
-  readonly headScale: readonly [number, number, number];
-  readonly earScale: readonly [number, number, number];
-  readonly tailScale: readonly [number, number, number];
-  readonly height: number;
-}
-
-const ANIMAL_PROFILES: Readonly<Record<AnimalKind, AnimalProfile>> = {
-  fox: {
-    body: 0xc9795c, cream: 0xffe7c0, bodyScale: [0.72, 0.58, 1.02],
-    headScale: [0.5, 0.48, 0.54], earScale: [0.18, 0.34, 0.18], tailScale: [0.25, 0.25, 0.95], height: 1.72,
-  },
-  penguin: {
-    body: 0x526a78, cream: 0xfff1cf, bodyScale: [0.67, 0.82, 0.63],
-    headScale: [0.49, 0.49, 0.47], earScale: [0.01, 0.01, 0.01], tailScale: [0.14, 0.12, 0.28], height: 1.72,
-  },
-  frog: {
-    body: 0x79ad79, cream: 0xe7efbd, bodyScale: [0.75, 0.53, 0.75],
-    headScale: [0.58, 0.42, 0.52], earScale: [0.18, 0.18, 0.18], tailScale: [0.01, 0.01, 0.01], height: 1.5,
-  },
-  duck: {
-    body: 0xe2b95f, cream: 0xffedb1, bodyScale: [0.67, 0.61, 0.79],
-    headScale: [0.49, 0.48, 0.47], earScale: [0.01, 0.01, 0.01], tailScale: [0.2, 0.16, 0.32], height: 1.6,
-  },
-  bear: {
-    body: 0x9b765e, cream: 0xe9cfa9, bodyScale: [0.82, 0.72, 0.84],
-    headScale: [0.56, 0.52, 0.52], earScale: [0.2, 0.15, 0.2], tailScale: [0.15, 0.15, 0.18], height: 1.75,
-  },
-  rabbit: {
-    body: 0xc0a5c8, cream: 0xf5e5ed, bodyScale: [0.64, 0.59, 0.83],
-    headScale: [0.48, 0.48, 0.49], earScale: [0.17, 0.58, 0.17], tailScale: [0.2, 0.2, 0.2], height: 1.73,
-  },
-  cat: {
-    body: 0xb88671, cream: 0xf4d7bd, bodyScale: [0.65, 0.57, 0.87],
-    headScale: [0.48, 0.46, 0.48], earScale: [0.17, 0.29, 0.17], tailScale: [0.14, 0.14, 0.88], height: 1.66,
-  },
-  axolotl: {
-    body: 0xd99aa8, cream: 0xf5ced5, bodyScale: [0.67, 0.51, 0.91],
-    headScale: [0.57, 0.43, 0.51], earScale: [0.28, 0.13, 0.12], tailScale: [0.17, 0.25, 0.72], height: 1.5,
-  },
-  saylor: {
-    body: 0x263a59, cream: 0xe4b18e, bodyScale: [0.44, 0.73, 0.29],
-    headScale: [0.34, 0.4, 0.33], earScale: [0, 0, 0], tailScale: [0, 0, 0], height: 2.12,
-  },
+/** Existing label placement is retained while the rendered model is upgraded. */
+const ANIMAL_LABEL_HEIGHTS: Readonly<Record<AnimalKind, number>> = {
+  fox: 1.72,
+  penguin: 1.72,
+  frog: 1.5,
+  duck: 1.6,
+  bear: 1.75,
+  rabbit: 1.73,
+  cat: 1.66,
+  axolotl: 1.5,
+  saylor: 2.12,
 };
 
 interface TimedRemoteState {
@@ -83,27 +52,28 @@ interface TimedRemoteState {
   readonly state: NetPlayerState;
 }
 
+interface RenderPart {
+  readonly instanceId: number;
+  readonly mesh: THREE.Mesh;
+}
+
 interface RemoteSlot {
   readonly index: number;
   actorId: string;
   animal: AnimalKind;
   skin: SkinId;
-  premium: boolean;
   username: string | null;
   readonly samples: TimedRemoteState[];
   readonly nameplate: Text;
   readonly speech: Text;
+  visual: CanonicalRemoteVisual | null;
+  parts: RenderPart[];
   speechExpiresAt: number;
-  gaitPhase: number;
   active: boolean;
   rendered: boolean;
   detailVisible: boolean;
   lastSourceUpdate: number;
-}
-
-interface PartPool {
-  readonly mesh: THREE.InstancedMesh;
-  readonly geometry: THREE.BufferGeometry;
+  lastPose: RemotePose | null;
 }
 
 export interface RemoteAvatarViewport {
@@ -121,18 +91,14 @@ export interface RemoteAvatarSystemOptions {
   readonly interpolationDelayMs?: number;
   readonly cullDistance?: number;
   /**
-   * @deprecated Remote players no longer drop species features at distance.
-   * Kept temporarily so older callers can deploy across this client change.
+   * @deprecated Visible remote players always use the canonical full rig.
+   * Kept for protocol/deployment overlap with older callers.
    */
   readonly detailDistance?: number;
   readonly localPosition?: () => Readonly<THREE.Vector3>;
-  /**
-   * Opts the local player into the same camera-facing, chart-aware nameplate
-   * treatment as remote players. The label remains hidden until a username is
-   * saved, so anonymous play keeps the original clean silhouette.
-   */
+  /** Optional terrain sampler used to plant the articulated remote fox rig. */
+  readonly heightAt?: (x: number, z: number) => number;
   readonly localNameplate?: {
-    /** Actor id used to route the room's own echoed chat above the local head. */
     readonly actorId?: string;
     readonly animal: () => AnimalKind;
     readonly username?: string | null;
@@ -145,7 +111,7 @@ export interface RemoteAvatarSystemOptions {
 export interface RemoteAvatarDebugStats {
   readonly active: number;
   readonly rendered: number;
-  /** Rendered creatures currently using their complete species feature set. */
+  /** Rendered creatures using the complete canonical species rig. */
   readonly detailed: number;
   readonly capacity: number;
   readonly drawCalls: number;
@@ -167,13 +133,13 @@ function copyPose(state: NetPlayerState): RemotePose {
   };
 }
 
+function validAnimal(value: AnimalKind): AnimalKind {
+  return ANIMAL_KINDS.includes(value) ? value : 'fox';
+}
+
 function titleAnimal(animal: AnimalKind): string {
   if (animal === 'saylor') return 'Michael Saylor';
   return `${animal.charAt(0).toUpperCase()}${animal.slice(1)}`;
-}
-
-function validAnimal(value: AnimalKind): AnimalKind {
-  return ANIMAL_KINDS.includes(value) ? value : 'fox';
 }
 
 function sampleSlot(slot: RemoteSlot, targetTime: number): RemotePose | null {
@@ -212,29 +178,207 @@ function configureLabel(text: Text, fontUrl: string | undefined, bubble: boolean
   text.visible = false;
 }
 
-function createPool(
-  geometry: THREE.BufferGeometry,
-  material: THREE.MeshStandardMaterial,
-  capacity: number,
-  name: string,
-): PartPool {
-  const mesh = new THREE.InstancedMesh(geometry, material, capacity);
-  mesh.name = name;
-  mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-  // Allocate the instanced colour attribute before the material is ever
-  // compiled. Creating it lazily when the first remote joins can leave an
-  // already-compiled shader without USE_INSTANCING_COLOR, rendering every
-  // remote solid black until a later material recompile.
-  const initialColor = new THREE.Color(0xffffff);
-  for (let index = 0; index < capacity; index += 1) mesh.setColorAt(index, initialColor);
-  if (mesh.instanceColor) {
-    mesh.instanceColor.setUsage(THREE.DynamicDrawUsage);
-    mesh.instanceColor.needsUpdate = true;
+function damp(current: number, target: number, response: number, deltaSeconds: number): number {
+  return THREE.MathUtils.lerp(current, target, 1 - Math.exp(-response * deltaSeconds));
+}
+
+function materialColor(material: THREE.Material | THREE.Material[]): THREE.Color {
+  const first = Array.isArray(material) ? material[0] : material;
+  if (first && 'color' in first && first.color instanceof THREE.Color) return first.color;
+  return new THREE.Color(0xffffff);
+}
+
+function isEffectivelyVisible(object: THREE.Object3D, root: THREE.Object3D): boolean {
+  let current: THREE.Object3D | null = object;
+  while (current) {
+    if (!current.visible) return false;
+    if (current === root) return true;
+    current = current.parent;
   }
-  mesh.castShadow = true;
-  mesh.receiveShadow = true;
-  mesh.frustumCulled = false;
-  return { mesh, geometry };
+  return false;
+}
+
+function objectPath(object: THREE.Object3D, root: THREE.Object3D): string {
+  const parts: string[] = [];
+  let current: THREE.Object3D | null = object;
+  while (current && current !== root) {
+    const index = current.parent?.children.indexOf(current) ?? 0;
+    parts.push(`${current.name || current.type}:${index}`);
+    current = current.parent;
+  }
+  return parts.reverse().join('/');
+}
+
+/**
+ * An off-scene copy of the exact local FoxRig hierarchy. It is used only as a
+ * deterministic pose solver; its meshes are emitted into one BatchedMesh.
+ */
+class CanonicalRemoteVisual {
+  readonly group = new THREE.Group();
+  readonly headingPivot = new THREE.Group();
+  readonly aerialPivot = new THREE.Group();
+  readonly rig = new FoxRig();
+  private movementBlend = 0;
+  private runBlend = 0;
+  private gaitPhase = 0;
+  private elapsed = 0;
+  private previousGrounded = true;
+  private previousVerticalSpeed = 0;
+  private doubleRemaining = 0;
+  private landingRemaining = 0;
+  private disposed = false;
+
+  constructor(animal: AnimalKind, skin: SkinId) {
+    this.group.name = 'CanonicalRemoteCharacter';
+    this.headingPivot.name = 'RemoteHeadingPivot';
+    this.aerialPivot.name = 'RemoteAerialPivot';
+    this.aerialPivot.add(this.rig.root);
+    this.headingPivot.add(this.aerialPivot);
+    this.group.add(this.headingPivot);
+    this.setAppearance(animal, skin);
+  }
+
+  setAppearance(animal: AnimalKind, skin: SkinId): void {
+    this.rig.setAnimal(animal, skin);
+    this.rig.root.scale.setScalar(animalMotionProfile(animal).modelScale);
+    this.group.updateMatrixWorld(true);
+  }
+
+  meshes(): THREE.Mesh[] {
+    const meshes: THREE.Mesh[] = [];
+    this.rig.root.traverse((object) => {
+      if (object instanceof THREE.Mesh && isEffectivelyVisible(object, this.rig.root)) meshes.push(object);
+    });
+    return meshes;
+  }
+
+  geometryKey(animal: AnimalKind, mesh: THREE.Mesh): string {
+    return `${animal}:${objectPath(mesh, this.rig.root)}`;
+  }
+
+  update(
+    pose: RemotePose,
+    deltaSeconds: number,
+    heightAt: (x: number, z: number) => number,
+  ): void {
+    const delta = THREE.MathUtils.clamp(Number.isFinite(deltaSeconds) ? deltaSeconds : 0, 0, 0.05);
+    const profile = animalMotionProfile(this.rig.animal);
+    this.elapsed += delta;
+    const movementTarget = THREE.MathUtils.smoothstep(Math.max(0, pose.speed), 0.06, 0.72);
+    const runTarget = THREE.MathUtils.smoothstep(
+      Math.max(0, pose.speed),
+      profile.walkSpeed * 0.9,
+      profile.sprintSpeed * 0.9,
+    );
+    this.movementBlend = damp(this.movementBlend, movementTarget, 7.2, delta);
+    this.runBlend = damp(this.runBlend, runTarget, pose.gait === 'run' ? 3.8 : 5, delta);
+    const gaitRadiansPerMetre = THREE.MathUtils.lerp(1.82, 2.08, this.runBlend) * profile.gaitScale;
+    this.gaitPhase = (this.gaitPhase + Math.max(0, pose.speed) * delta * gaitRadiansPerMetre) % (Math.PI * 2);
+
+    if (!pose.grounded
+      && !this.previousGrounded
+      && pose.verticalSpeed > 4
+      && pose.verticalSpeed - this.previousVerticalSpeed > 3.2) {
+      // A second upward impulse while already airborne is the network-visible
+      // signature of a double jump. This restores the species flourish without
+      // requiring a breaking protocol change during server/client skew.
+      this.doubleRemaining = DOUBLE_POSE_SECONDS;
+    }
+    if (pose.grounded && !this.previousGrounded) this.landingRemaining = LAND_RECOVERY_SECONDS;
+    this.doubleRemaining = Math.max(0, this.doubleRemaining - delta);
+    this.landingRemaining = Math.max(0, this.landingRemaining - delta);
+
+    let airPose: FoxAirPose = 'grounded';
+    let airProgress = 1;
+    if (pose.grounded) {
+      if (this.landingRemaining > 0) {
+        airPose = 'land';
+        airProgress = 1 - this.landingRemaining / LAND_RECOVERY_SECONDS;
+      }
+    } else if (this.doubleRemaining > 0) {
+      airPose = 'double';
+      airProgress = 1 - this.doubleRemaining / DOUBLE_POSE_SECONDS;
+    } else if (pose.gait === 'glide') {
+      airPose = 'glide';
+      airProgress = 1;
+    } else if (pose.verticalSpeed > 1.15) {
+      airPose = 'rise';
+      airProgress = THREE.MathUtils.clamp(1 - pose.verticalSpeed / profile.jumpImpulse, 0, 1);
+    } else if (pose.verticalSpeed > -1.2) {
+      airPose = 'apex';
+      airProgress = THREE.MathUtils.clamp((1.15 - pose.verticalSpeed) / 2.35, 0, 1);
+    } else {
+      airPose = 'fall';
+      airProgress = THREE.MathUtils.clamp(Math.abs(pose.verticalSpeed) / 9, 0, 1);
+    }
+
+    this.group.position.set(pose.x, pose.y, pose.z);
+    this.headingPivot.rotation.y = pose.yaw;
+    if (airPose === 'double') {
+      const eased = airProgress * airProgress * (3 - 2 * airProgress);
+      const [turnX, turnY, turnZ] = profile.doubleJumpTurns;
+      const angle = Math.PI * 2 * eased;
+      this.aerialPivot.rotation.set(turnX * angle, turnY * angle, turnZ * angle);
+      const squash = Math.sin(airProgress * Math.PI) * 0.075;
+      this.aerialPivot.scale.set(1 + squash, 1 - squash * 0.7, 1 + squash);
+    } else {
+      this.aerialPivot.rotation.set(0, 0, 0);
+      this.aerialPivot.scale.set(1, 1, 1);
+    }
+
+    // The same terrain samples used for the local character keep remote paws
+    // from clipping on the gently rolling ground. Species attachment rigs use
+    // their own authored contacts, while the fox's articulated chain plants.
+    const sin = Math.sin(pose.yaw);
+    const cos = Math.cos(pose.yaw);
+    const sample = (side: number, forward: number): number => {
+      const x = pose.x + side * cos - forward * sin;
+      const z = pose.z + side * sin + forward * cos;
+      const height = heightAt(x, z);
+      return Number.isFinite(height) ? height - pose.y : 0;
+    };
+    const frontLeft = sample(-0.31, -0.72);
+    const frontRight = sample(0.31, -0.72);
+    const hindLeft = sample(-0.31, 0.47);
+    const hindRight = sample(0.31, 0.47);
+    const front = (frontLeft + frontRight) * 0.5;
+    const hind = (hindLeft + hindRight) * 0.5;
+    const left = (frontLeft + hindLeft) * 0.5;
+    const right = (frontRight + hindRight) * 0.5;
+
+    this.rig.updatePose({
+      deltaSeconds: delta,
+      elapsedSeconds: this.elapsed,
+      gaitPhase: this.gaitPhase,
+      movementBlend: this.movementBlend,
+      runBlend: this.runBlend,
+      airPose,
+      airBlend: airPose === 'grounded' ? 0 : 1,
+      airProgress,
+      groundPitch: THREE.MathUtils.clamp(Math.atan2(front - hind, 1.04), -0.34, 0.34),
+      groundRoll: THREE.MathUtils.clamp(Math.atan2(right - left, 0.58), -0.3, 0.3),
+      pawGroundOffsets: { frontLeft, frontRight, hindLeft, hindRight },
+    });
+    this.group.updateMatrixWorld(true);
+    this.previousGrounded = pose.grounded;
+    this.previousVerticalSpeed = pose.verticalSpeed;
+  }
+
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    const geometries = new Set<THREE.BufferGeometry>();
+    const materials = new Set<THREE.Material>();
+    this.group.traverse((object) => {
+      if (!(object instanceof THREE.Mesh)) return;
+      geometries.add(object.geometry);
+      if (Array.isArray(object.material)) object.material.forEach((material) => materials.add(material));
+      else materials.add(object.material);
+    });
+    geometries.forEach((geometry) => geometry.dispose());
+    materials.forEach((material) => material.dispose());
+    this.group.clear();
+  }
 }
 
 export class RemoteAvatarSystem implements GameSystem {
@@ -245,6 +389,7 @@ export class RemoteAvatarSystem implements GameSystem {
   private readonly interpolationDelayMs: number;
   private readonly cullDistanceSquared: number;
   private readonly localPosition: () => Readonly<THREE.Vector3>;
+  private readonly heightAt: (x: number, z: number) => number;
   private readonly viewport: () => RemoteAvatarViewport;
   private readonly occlusionBounds: () => readonly ScreenBounds[];
   private readonly now: () => number;
@@ -252,59 +397,30 @@ export class RemoteAvatarSystem implements GameSystem {
   private readonly slotByActor = new Map<string, RemoteSlot>();
   private readonly blocked = new Set<string>();
   private readonly pendingSpeech = new Map<string, { text: string; expiresAt: number }>();
+  private readonly geometryByKey = new Map<string, number>();
+  private readonly slotByInstance = new Map<number, RemoteSlot>();
+  private readonly batchMaterial = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    roughness: 0.92,
+    metalness: 0,
+    flatShading: true,
+  });
+  private readonly batch = new THREE.BatchedMesh(
+    MAX_BATCHED_PARTS,
+    MAX_BATCH_VERTICES,
+    MAX_BATCH_INDICES,
+    this.batchMaterial,
+  );
+  private readonly raycaster = new THREE.Raycaster();
+  private readonly pointer = new THREE.Vector2();
+  private readonly screenPoint = new THREE.Vector3();
+  private readonly cameraPoint = new THREE.Vector3();
   private readonly localNameplate?: Text;
   private readonly localSpeech?: Text;
   private readonly localAnimal?: () => AnimalKind;
   private localActorId: string | null = null;
   private localUsername: string | null = null;
   private localSpeechExpiresAt = 0;
-  private readonly material = new THREE.MeshStandardMaterial({
-    color: 0xffffff,
-    roughness: 0.84,
-    metalness: 0,
-    // InstancedMesh.instanceColor is enabled independently by Three. Enabling
-    // vertexColors here also asks for a missing per-vertex `color` attribute;
-    // WebGL supplies zeroes for it and multiplies every pastel instance black.
-    vertexColors: false,
-    flatShading: true,
-  });
-  private readonly body: PartPool;
-  private readonly head: PartPool;
-  private readonly earLeft: PartPool;
-  private readonly earRight: PartPool;
-  private readonly legFrontLeft: PartPool;
-  private readonly legFrontRight: PartPool;
-  private readonly legHindLeft: PartPool;
-  private readonly legHindRight: PartPool;
-  private readonly tail: PartPool;
-  private readonly crest: PartPool;
-  // Species pools are shared InstancedMeshes. Eyes, muzzles, bellies, wings,
-  // gills and tail tips stay present for every visible remote player; distance
-  // culling now removes an avatar as a whole instead of degrading its identity.
-  private readonly muzzle: PartPool;
-  private readonly belly: PartPool;
-  private readonly eyeLeft: PartPool;
-  private readonly eyeRight: PartPool;
-  private readonly nose: PartPool;
-  private readonly wingLeft: PartPool;
-  private readonly wingRight: PartPool;
-  private readonly accentLeft: PartPool;
-  private readonly accentRight: PartPool;
-  private readonly tailTip: PartPool;
-  private readonly detailPools: readonly PartPool[];
-  private readonly allPools: readonly PartPool[];
-  private readonly raycaster = new THREE.Raycaster();
-  private readonly pointer = new THREE.Vector2();
-  private readonly rootMatrix = new THREE.Matrix4();
-  private readonly localMatrix = new THREE.Matrix4();
-  private readonly worldMatrix = new THREE.Matrix4();
-  private readonly quaternion = new THREE.Quaternion();
-  private readonly localQuaternion = new THREE.Quaternion();
-  private readonly position = new THREE.Vector3();
-  private readonly scale = new THREE.Vector3();
-  private readonly localScale = new THREE.Vector3();
-  private readonly screenPoint = new THREE.Vector3();
-  private readonly cameraPoint = new THREE.Vector3();
   private visible = true;
   private remotePlayersVisible = true;
   private labelsVisible = true;
@@ -317,49 +433,18 @@ export class RemoteAvatarSystem implements GameSystem {
     const cullDistance = Math.max(8, options.cullDistance ?? 68);
     this.cullDistanceSquared = cullDistance * cullDistance;
     this.localPosition = options.localPosition ?? (() => this.camera.position);
+    this.heightAt = options.heightAt ?? (() => 0);
     this.viewport = options.viewport ?? (() => ({ left: 0, top: 0, width: innerWidth, height: innerHeight }));
     this.occlusionBounds = options.occlusionBounds ?? (() => []);
     this.now = options.now ?? (() => performance.now());
     this.root.name = 'tickerworld-remote-avatars';
-
-    // The old seven-by-five spheres made close friends look like placeholder
-    // blobs. These remain intentionally toy-like/flat-shaded, but have enough
-    // facets to read as the same creatures as the local character rigs.
-    const sphere = new THREE.SphereGeometry(1, 12, 8);
-    const smallSphere = new THREE.SphereGeometry(1, 8, 6);
-    const legGeometry = new THREE.CapsuleGeometry(0.5, 0.75, 4, 8);
-    const earGeometry = new THREE.ConeGeometry(0.5, 1, 7);
-    const tailGeometry = new THREE.CapsuleGeometry(0.5, 1.15, 4, 8);
-    this.body = createPool(sphere, this.material, this.capacity, 'remote-body-pool');
-    this.head = createPool(sphere, this.material, this.capacity, 'remote-head-pool');
-    this.earLeft = createPool(earGeometry, this.material, this.capacity, 'remote-left-ear-pool');
-    this.earRight = createPool(earGeometry, this.material, this.capacity, 'remote-right-ear-pool');
-    this.legFrontLeft = createPool(legGeometry, this.material, this.capacity, 'remote-front-left-leg-pool');
-    this.legFrontRight = createPool(legGeometry, this.material, this.capacity, 'remote-front-right-leg-pool');
-    this.legHindLeft = createPool(legGeometry, this.material, this.capacity, 'remote-hind-left-leg-pool');
-    this.legHindRight = createPool(legGeometry, this.material, this.capacity, 'remote-hind-right-leg-pool');
-    this.tail = createPool(tailGeometry, this.material, this.capacity, 'remote-tail-pool');
-    this.crest = createPool(earGeometry, this.material, this.capacity, 'remote-crest-pool');
-    this.muzzle = createPool(sphere, this.material, this.capacity, 'remote-muzzle-pool');
-    this.belly = createPool(sphere, this.material, this.capacity, 'remote-belly-pool');
-    this.eyeLeft = createPool(smallSphere, this.material, this.capacity, 'remote-left-eye-pool');
-    this.eyeRight = createPool(smallSphere, this.material, this.capacity, 'remote-right-eye-pool');
-    this.nose = createPool(smallSphere, this.material, this.capacity, 'remote-nose-pool');
-    this.wingLeft = createPool(sphere, this.material, this.capacity, 'remote-left-wing-pool');
-    this.wingRight = createPool(sphere, this.material, this.capacity, 'remote-right-wing-pool');
-    this.accentLeft = createPool(earGeometry, this.material, this.capacity, 'remote-left-accent-pool');
-    this.accentRight = createPool(earGeometry, this.material, this.capacity, 'remote-right-accent-pool');
-    this.tailTip = createPool(smallSphere, this.material, this.capacity, 'remote-tail-tip-pool');
-    this.detailPools = [
-      this.muzzle, this.belly, this.eyeLeft, this.eyeRight, this.nose,
-      this.wingLeft, this.wingRight, this.accentLeft, this.accentRight, this.tailTip,
-    ];
-    this.allPools = [
-      this.body, this.head, this.earLeft, this.earRight,
-      this.legFrontLeft, this.legFrontRight, this.legHindLeft, this.legHindRight,
-      this.tail, this.crest, ...this.detailPools,
-    ];
-    for (const pool of this.allPools) this.root.add(pool.mesh);
+    this.batch.name = 'remote-canonical-avatar-batch';
+    this.batch.castShadow = true;
+    this.batch.receiveShadow = true;
+    this.batch.perObjectFrustumCulled = true;
+    this.batch.sortObjects = false;
+    this.batch.frustumCulled = false;
+    this.root.add(this.batch);
 
     for (let index = 0; index < this.capacity; index += 1) {
       const nameplate = new Text();
@@ -372,20 +457,21 @@ export class RemoteAvatarSystem implements GameSystem {
         actorId: '',
         animal: 'fox',
         skin: 'base',
-        premium: false,
         username: null,
         samples: [],
         nameplate,
         speech,
+        visual: null,
+        parts: [],
         speechExpiresAt: 0,
-        gaitPhase: 0,
         active: false,
         rendered: false,
         detailVisible: false,
         lastSourceUpdate: Number.NEGATIVE_INFINITY,
+        lastPose: null,
       });
-      this.hideMatrices(index);
     }
+
     if (options.localNameplate) {
       this.localAnimal = options.localNameplate.animal;
       this.localActorId = options.localNameplate.actorId?.trim() || null;
@@ -401,18 +487,15 @@ export class RemoteAvatarSystem implements GameSystem {
       this.root.add(nameplate, speech);
       this.renderLocalUsername();
     }
-    this.flushMatrices();
     options.parent.add(this.root);
   }
 
-  /** Updates the local label immediately; networking is deliberately optional. */
   setLocalUsername(username: string | null): void {
     if (!this.localNameplate || this.disposed) return;
     this.localUsername = username?.trim() || null;
     this.renderLocalUsername();
   }
 
-  /** Updates the actor id after an account/anonymous identity transition. */
   setLocalActorId(actorId: string): void {
     const next = actorId.trim() || null;
     if (next === this.localActorId) return;
@@ -485,7 +568,6 @@ export class RemoteAvatarSystem implements GameSystem {
     this.setSlotSpeech(slot, text, expiresAt);
   }
 
-  /** Shows an accepted local chat message above the controlled character. */
   showLocalSpeech(text: string): void {
     if (this.disposed || !this.localSpeech) return;
     this.localSpeech.text = clipSpeech(text);
@@ -502,34 +584,22 @@ export class RemoteAvatarSystem implements GameSystem {
       -((clientY - rect.top) / rect.height) * 2 + 1,
     );
     this.raycaster.setFromCamera(this.pointer, this.camera);
-    // Treat the complete visible creature as clickable. Restricting selection
-    // to the shared head/body pools made small species and distinctive parts
-    // such as wings, tails, ears, or the Saylor limbs feel randomly inert.
-    // Hidden instance matrices have zero scale, so querying every pool keeps
-    // the same actor-slot mapping without introducing phantom hit targets.
-    const hits = this.raycaster.intersectObjects(
-      this.allPools.map((pool) => pool.mesh),
-      false,
-    );
+    const hits = this.raycaster.intersectObject(this.batch, false);
     for (const hit of hits) {
-      if (hit.instanceId === undefined) continue;
-      const slot = this.slots[hit.instanceId];
+      if (hit.batchId === undefined) continue;
+      const slot = this.slotByInstance.get(hit.batchId);
       if (!slot?.active || !slot.rendered || this.blocked.has(slot.actorId)) continue;
       return slot.samples[slot.samples.length - 1]?.state ?? null;
     }
 
-    // Tiny and fast-moving species should not require pixel-perfect geometry
-    // clicks. Fall back to a bounded screen-space target centred on the
-    // rendered creature. This also makes touch selection dependable while
-    // still requiring the tap to land visibly on/around that avatar.
     let nearest: { state: NetPlayerState; distanceSquared: number } | null = null;
     for (const slot of this.slots) {
       if (!slot.active || !slot.rendered || this.blocked.has(slot.actorId)) continue;
       const state = slot.samples[slot.samples.length - 1]?.state;
-      if (!state) continue;
-      const profile = ANIMAL_PROFILES[slot.animal];
-      const height = profile.height * (animalMotionProfile(slot.animal).modelScale / 0.9);
-      this.screenPoint.set(state.x, state.y + height * 0.58, state.z).project(this.camera);
+      const pose = slot.lastPose;
+      if (!state || !pose) continue;
+      const height = this.labelHeight(slot.animal);
+      this.screenPoint.set(pose.x, pose.y + height * 0.58, pose.z).project(this.camera);
       if (this.screenPoint.z < -1 || this.screenPoint.z > 1) continue;
       const screenX = rect.left + (this.screenPoint.x + 1) * rect.width * 0.5;
       const screenY = rect.top + (1 - this.screenPoint.y) * rect.height * 0.5;
@@ -551,29 +621,24 @@ export class RemoteAvatarSystem implements GameSystem {
       if (!slot.active) continue;
       const pose = sampleSlot(slot, targetTime);
       if (!pose) continue;
+      slot.lastPose = pose;
       const distanceSquared = (pose.x - local.x) ** 2 + (pose.z - local.z) ** 2;
       const shouldRender = this.remotePlayersVisible && distanceSquared <= this.cullDistanceSquared;
       slot.rendered = shouldRender;
-      // A visible friend is always their complete selected creature. We cull
-      // at the room's configured horizon instead of swapping them to a proxy.
       slot.detailVisible = shouldRender;
       slot.nameplate.visible = shouldRender && this.labelsVisible;
       slot.speech.visible = shouldRender && this.labelsVisible && slot.speechExpiresAt > now;
-      if (!shouldRender) {
-        this.hideMatrices(slot.index);
-        continue;
-      }
-      slot.gaitPhase += Math.max(0, deltaSeconds)
-        * (2.4 + Math.min(8, pose.speed) * 1.18)
-        * animalMotionProfile(slot.animal).gaitScale;
-      this.writeAvatar(slot, pose, occlusions, slot.detailVisible);
+      this.setSlotPartsVisible(slot, shouldRender);
+      if (!shouldRender || !slot.visual) continue;
+      slot.visual.update(pose, deltaSeconds, this.heightAt);
+      for (const part of slot.parts) this.batch.setMatrixAt(part.instanceId, part.mesh.matrixWorld);
+      this.writeRemoteLabels(slot, pose, occlusions);
       if (slot.speechExpiresAt <= now && slot.speech.text) {
         slot.speech.text = '';
         this.syncText(slot.speech);
       }
     }
     this.writeLocalLabels(now, occlusions);
-    this.flushMatrices();
   }
 
   setVisible(visible: boolean): void {
@@ -581,7 +646,6 @@ export class RemoteAvatarSystem implements GameSystem {
     this.root.visible = visible;
   }
 
-  /** Hides connected players without hiding the controlled player's own label. */
   setRemotePlayersVisible(visible: boolean): void {
     if (this.remotePlayersVisible === visible) return;
     this.remotePlayersVisible = visible;
@@ -591,12 +655,10 @@ export class RemoteAvatarSystem implements GameSystem {
       slot.detailVisible = false;
       slot.nameplate.visible = false;
       slot.speech.visible = false;
-      this.hideMatrices(slot.index);
+      this.setSlotPartsVisible(slot, false);
     }
-    this.flushMatrices();
   }
 
-  /** Keeps staged captures private without removing the connected avatars. */
   setLabelsVisible(visible: boolean): void {
     this.labelsVisible = visible;
     if (visible) return;
@@ -608,14 +670,19 @@ export class RemoteAvatarSystem implements GameSystem {
     }
   }
 
+  /** QA/test hook: returns the same canonical hierarchy used to emit the batch. */
+  getActorRenderRoot(actorId: string): THREE.Object3D | null {
+    return this.slotByActor.get(actorId)?.visual?.group ?? null;
+  }
+
   getDebugStats(): RemoteAvatarDebugStats {
     return {
       active: this.slots.filter((slot) => slot.active).length,
       rendered: this.slots.filter((slot) => slot.rendered).length,
       detailed: this.slots.filter((slot) => slot.detailVisible).length,
       capacity: this.capacity,
-      drawCalls: this.allPools.length,
-      geometries: new Set(this.allPools.map((pool) => pool.geometry)).size,
+      drawCalls: this.slots.some((slot) => slot.rendered) ? 1 : 0,
+      geometries: this.geometryByKey.size,
       materials: 1,
       labels: this.slots.length * 2 + (this.localNameplate ? 2 : 0),
     };
@@ -629,16 +696,20 @@ export class RemoteAvatarSystem implements GameSystem {
       slot.speech.dispose();
       slot.nameplate.removeFromParent();
       slot.speech.removeFromParent();
+      slot.visual?.dispose();
+      slot.visual = null;
       slot.samples.length = 0;
+      slot.parts.length = 0;
     }
     this.localNameplate?.dispose();
     this.localNameplate?.removeFromParent();
     this.localSpeech?.dispose();
     this.localSpeech?.removeFromParent();
-    const geometries = new Set(this.allPools.map((pool) => pool.geometry));
-    for (const geometry of geometries) geometry.dispose();
-    this.material.dispose();
+    this.batch.dispose();
+    this.batchMaterial.dispose();
     this.slotByActor.clear();
+    this.slotByInstance.clear();
+    this.geometryByKey.clear();
     this.blocked.clear();
     this.pendingSpeech.clear();
     this.root.removeFromParent();
@@ -653,8 +724,9 @@ export class RemoteAvatarSystem implements GameSystem {
     slot.rendered = false;
     slot.detailVisible = false;
     slot.lastSourceUpdate = Number.NEGATIVE_INFINITY;
-    slot.gaitPhase = 0;
+    slot.lastPose = null;
     slot.samples.length = 0;
+    if (!slot.visual) slot.visual = new CanonicalRemoteVisual(slot.animal, slot.skin);
     this.slotByActor.set(actorId, slot);
     const pending = this.pendingSpeech.get(actorId);
     if (pending && pending.expiresAt > this.now()) this.setSlotSpeech(slot, pending.text, pending.expiresAt);
@@ -669,11 +741,12 @@ export class RemoteAvatarSystem implements GameSystem {
     slot.detailVisible = false;
     slot.actorId = '';
     slot.samples.length = 0;
+    slot.lastPose = null;
     slot.nameplate.visible = false;
     slot.speech.visible = false;
     slot.speech.text = '';
     slot.speechExpiresAt = 0;
-    this.hideMatrices(slot.index);
+    this.setSlotPartsVisible(slot, false);
   }
 
   private setSlotSpeech(slot: RemoteSlot, text: string, expiresAt: number): void {
@@ -683,61 +756,42 @@ export class RemoteAvatarSystem implements GameSystem {
   }
 
   private applyAppearance(slot: RemoteSlot): void {
-    const profile = ANIMAL_PROFILES[slot.animal];
-    const appearance = resolveAnimalAppearance(slot.animal, slot.skin);
-    slot.premium = appearance.premium;
-    const bodyColor = new THREE.Color(appearance.palette.primary ?? profile.body);
-    const creamColor = new THREE.Color(appearance.palette.secondary ?? profile.cream);
-    const darkColor = new THREE.Color(appearance.palette.dark);
-    const accentColor = new THREE.Color(appearance.palette.accent);
-    const highlightColor = new THREE.Color(appearance.palette.highlight ?? appearance.palette.primary);
-    const limbColor = slot.animal === 'penguin' || slot.animal === 'duck'
-      ? accentColor
-      : slot.animal === 'fox' || slot.animal === 'cat' || slot.animal === 'bear'
-        ? darkColor
-        : bodyColor;
-    const wingColor = slot.animal === 'penguin'
-      ? darkColor
-      : slot.animal === 'duck'
-        ? highlightColor
-        : bodyColor;
-
-    // Set every pool's colour before it can be drawn. All meshes share one
-    // material and stable instance-color buffers; this avoids the historical
-    // first-remote black shader path while keeping the material count fixed.
-    this.body.mesh.setColorAt(slot.index, bodyColor);
-    this.head.mesh.setColorAt(slot.index, slot.animal === 'saylor' ? creamColor : bodyColor);
-    this.earLeft.mesh.setColorAt(slot.index, slot.animal === 'saylor' ? darkColor : bodyColor);
-    this.earRight.mesh.setColorAt(slot.index, slot.animal === 'saylor' ? darkColor : bodyColor);
-    this.legFrontLeft.mesh.setColorAt(slot.index, slot.animal === 'saylor' ? bodyColor : limbColor);
-    this.legFrontRight.mesh.setColorAt(slot.index, slot.animal === 'saylor' ? bodyColor : limbColor);
-    this.legHindLeft.mesh.setColorAt(slot.index, slot.animal === 'saylor' ? bodyColor : limbColor);
-    this.legHindRight.mesh.setColorAt(slot.index, slot.animal === 'saylor' ? bodyColor : limbColor);
-    this.tail.mesh.setColorAt(slot.index, slot.animal === 'saylor' ? darkColor : bodyColor);
-    this.crest.mesh.setColorAt(slot.index, accentColor);
-    this.muzzle.mesh.setColorAt(slot.index, creamColor);
-    this.belly.mesh.setColorAt(slot.index, creamColor);
-    this.eyeLeft.mesh.setColorAt(slot.index, darkColor);
-    this.eyeRight.mesh.setColorAt(slot.index, darkColor);
-    this.nose.mesh.setColorAt(slot.index, darkColor);
-    this.wingLeft.mesh.setColorAt(slot.index, wingColor);
-    this.wingRight.mesh.setColorAt(slot.index, wingColor);
-    this.accentLeft.mesh.setColorAt(slot.index, accentColor);
-    this.accentRight.mesh.setColorAt(slot.index, accentColor);
-    this.tailTip.mesh.setColorAt(slot.index, highlightColor);
-
-    if (slot.animal === 'saylor') {
-      // Suit lapel/pin details read better with a warm face and dark trim.
-      this.belly.mesh.setColorAt(slot.index, bodyColor);
-      this.muzzle.mesh.setColorAt(slot.index, creamColor);
-      this.tailTip.mesh.setColorAt(slot.index, accentColor);
-    }
-    for (const pool of this.allPools) {
-      if (pool.mesh.instanceColor) pool.mesh.instanceColor.needsUpdate = true;
-    }
+    if (!slot.visual) slot.visual = new CanonicalRemoteVisual(slot.animal, slot.skin);
+    else slot.visual.setAppearance(slot.animal, slot.skin);
+    this.rebuildSlotParts(slot);
     const suffix = slot.actorId.replace(/[^A-Za-z0-9]/g, '').slice(-3).toUpperCase();
     slot.nameplate.text = slot.username ?? `${titleAnimal(slot.animal)}${suffix ? ` · ${suffix}` : ''}`;
     this.syncText(slot.nameplate);
+  }
+
+  private rebuildSlotParts(slot: RemoteSlot): void {
+    for (const part of slot.parts) {
+      this.slotByInstance.delete(part.instanceId);
+      this.batch.deleteInstance(part.instanceId);
+    }
+    slot.parts = [];
+    const visual = slot.visual;
+    if (!visual) return;
+    for (const mesh of visual.meshes()) {
+      const key = visual.geometryKey(slot.animal, mesh);
+      let geometryId = this.geometryByKey.get(key);
+      if (geometryId === undefined) {
+        geometryId = this.batch.addGeometry(mesh.geometry);
+        this.geometryByKey.set(key, geometryId);
+      }
+      const instanceId = this.batch.addInstance(geometryId);
+      this.batch.setColorAt(instanceId, materialColor(mesh.material));
+      this.batch.setVisibleAt(instanceId, false);
+      this.slotByInstance.set(instanceId, slot);
+      slot.parts.push({ instanceId, mesh });
+    }
+    if (slot.parts.length > MAX_PARTS_PER_AVATAR) {
+      throw new Error(`Canonical ${slot.animal} rig exceeds the remote batch budget.`);
+    }
+  }
+
+  private setSlotPartsVisible(slot: RemoteSlot, visible: boolean): void {
+    for (const part of slot.parts) this.batch.setVisibleAt(part.instanceId, visible);
   }
 
   private renderLocalUsername(): void {
@@ -746,6 +800,21 @@ export class RemoteAvatarSystem implements GameSystem {
     nameplate.text = this.localUsername ?? '';
     nameplate.visible = Boolean(this.localUsername) && this.visible && this.labelsVisible;
     this.syncText(nameplate);
+  }
+
+  private writeRemoteLabels(
+    slot: RemoteSlot,
+    pose: RemotePose,
+    occlusions: readonly ScreenBounds[],
+  ): void {
+    const labelY = pose.y + this.labelHeight(slot.animal) + 0.28;
+    slot.nameplate.position.set(pose.x, labelY, pose.z);
+    slot.nameplate.quaternion.copy(this.camera.quaternion);
+    slot.speech.position.set(pose.x, labelY + 0.42, pose.z);
+    slot.speech.quaternion.copy(this.camera.quaternion);
+    const opacity = this.labelOpacity(slot.nameplate.position, slot.speech.visible ? 3.2 : 2.6, occlusions);
+    this.setTextOpacity(slot.nameplate, opacity);
+    this.setTextOpacity(slot.speech, slot.speech.visible ? Math.max(0.72, opacity) : opacity);
   }
 
   private writeLocalLabels(now: number, occlusions: readonly ScreenBounds[]): void {
@@ -757,10 +826,8 @@ export class RemoteAvatarSystem implements GameSystem {
       return;
     }
     const local = this.localPosition();
-    const animal = this.localAnimal?.() ?? 'fox';
-    const profile = ANIMAL_PROFILES[validAnimal(animal)];
-    const proportionalHeight = profile.height * (animalMotionProfile(animal).modelScale / 0.9);
-    const labelY = local.y + proportionalHeight + 0.28;
+    const animal = validAnimal(this.localAnimal?.() ?? 'fox');
+    const labelY = local.y + this.labelHeight(animal) + 0.28;
     nameplate.visible = Boolean(this.localUsername);
     nameplate.position.set(local.x, labelY, local.z);
     nameplate.quaternion.copy(this.camera.quaternion);
@@ -769,9 +836,6 @@ export class RemoteAvatarSystem implements GameSystem {
     speech.quaternion.copy(this.camera.quaternion);
     const opacity = this.labelOpacity(nameplate.position, speech.visible ? 3.2 : 2.6, occlusions);
     this.setTextOpacity(nameplate, opacity);
-    // Speech is short-lived and must remain readable to its sender even when
-    // the player is standing in front of the chart. Persistent nameplates
-    // retain the stronger overlap fade to keep the market UI uncluttered.
     this.setTextOpacity(speech, speech.visible ? Math.max(0.72, opacity) : opacity);
     if (this.localSpeechExpiresAt <= now && speech.text) {
       speech.text = '';
@@ -779,211 +843,8 @@ export class RemoteAvatarSystem implements GameSystem {
     }
   }
 
-  private writeAvatar(
-    slot: RemoteSlot,
-    pose: RemotePose,
-    occlusions: readonly ScreenBounds[],
-    detailed: boolean,
-  ): void {
-    const profile = ANIMAL_PROFILES[slot.animal];
-    this.position.set(pose.x, pose.y, pose.z);
-    this.quaternion.setFromAxisAngle(THREE.Object3D.DEFAULT_UP, pose.yaw);
-    this.scale.setScalar(animalMotionProfile(slot.animal).modelScale);
-    this.rootMatrix.compose(this.position, this.quaternion, this.scale);
-    const bob = pose.grounded ? Math.sin(slot.gaitPhase * 2) * Math.min(0.06, pose.speed * 0.009) : 0.07;
-    const movement = Math.min(1, pose.speed / MAX_SPRINT_SPEED);
-    const swing = Math.sin(slot.gaitPhase) * movement;
-    const opposite = Math.sin(slot.gaitPhase + Math.PI) * movement;
-    const legLift = Math.abs(Math.sin(slot.gaitPhase)) * 0.13 * movement;
-
-    if (slot.animal === 'saylor') {
-      const airborne = pose.grounded ? 0 : 1;
-      const humanBob = pose.grounded ? bob * 0.42 : 0.055;
-      const leftLift = Math.max(0, Math.sin(slot.gaitPhase)) * 0.11 * movement;
-      const rightLift = Math.max(0, Math.sin(slot.gaitPhase + Math.PI)) * 0.11 * movement;
-      this.writePart(this.body.mesh, slot.index, [0, 1.22 + humanBob, 0], [0.025 - airborne * 0.08, 0, 0], profile.bodyScale);
-      this.writePart(this.head.mesh, slot.index, [0, 2.03 + humanBob, -0.035], [-0.025, 0, 0], profile.headScale);
-      // The front-leg pools become suit sleeves and counter-swing naturally
-      // against the two visible legs. This keeps the original fixed draw-call
-      // budget while giving the public-figure tribute a true biped silhouette.
-      this.writePart(this.legFrontLeft.mesh, slot.index, [-0.5, 1.22 + humanBob, 0], [opposite * 0.72 - airborne * 0.55, 0, -0.035], [0.14, 0.57, 0.14]);
-      this.writePart(this.legFrontRight.mesh, slot.index, [0.5, 1.22 + humanBob, 0], [swing * 0.72 - airborne * 0.55, 0, 0.035], [0.14, 0.57, 0.14]);
-      this.writePart(this.legHindLeft.mesh, slot.index, [-0.22, 0.49 + leftLift, 0.03], [swing * 0.56 + airborne * 0.25, 0, 0], [0.17, 0.64, 0.17]);
-      this.writePart(this.legHindRight.mesh, slot.index, [0.22, 0.49 + rightLift, 0.03], [opposite * 0.56 + airborne * 0.25, 0, 0], [0.17, 0.64, 0.17]);
-      this.hidePart(this.earLeft.mesh, slot.index);
-      this.hidePart(this.earRight.mesh, slot.index);
-      this.hidePart(this.tail.mesh, slot.index);
-      // The existing crest cone becomes the orange tie/pin on the front of
-      // the suit. It is intentionally visible for the base Saylor character,
-      // independent of the legacy premium-crest flag.
-      this.writePart(this.crest.mesh, slot.index, [0, 1.39 + humanBob, -0.31], [0, 0, Math.PI], [0.115, 0.27, 0.07]);
-    } else {
-      this.writePart(this.body.mesh, slot.index, [0, 1.02 + bob, 0], [0, 0, 0], profile.bodyScale);
-      this.writePart(this.head.mesh, slot.index, [0, 1.36 + profile.height * 0.13 + bob, -0.62], [0.03, 0, 0], profile.headScale);
-      const wingedBiped = slot.animal === 'penguin' || slot.animal === 'duck';
-      const gilled = slot.animal === 'axolotl';
-      if (wingedBiped || gilled) {
-        this.hidePart(this.earLeft.mesh, slot.index);
-        this.hidePart(this.earRight.mesh, slot.index);
-      } else {
-        this.writePart(this.earLeft.mesh, slot.index, [-0.25, 1.74 + bob, -0.65], [0, 0, -0.08], profile.earScale);
-        this.writePart(this.earRight.mesh, slot.index, [0.25, 1.74 + bob, -0.65], [0, 0, 0.08], profile.earScale);
-      }
-      if (wingedBiped) {
-        // Birds use their visible feet instead of an accidental four-legged
-        // fox silhouette. Their animated wings are restored by detail pools.
-        this.hidePart(this.legFrontLeft.mesh, slot.index);
-        this.hidePart(this.legFrontRight.mesh, slot.index);
-        this.writePart(this.legHindLeft.mesh, slot.index, [-0.22, 0.31 + legLift * 0.55, -0.02], [opposite * 0.26, 0, 0], [0.15, 0.29, 0.19]);
-        this.writePart(this.legHindRight.mesh, slot.index, [0.22, 0.31, -0.02], [swing * 0.26, 0, 0], [0.15, 0.29, 0.19]);
-      } else {
-        this.writePart(this.legFrontLeft.mesh, slot.index, [-0.34, 0.48 + legLift, -0.45], [swing * 0.5, 0, 0], [0.19, 0.43, 0.19]);
-        this.writePart(this.legFrontRight.mesh, slot.index, [0.34, 0.48, -0.45], [opposite * 0.5, 0, 0], [0.19, 0.43, 0.19]);
-        this.writePart(this.legHindLeft.mesh, slot.index, [-0.34, 0.48, 0.45], [opposite * 0.5, 0, 0], [0.2, 0.45, 0.2]);
-        this.writePart(this.legHindRight.mesh, slot.index, [0.34, 0.48 + legLift, 0.45], [swing * 0.5, 0, 0], [0.2, 0.45, 0.2]);
-      }
-      if (slot.animal === 'frog') {
-        this.hidePart(this.tail.mesh, slot.index);
-      } else {
-        this.writePart(this.tail.mesh, slot.index, [0, 1.05 + bob, 0.78], [0.72, 0, 0], profile.tailScale);
-      }
-      if (slot.animal === 'penguin') {
-        this.writePart(this.crest.mesh, slot.index, [0, 1.54 + bob, -1.06], [Math.PI * 0.5, 0, 0], [0.15, 0.23, 0.17]);
-      } else if (slot.animal === 'duck') {
-        this.writePart(this.crest.mesh, slot.index, [0, 1.44 + bob, -1.06], [Math.PI * 0.5, 0, 0], [0.25, 0.28, 0.22]);
-      } else {
-        this.hidePart(this.crest.mesh, slot.index);
-      }
-    }
-
-    if (detailed) {
-      this.writeDetailFeatures(slot, bob, swing, movement);
-    } else {
-      this.hideDetailParts(slot.index);
-    }
-
-    const labelY = pose.y
-      + profile.height * (animalMotionProfile(slot.animal).modelScale / 0.9)
-      + 0.28;
-    slot.nameplate.position.set(pose.x, labelY, pose.z);
-    slot.nameplate.quaternion.copy(this.camera.quaternion);
-    slot.speech.position.set(pose.x, labelY + 0.42, pose.z);
-    slot.speech.quaternion.copy(this.camera.quaternion);
-    const opacity = this.labelOpacity(slot.nameplate.position, slot.speech.visible ? 3.2 : 2.6, occlusions);
-    this.setTextOpacity(slot.nameplate, opacity);
-    this.setTextOpacity(slot.speech, slot.speech.visible ? Math.max(0.72, opacity) : opacity);
-  }
-
-  /**
-   * The detail pool is deliberately feature-oriented rather than avatar-
-   * oriented: all fifty slots share these geometries/materials. This lets a
-   * nearby penguin read as a penguin and a nearby axolotl read as an axolotl,
-   * without the old "all animals are a fox-shaped proxy" failure mode.
-   */
-  private writeDetailFeatures(
-    slot: RemoteSlot,
-    bob: number,
-    swing: number,
-    movement: number,
-  ): void {
-    const index = slot.index;
-    const wingSwing = swing * (0.16 + movement * 0.48);
-    this.hideDetailParts(index);
-    switch (slot.animal) {
-      case 'fox':
-        this.writePart(this.belly.mesh, index, [0, 1.0 + bob, -0.5], [0, 0, 0], [0.34, 0.34, 0.11]);
-        this.writePart(this.muzzle.mesh, index, [0, 1.53 + bob, -1.05], [0, 0, 0], [0.26, 0.14, 0.28]);
-        this.writePart(this.eyeLeft.mesh, index, [-0.18, 1.69 + bob, -1.02], [0, 0, 0], [0.058, 0.07, 0.034]);
-        this.writePart(this.eyeRight.mesh, index, [0.18, 1.69 + bob, -1.02], [0, 0, 0], [0.058, 0.07, 0.034]);
-        this.writePart(this.nose.mesh, index, [0, 1.5 + bob, -1.31], [0, 0, 0], [0.082, 0.06, 0.072]);
-        this.writePart(this.tailTip.mesh, index, [0, 1.1 + bob, 1.67], [0.72, 0, 0], [0.16, 0.13, 0.23]);
-        break;
-      case 'penguin':
-        this.writePart(this.belly.mesh, index, [0, 0.98 + bob, -0.52], [0, 0, 0], [0.37, 0.58, 0.085]);
-        this.writePart(this.eyeLeft.mesh, index, [-0.16, 1.67 + bob, -1.0], [0, 0, 0], [0.055, 0.065, 0.03]);
-        this.writePart(this.eyeRight.mesh, index, [0.16, 1.67 + bob, -1.0], [0, 0, 0], [0.055, 0.065, 0.03]);
-        this.writePart(this.wingLeft.mesh, index, [-0.59, 1.08 + bob, 0], [0, 0, -0.24 - wingSwing], [0.11, 0.43, 0.24]);
-        this.writePart(this.wingRight.mesh, index, [0.59, 1.08 + bob, 0], [0, 0, 0.24 + wingSwing], [0.11, 0.43, 0.24]);
-        break;
-      case 'frog':
-        this.writePart(this.belly.mesh, index, [0, 1.0 + bob, -0.57], [0, 0, 0], [0.42, 0.17, 0.22]);
-        this.writePart(this.eyeLeft.mesh, index, [-0.3, 1.8 + bob, -0.97], [0, 0, 0], [0.13, 0.14, 0.075]);
-        this.writePart(this.eyeRight.mesh, index, [0.3, 1.8 + bob, -0.97], [0, 0, 0], [0.13, 0.14, 0.075]);
-        this.writePart(this.accentLeft.mesh, index, [-0.48, 1.06 + bob, -0.18], [0, 0, Math.PI * 0.48], [0.055, 0.19, 0.055]);
-        this.writePart(this.accentRight.mesh, index, [0.48, 1.06 + bob, -0.18], [0, 0, -Math.PI * 0.48], [0.055, 0.19, 0.055]);
-        break;
-      case 'duck':
-        this.writePart(this.belly.mesh, index, [0, 0.99 + bob, -0.51], [0, 0, 0], [0.33, 0.39, 0.08]);
-        this.writePart(this.eyeLeft.mesh, index, [-0.15, 1.58 + bob, -0.98], [0, 0, 0], [0.052, 0.062, 0.03]);
-        this.writePart(this.eyeRight.mesh, index, [0.15, 1.58 + bob, -0.98], [0, 0, 0], [0.052, 0.062, 0.03]);
-        this.writePart(this.wingLeft.mesh, index, [-0.62, 1.0 + bob, 0.06], [0, 0, -0.2 - wingSwing], [0.12, 0.31, 0.4]);
-        this.writePart(this.wingRight.mesh, index, [0.62, 1.0 + bob, 0.06], [0, 0, 0.2 + wingSwing], [0.12, 0.31, 0.4]);
-        break;
-      case 'bear':
-        this.writePart(this.belly.mesh, index, [0, 0.94 + bob, -0.57], [0, 0, 0], [0.39, 0.43, 0.12]);
-        this.writePart(this.muzzle.mesh, index, [0, 1.56 + bob, -1.14], [0, 0, 0], [0.28, 0.19, 0.22]);
-        this.writePart(this.eyeLeft.mesh, index, [-0.2, 1.76 + bob, -1.03], [0, 0, 0], [0.055, 0.065, 0.03]);
-        this.writePart(this.eyeRight.mesh, index, [0.2, 1.76 + bob, -1.03], [0, 0, 0], [0.055, 0.065, 0.03]);
-        this.writePart(this.nose.mesh, index, [0, 1.59 + bob, -1.35], [0, 0, 0], [0.09, 0.065, 0.07]);
-        this.writePart(this.tailTip.mesh, index, [0, 1.06 + bob, 1.02], [0, 0, 0], [0.15, 0.15, 0.15]);
-        break;
-      case 'rabbit':
-        this.writePart(this.muzzle.mesh, index, [0, 1.53 + bob, -1.03], [0, 0, 0], [0.23, 0.14, 0.19]);
-        this.writePart(this.eyeLeft.mesh, index, [-0.18, 1.72 + bob, -0.99], [0, 0, 0], [0.055, 0.07, 0.03]);
-        this.writePart(this.eyeRight.mesh, index, [0.18, 1.72 + bob, -0.99], [0, 0, 0], [0.055, 0.07, 0.03]);
-        this.writePart(this.nose.mesh, index, [0, 1.55 + bob, -1.22], [0, 0, 0], [0.055, 0.045, 0.05]);
-        this.writePart(this.tailTip.mesh, index, [0, 1.08 + bob, 1.09], [0, 0, 0], [0.22, 0.22, 0.22]);
-        break;
-      case 'cat':
-        this.writePart(this.belly.mesh, index, [0, 1.0 + bob, -0.54], [0, 0, 0], [0.26, 0.31, 0.1]);
-        this.writePart(this.muzzle.mesh, index, [0, 1.51 + bob, -1.08], [0, 0, 0], [0.23, 0.13, 0.17]);
-        this.writePart(this.eyeLeft.mesh, index, [-0.17, 1.7 + bob, -1.03], [0, 0, 0], [0.057, 0.067, 0.03]);
-        this.writePart(this.eyeRight.mesh, index, [0.17, 1.7 + bob, -1.03], [0, 0, 0], [0.057, 0.067, 0.03]);
-        this.writePart(this.nose.mesh, index, [0, 1.53 + bob, -1.25], [0, 0, 0], [0.06, 0.045, 0.05]);
-        this.writePart(this.accentLeft.mesh, index, [-0.34, 1.52 + bob, -1.1], [0, 0, Math.PI * 0.5], [0.018, 0.23, 0.018]);
-        this.writePart(this.accentRight.mesh, index, [0.34, 1.52 + bob, -1.1], [0, 0, -Math.PI * 0.5], [0.018, 0.23, 0.018]);
-        break;
-      case 'axolotl':
-        this.writePart(this.belly.mesh, index, [0, 0.98 + bob, -0.49], [0, 0, 0], [0.31, 0.13, 0.4]);
-        this.writePart(this.eyeLeft.mesh, index, [-0.24, 1.55 + bob, -1.08], [0, 0, 0], [0.07, 0.085, 0.04]);
-        this.writePart(this.eyeRight.mesh, index, [0.24, 1.55 + bob, -1.08], [0, 0, 0], [0.07, 0.085, 0.04]);
-        this.writePart(this.accentLeft.mesh, index, [-0.62, 1.5 + bob, -0.73], [0, 0, Math.PI * 0.48], [0.055, 0.29, 0.055]);
-        this.writePart(this.accentRight.mesh, index, [0.62, 1.5 + bob, -0.73], [0, 0, -Math.PI * 0.48], [0.055, 0.29, 0.055]);
-        this.writePart(this.tailTip.mesh, index, [0, 1.04 + bob, 1.42], [0.14, 0, 0], [0.1, 0.31, 0.55]);
-        break;
-      case 'saylor': {
-        const humanBob = bob * 0.42;
-        this.writePart(this.belly.mesh, index, [0, 1.25 + humanBob, -0.31], [0, 0, 0], [0.19, 0.34, 0.035]);
-        this.writePart(this.muzzle.mesh, index, [0, 1.94 + humanBob, -0.31], [0, 0, 0], [0.075, 0.07, 0.055]);
-        this.writePart(this.eyeLeft.mesh, index, [-0.11, 2.01 + humanBob, -0.32], [0, 0, 0], [0.035, 0.046, 0.017]);
-        this.writePart(this.eyeRight.mesh, index, [0.11, 2.01 + humanBob, -0.32], [0, 0, 0], [0.035, 0.046, 0.017]);
-        break;
-      }
-    }
-  }
-
-  private hideDetailParts(index: number): void {
-    for (const pool of this.detailPools) this.hidePart(pool.mesh, index);
-  }
-
-  private writePart(
-    mesh: THREE.InstancedMesh,
-    index: number,
-    position: readonly [number, number, number],
-    rotation: readonly [number, number, number],
-    scale: readonly [number, number, number],
-  ): void {
-    this.position.set(position[0], position[1], position[2]);
-    this.localQuaternion.setFromEuler(new THREE.Euler(rotation[0], rotation[1], rotation[2]));
-    this.localScale.set(scale[0], scale[1], scale[2]);
-    this.localMatrix.compose(this.position, this.localQuaternion, this.localScale);
-    this.worldMatrix.multiplyMatrices(this.rootMatrix, this.localMatrix);
-    mesh.setMatrixAt(index, this.worldMatrix);
-  }
-
-  private hidePart(mesh: THREE.InstancedMesh, index: number): void {
-    this.localMatrix.compose(this.position.set(0, -1_000, 0), this.localQuaternion.identity(), HIDDEN_SCALE);
-    mesh.setMatrixAt(index, this.localMatrix);
+  private labelHeight(animal: AnimalKind): number {
+    return ANIMAL_LABEL_HEIGHTS[animal] * (animalMotionProfile(animal).modelScale / 0.9);
   }
 
   private labelOpacity(worldPosition: THREE.Vector3, widthWorld: number, occlusions: readonly ScreenBounds[]): number {
@@ -1015,17 +876,6 @@ export class RemoteAvatarSystem implements GameSystem {
   }
 
   private syncText(text: Text): void {
-    // Troika also syncs lazily before its first render. The guard keeps the
-    // pooled renderer usable in SSR and deterministic resource tests.
     if (typeof self !== 'undefined') text.sync();
-  }
-
-  private hideMatrices(index: number): void {
-    this.localMatrix.compose(this.position.set(0, -1_000, 0), this.localQuaternion.identity(), HIDDEN_SCALE);
-    for (const pool of this.allPools) pool.mesh.setMatrixAt(index, this.localMatrix);
-  }
-
-  private flushMatrices(): void {
-    for (const pool of this.allPools) pool.mesh.instanceMatrix.needsUpdate = true;
   }
 }

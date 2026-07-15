@@ -602,6 +602,7 @@ export class Game {
       camera: this.camera,
       fontUrl: nunitoFontUrl,
       localPosition: () => this.player.position,
+      heightAt: (x, z) => this.world.heightAt(x, z),
       localNameplate: {
         actorId: this.roomClient.identity.actorId,
         animal: () => this.player.animal,

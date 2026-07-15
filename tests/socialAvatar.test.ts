@@ -1,16 +1,18 @@
 import {
-  Color,
+  BatchedMesh,
+  BufferGeometry,
   Group,
-  InstancedMesh,
+  Material,
   Matrix4,
-  MeshStandardMaterial,
+  Mesh,
+  Object3D,
   PerspectiveCamera,
-  Quaternion,
   Vector3,
 } from 'three';
 import { Text } from 'troika-three-text';
 import { describe, expect, it } from 'vitest';
-import { ANIMAL_KINDS, type NetPlayerState } from '../shared/src/index.js';
+import { ANIMAL_KINDS, type AnimalKind, type NetPlayerState } from '../shared/src/index.js';
+import { FoxRig } from '../src/player/FoxRig';
 import {
   RemoteAvatarSystem,
   clipSpeech,
@@ -26,6 +28,7 @@ function remote(
   skin: NetPlayerState['skin'] = 'base',
   animal: NetPlayerState['animal'] = 'fox',
   username: string | null = null,
+  overrides: Partial<NetPlayerState> = {},
 ): NetPlayerState {
   return {
     actorId,
@@ -41,26 +44,68 @@ function remote(
     skin,
     username,
     updatedAt,
+    ...overrides,
   };
 }
 
-function pool(system: RemoteAvatarSystem, name: string): InstancedMesh {
-  const candidate = system.root.getObjectByName(name);
-  expect(candidate, name).toBeInstanceOf(InstancedMesh);
-  return candidate as InstancedMesh;
+function createSystem(options: {
+  maxPlayers?: number;
+  now?: () => number;
+  localPosition?: () => Readonly<Vector3>;
+  localNameplate?: ConstructorParameters<typeof RemoteAvatarSystem>[0]['localNameplate'];
+  occlusionBounds?: ConstructorParameters<typeof RemoteAvatarSystem>[0]['occlusionBounds'];
+  detailDistance?: number;
+  cullDistance?: number;
+} = {}): { parent: Group; camera: PerspectiveCamera; system: RemoteAvatarSystem } {
+  const parent = new Group();
+  const camera = new PerspectiveCamera(52, 1, 0.1, 100);
+  camera.position.set(0, 3, 8);
+  camera.lookAt(0, 1, 0);
+  camera.updateMatrixWorld(true);
+  const system = new RemoteAvatarSystem({
+    parent,
+    camera,
+    maxPlayers: options.maxPlayers,
+    now: options.now,
+    localPosition: options.localPosition ?? (() => new Vector3()),
+    localNameplate: options.localNameplate,
+    occlusionBounds: options.occlusionBounds,
+    detailDistance: options.detailDistance,
+    cullDistance: options.cullDistance,
+    viewport: () => ({ left: 0, top: 0, width: 800, height: 600 }),
+  });
+  return { parent, camera, system };
 }
 
-function instanceTransform(mesh: InstancedMesh, index = 0): {
-  readonly position: Vector3;
-  readonly scale: Vector3;
-} {
-  const matrix = new Matrix4();
-  const position = new Vector3();
-  const rotation = new Quaternion();
-  const scale = new Vector3();
-  mesh.getMatrixAt(index, matrix);
-  matrix.decompose(position, rotation, scale);
-  return { position, scale };
+function effectivelyVisible(object: Object3D, root: Object3D): boolean {
+  let current: Object3D | null = object;
+  while (current) {
+    if (!current.visible) return false;
+    if (current === root) return true;
+    current = current.parent;
+  }
+  return false;
+}
+
+function visibleMeshNames(root: Object3D): string[] {
+  const names: string[] = [];
+  root.traverse((object) => {
+    if (object instanceof Mesh && effectivelyVisible(object, root)) names.push(object.name);
+  });
+  return names.sort();
+}
+
+function disposeRig(rig: FoxRig): void {
+  const geometries = new Set<BufferGeometry>();
+  const materials = new Set<Material>();
+  rig.root.traverse((object) => {
+    if (!(object instanceof Mesh)) return;
+    geometries.add(object.geometry);
+    if (Array.isArray(object.material)) object.material.forEach((material) => materials.add(material));
+    else materials.add(object.material);
+  });
+  geometries.forEach((geometry) => geometry.dispose());
+  materials.forEach((material) => material.dispose());
 }
 
 describe('remote avatar interpolation', () => {
@@ -92,31 +137,16 @@ describe('remote avatar interpolation', () => {
   });
 });
 
-describe('pooled remote avatar renderer', () => {
-  it('keeps resources bounded, takes nearest players, and removes blocked actors', () => {
-    const parent = new Group();
-    const camera = new PerspectiveCamera(52, 1, 0.1, 100);
-    camera.position.set(0, 3, 8);
-    camera.lookAt(0, 1, 0);
-    camera.updateMatrixWorld(true);
+describe('canonical remote avatar renderer', () => {
+  it('uses one exact-geometry batch, takes nearest players, and removes blocked actors', () => {
     let now = 500;
-    const system = new RemoteAvatarSystem({
-      parent,
-      camera,
+    const { parent, system } = createSystem({
       maxPlayers: 2,
       now: () => now,
-      localPosition: () => new Vector3(),
-      viewport: () => ({ left: 0, top: 0, width: 800, height: 600 }),
     });
-
-    const pools = system.root.children.filter((child): child is InstancedMesh => child instanceof InstancedMesh);
-    // Ten animated silhouette pools plus ten feature pools stay shared across
-    // the whole room. Nearby creatures get readable species detail without a
-    // per-player FoxPlayer allocation.
-    expect(pools).toHaveLength(20);
-    expect(pools.every((pool) => pool.instanceColor !== null)).toBe(true);
-    expect(pools.every((pool) => pool.material instanceof MeshStandardMaterial
-      && pool.material.vertexColors === false)).toBe(true);
+    const batch = system.root.getObjectByName('remote-canonical-avatar-batch');
+    expect(batch).toBeInstanceOf(BatchedMesh);
+    expect(system.root.children.filter((child) => child instanceof BatchedMesh)).toHaveLength(1);
 
     system.setPlayers([remote('far', 30), remote('near', 2), remote('middle', 12)], now);
     now += 200;
@@ -126,23 +156,13 @@ describe('pooled remote avatar renderer', () => {
       rendered: 2,
       detailed: 2,
       capacity: 2,
-      drawCalls: 20,
-      geometries: 5,
+      drawCalls: 1,
       materials: 1,
       labels: 4,
     });
-
-    system.setPlayers([
-      remote('near', 2, 2, 'sunrise-fox'),
-      remote('middle', 12, 2),
-    ], now);
-    now += 200;
-    system.update(1 / 60);
-    const crest = pools.find((pool) => pool.name === 'remote-crest-pool');
-    const crestMatrix = new Matrix4();
-    crest?.getMatrixAt(0, crestMatrix);
-    expect(crest).toBeDefined();
-    expect(Math.abs(crestMatrix.determinant())).toBe(0);
+    expect(system.getActorRenderRoot('near')).not.toBeNull();
+    expect(system.getActorRenderRoot('middle')).not.toBeNull();
+    expect(system.getActorRenderRoot('far')).toBeNull();
 
     system.setBlockedActors(new Set(['near']));
     expect(system.getDebugStats().active).toBe(1);
@@ -150,147 +170,135 @@ describe('pooled remote avatar renderer', () => {
     expect(parent.children).toHaveLength(0);
   });
 
-  it('keeps complete, initialized species features for every visible remote without an LOD downgrade', () => {
-    const parent = new Group();
-    const camera = new PerspectiveCamera(52, 1, 0.1, 100);
-    camera.position.set(0, 3, 8);
-    camera.lookAt(0, 1, 0);
-    camera.updateMatrixWorld(true);
+  it('uses the same canonical visible mesh set as the local rig for every animal', () => {
     let now = 500;
-    const system = new RemoteAvatarSystem({
-      parent,
-      camera,
-      maxPlayers: 1,
-      // Legacy callers may still pass this during deployment skew; it must no
-      // longer replace a distant friend with a reduced proxy.
-      detailDistance: 12,
-      cullDistance: 42,
-      now: () => now,
-      localPosition: () => new Vector3(),
-      viewport: () => ({ left: 0, top: 0, width: 800, height: 600 }),
-    });
-
-    system.setPlayers([remote('near-penguin', 8, 1, 'base', 'penguin')], now);
-    now += 200;
-    system.update(1 / 60);
-    expect(system.getDebugStats()).toMatchObject({ rendered: 1, detailed: 1, drawCalls: 20, materials: 1 });
-
-    const belly = pool(system, 'remote-belly-pool');
-    const wingLeft = pool(system, 'remote-left-wing-pool');
-    const frontLeg = pool(system, 'remote-front-left-leg-pool');
-    const bellyColor = new Color();
-    belly.getColorAt(0, bellyColor);
-    expect(bellyColor.getHex()).toBe(0xfff1cf);
-    expect(Math.abs(instanceTransform(belly).scale.x * instanceTransform(belly).scale.y * instanceTransform(belly).scale.z)).toBeGreaterThan(0);
-    expect(Math.abs(instanceTransform(wingLeft).scale.x * instanceTransform(wingLeft).scale.y * instanceTransform(wingLeft).scale.z)).toBeGreaterThan(0);
-    // A penguin is a biped even in the inexpensive far silhouette.
-    expect(Math.abs(instanceTransform(frontLeg).scale.x * instanceTransform(frontLeg).scale.y * instanceTransform(frontLeg).scale.z)).toBe(0);
-
-    system.setPlayers([remote('near-penguin', 28, 2, 'base', 'penguin')], now);
-    now += 200;
-    system.update(1 / 60);
-    expect(system.getDebugStats()).toMatchObject({ rendered: 1, detailed: 1 });
-    expect(Math.abs(instanceTransform(belly).scale.x * instanceTransform(belly).scale.y * instanceTransform(belly).scale.z)).toBeGreaterThan(0);
-    expect(Math.abs(instanceTransform(wingLeft).scale.x * instanceTransform(wingLeft).scale.y * instanceTransform(wingLeft).scale.z)).toBeGreaterThan(0);
-    const body = pool(system, 'remote-body-pool');
-    expect(Math.abs(instanceTransform(body).scale.x * instanceTransform(body).scale.y * instanceTransform(body).scale.z)).toBeGreaterThan(0);
-
-    system.dispose();
-  });
-
-  it('gives nearby species their own feature silhouettes instead of recolored fox proxies', () => {
-    const parent = new Group();
-    const camera = new PerspectiveCamera(52, 1, 0.1, 100);
-    camera.position.set(0, 3, 8);
-    camera.lookAt(0, 1, 0);
-    camera.updateMatrixWorld(true);
-    let now = 500;
-    const system = new RemoteAvatarSystem({
-      parent,
-      camera,
-      maxPlayers: 2,
-      now: () => now,
-      localPosition: () => new Vector3(),
-      viewport: () => ({ left: 0, top: 0, width: 800, height: 600 }),
-    });
-
-    system.setPlayers([
-      remote('near-fox', 4, 1, 'base', 'fox'),
-      remote('near-axolotl', 9, 1, 'base', 'axolotl'),
-    ], now);
-    now += 200;
-    system.update(1 / 60);
-
-    const foxMuzzle = instanceTransform(pool(system, 'remote-muzzle-pool'), 0);
-    const axolotlGill = instanceTransform(pool(system, 'remote-left-accent-pool'), 1);
-    const axolotlEar = instanceTransform(pool(system, 'remote-left-ear-pool'), 1);
-    expect(Math.abs(foxMuzzle.scale.x * foxMuzzle.scale.y * foxMuzzle.scale.z)).toBeGreaterThan(0);
-    expect(Math.abs(axolotlGill.scale.x * axolotlGill.scale.y * axolotlGill.scale.z)).toBeGreaterThan(0);
-    expect(Math.abs(axolotlEar.scale.x * axolotlEar.scale.y * axolotlEar.scale.z)).toBe(0);
-    expect(system.getDebugStats()).toMatchObject({ active: 2, detailed: 2, drawCalls: 20, materials: 1 });
-
-    system.dispose();
-  });
-
-  it('keeps every supported animal finite and full-detail at conversation range', () => {
-    const parent = new Group();
-    const camera = new PerspectiveCamera(52, 1, 0.1, 100);
-    camera.position.set(0, 3, 8);
-    camera.lookAt(0, 1, 0);
-    camera.updateMatrixWorld(true);
-    let now = 500;
-    const system = new RemoteAvatarSystem({
-      parent,
-      camera,
-      maxPlayers: ANIMAL_KINDS.length,
-      now: () => now,
-      localPosition: () => new Vector3(),
-      viewport: () => ({ left: 0, top: 0, width: 800, height: 600 }),
-    });
+    const { system } = createSystem({ maxPlayers: ANIMAL_KINDS.length, now: () => now });
     system.setPlayers(ANIMAL_KINDS.map((animal, index) => (
       remote(`animal-${animal}`, 2 + index * 2, 1, 'base', animal)
     )), now);
     now += 200;
     system.update(1 / 60);
+
+    for (const animal of ANIMAL_KINDS) {
+      const remoteRoot = system.getActorRenderRoot(`animal-${animal}`);
+      const remoteModel = remoteRoot?.getObjectByName('FoxModel');
+      expect(remoteModel, animal).toBeDefined();
+      const localRig = new FoxRig();
+      localRig.setAnimal(animal, 'base');
+      expect(visibleMeshNames(remoteModel!), animal).toEqual(visibleMeshNames(localRig.root));
+      disposeRig(localRig);
+    }
+
+    expect(visibleMeshNames(system.getActorRenderRoot('animal-fox')!)).toContain('FoxTailSegment6');
+    expect(visibleMeshNames(system.getActorRenderRoot('animal-rabbit')!)).toEqual(expect.arrayContaining([
+      'RabbitInnerEarLeft', 'RabbitInnerEarRight',
+    ]));
+    expect(visibleMeshNames(system.getActorRenderRoot('animal-cat')!).filter((name) => name.startsWith('CatWhisker'))).toHaveLength(6);
+    expect(visibleMeshNames(system.getActorRenderRoot('animal-axolotl')!).filter((name) => name.startsWith('AxolotlGill'))).toHaveLength(6);
+    expect(visibleMeshNames(system.getActorRenderRoot('animal-frog')!).some((name) => name.includes('Ear'))).toBe(false);
+    expect(visibleMeshNames(system.getActorRenderRoot('animal-penguin')!).some((name) => name.includes('Tail'))).toBe(false);
+    expect(visibleMeshNames(system.getActorRenderRoot('animal-duck')!).some((name) => name.includes('Tail'))).toBe(false);
     expect(system.getDebugStats()).toMatchObject({
       active: ANIMAL_KINDS.length,
       rendered: ANIMAL_KINDS.length,
       detailed: ANIMAL_KINDS.length,
-      drawCalls: 20,
+      drawCalls: 1,
       materials: 1,
     });
-    const body = pool(system, 'remote-body-pool');
-    for (let index = 0; index < ANIMAL_KINDS.length; index += 1) {
-      const { position, scale } = instanceTransform(body, index);
-      expect(position.toArray().every(Number.isFinite)).toBe(true);
-      expect(scale.toArray().every(Number.isFinite)).toBe(true);
-      expect(Math.abs(scale.x * scale.y * scale.z)).toBeGreaterThan(0);
-    }
+    system.dispose();
+  });
+
+  it('never swaps a distant visible player to a reduced proxy', () => {
+    let now = 500;
+    const { system } = createSystem({
+      maxPlayers: 1,
+      now: () => now,
+      detailDistance: 12,
+      cullDistance: 42,
+    });
+    system.setPlayers([remote('penguin', 8, 1, 'base', 'penguin')], now);
+    now += 200;
+    system.update(1 / 60);
+    const nearParts = visibleMeshNames(system.getActorRenderRoot('penguin')!);
+    expect(nearParts).toEqual(expect.arrayContaining(['PenguinFace', 'PenguinBeak', 'PenguinFlipperLeft']));
+
+    system.setPlayers([remote('penguin', 28, 2, 'base', 'penguin')], now);
+    now += 200;
+    system.update(1 / 60);
+    expect(visibleMeshNames(system.getActorRenderRoot('penguin')!)).toEqual(nearParts);
+    expect(system.getDebugStats()).toMatchObject({ rendered: 1, detailed: 1, drawCalls: 1 });
+    system.dispose();
+  });
+
+  it('drives the canonical articulated gait, glide, and inferred double-jump flourish', () => {
+    let now = 1_000;
+    const { system } = createSystem({ maxPlayers: 1, now: () => now });
+    system.setPlayers([remote('moving', 4, 1, 'base', 'fox')], now);
+    now += 200;
+    for (let index = 0; index < 10; index += 1) system.update(1 / 60);
+    const root = system.getActorRenderRoot('moving')!;
+    const hip = root.getObjectByName('FoxFrontLeftLegPivot')!;
+    const initial = hip.rotation.x;
+
+    system.setPlayers([remote('moving', 4, 2, 'base', 'fox', null, { speed: 7, gait: 'run' })], now);
+    now += 200;
+    for (let index = 0; index < 12; index += 1) system.update(1 / 60);
+    expect(Math.abs(hip.rotation.x - initial)).toBeGreaterThan(0.03);
+
+    system.setPlayers([remote('moving', 4, 3, 'base', 'fox', null, {
+      y: 2,
+      grounded: false,
+      gait: 'glide',
+      verticalSpeed: -2,
+    })], now);
+    now += 200;
+    system.update(1 / 60);
+    expect(root.getObjectByName('FoxTailJoint1')!.rotation.x).not.toBe(0);
+
+    system.setPlayers([remote('moving', 4, 4, 'base', 'fox', null, {
+      y: 2.2,
+      grounded: false,
+      gait: 'air',
+      verticalSpeed: 8,
+    })], now);
+    now += 200;
+    system.update(1 / 60);
+    const aerial = root.getObjectByName('RemoteAerialPivot')!;
+    expect(Math.abs(aerial.rotation.x)).toBeGreaterThan(0);
+    expect(aerial.matrixWorld.elements.every(Number.isFinite)).toBe(true);
+    system.dispose();
+  });
+
+  it('keeps a full 49-player room bounded to one character draw call', () => {
+    let now = 1_000;
+    const { system } = createSystem({ maxPlayers: 49, now: () => now });
+    const players = Array.from({ length: 49 }, (_, index) => remote(
+      `player-${index}`,
+      (index % 7) * 2 - 6,
+      1,
+      'base',
+      ANIMAL_KINDS[index % ANIMAL_KINDS.length] as AnimalKind,
+      null,
+      { z: -5 - Math.floor(index / 7) * 2 },
+    ));
+    system.setPlayers(players, now);
+    now += 200;
+    for (let index = 0; index < 60; index += 1) system.update(1 / 60);
+    const stats = system.getDebugStats();
+    expect(stats).toMatchObject({ active: 49, rendered: 49, detailed: 49, drawCalls: 1, materials: 1 });
+    expect(stats.geometries).toBeGreaterThan(20);
+    expect(stats.geometries).toBeLessThan(400);
     system.dispose();
   });
 
   it('renders a saved local username immediately and keeps it attached to the player', () => {
-    const parent = new Group();
-    const camera = new PerspectiveCamera(52, 1, 0.1, 100);
-    camera.position.set(0, 3, 8);
-    camera.lookAt(0, 1, 0);
-    camera.updateMatrixWorld(true);
     const localPosition = new Vector3(4, 0.5, -2);
     let animal: NetPlayerState['animal'] = 'fox';
-    const system = new RemoteAvatarSystem({
-      parent,
-      camera,
+    const { parent, system } = createSystem({
       maxPlayers: 1,
       localPosition: () => localPosition,
       localNameplate: { actorId: 'local-player', animal: () => animal, username: null },
-      viewport: () => ({ left: 0, top: 0, width: 800, height: 600 }),
-      occlusionBounds: () => [{
-        left: -10_000,
-        top: -10_000,
-        right: 10_000,
-        bottom: 10_000,
-        depth: 100,
-      }],
+      occlusionBounds: () => [{ left: -10_000, top: -10_000, right: 10_000, bottom: 10_000, depth: 100 }],
     });
     const nameplate = system.root.getObjectByName('local-player-nameplate');
     expect(nameplate).toBeInstanceOf(Text);
@@ -318,72 +326,46 @@ describe('pooled remote avatar renderer', () => {
   });
 
   it('hides remote players for private view without hiding the local username', () => {
-    const parent = new Group();
-    const camera = new PerspectiveCamera(52, 1, 0.1, 100);
-    camera.position.set(0, 3, 8);
-    camera.lookAt(0, 1, 0);
-    camera.updateMatrixWorld(true);
     let now = 500;
-    const system = new RemoteAvatarSystem({
-      parent,
-      camera,
+    const { system } = createSystem({
       maxPlayers: 1,
       now: () => now,
       localPosition: () => new Vector3(0, 0.5, 0),
       localNameplate: { actorId: 'local', animal: () => 'fox', username: 'Local_Fox' },
-      viewport: () => ({ left: 0, top: 0, width: 800, height: 600 }),
     });
     system.setPlayers([remote('friend', 3)], now);
     now += 200;
     system.update(1 / 60);
-
     const localNameplate = system.root.getObjectByName('local-player-nameplate');
-    const remoteBody = pool(system, 'remote-body-pool');
+    const batch = system.root.getObjectByName('remote-canonical-avatar-batch') as BatchedMesh;
     expect(localNameplate?.visible).toBe(true);
-    expect(instanceTransform(remoteBody).scale.length()).toBeGreaterThan(0);
+    expect(system.getDebugStats().rendered).toBe(1);
+    expect(batch).toBeInstanceOf(BatchedMesh);
 
     system.setRemotePlayersVisible(false);
     expect(system.root.visible).toBe(true);
     expect(localNameplate?.visible).toBe(true);
-    expect(system.getDebugStats()).toMatchObject({ active: 1, rendered: 0, detailed: 0 });
-    expect(instanceTransform(remoteBody).scale.length()).toBe(0);
+    expect(system.getDebugStats()).toMatchObject({ active: 1, rendered: 0, detailed: 0, drawCalls: 0 });
 
     now += 200;
     system.update(1 / 60);
     expect(localNameplate?.visible).toBe(true);
-    expect(system.getDebugStats().rendered).toBe(0);
-
     system.setRemotePlayersVisible(true);
     now += 200;
     system.update(1 / 60);
-    expect(system.getDebugStats()).toMatchObject({ rendered: 1, detailed: 1 });
-    expect(instanceTransform(remoteBody).scale.length()).toBeGreaterThan(0);
+    expect(system.getDebugStats()).toMatchObject({ rendered: 1, detailed: 1, drawCalls: 1 });
     system.dispose();
   });
 
   it('renders the room-echoed local chat above the local head and expires it', () => {
-    const parent = new Group();
-    const camera = new PerspectiveCamera(52, 1, 0.1, 100);
-    camera.position.set(0, 3, 8);
-    camera.lookAt(0, 1, 0);
-    camera.updateMatrixWorld(true);
     const localPosition = new Vector3(3, 0.5, -4);
     let now = 1_000;
-    const system = new RemoteAvatarSystem({
-      parent,
-      camera,
+    const { system } = createSystem({
       maxPlayers: 1,
       now: () => now,
       localPosition: () => localPosition,
       localNameplate: { actorId: 'me', animal: () => 'rabbit', username: null },
-      viewport: () => ({ left: 0, top: 0, width: 800, height: 600 }),
-      occlusionBounds: () => [{
-        left: -10_000,
-        top: -10_000,
-        right: 10_000,
-        bottom: 10_000,
-        depth: 100,
-      }],
+      occlusionBounds: () => [{ left: -10_000, top: -10_000, right: 10_000, bottom: 10_000, depth: 100 }],
     });
 
     system.showSpeech({ actorId: 'me', text: 'I can see my own bubble' });
@@ -401,93 +383,58 @@ describe('pooled remote avatar renderer', () => {
     system.update(1 / 60);
     expect(speech?.visible).toBe(false);
     expect((speech as Text).text).toBe('');
-
-    system.setLocalActorId('new-me');
-    system.showSpeech({ actorId: 'new-me', text: 'Identity followed me' });
-    system.update(1 / 60);
-    expect((speech as Text).text).toBe('Identity followed me');
-    expect(speech?.visible).toBe(true);
     system.dispose();
   });
 
-  it('renders remote Saylor as an upright suited biped within the shared pool budget', () => {
-    const parent = new Group();
-    const camera = new PerspectiveCamera(52, 1, 0.1, 100);
-    camera.position.set(0, 3, 8);
-    camera.lookAt(0, 1, 0);
-    camera.updateMatrixWorld(true);
+  it('renders the complete Saylor tribute rather than a generic biped proxy', () => {
     let now = 500;
-    const system = new RemoteAvatarSystem({
-      parent,
-      camera,
-      maxPlayers: 1,
-      now: () => now,
-      localPosition: () => new Vector3(),
-      viewport: () => ({ left: 0, top: 0, width: 800, height: 600 }),
-    });
-
+    const { system } = createSystem({ maxPlayers: 1, now: () => now });
     system.setPlayers([remote('btc-titan', 2, 1, 'base', 'saylor', 'Michael_Saylor')], now);
     now += 200;
     system.update(1 / 60);
-
-    expect(system.getDebugStats()).toMatchObject({
-      active: 1,
-      rendered: 1,
-      detailed: 1,
-      drawCalls: 20,
-      geometries: 5,
-      materials: 1,
-    });
-    const body = pool(system, 'remote-body-pool');
-    const head = pool(system, 'remote-head-pool');
-    const armLeft = pool(system, 'remote-front-left-leg-pool');
-    const armRight = pool(system, 'remote-front-right-leg-pool');
-    const legLeft = pool(system, 'remote-hind-left-leg-pool');
-    const legRight = pool(system, 'remote-hind-right-leg-pool');
-    const earLeft = pool(system, 'remote-left-ear-pool');
-    const earRight = pool(system, 'remote-right-ear-pool');
-    const tail = pool(system, 'remote-tail-pool');
-    const tie = pool(system, 'remote-crest-pool');
-
-    const bodyTransform = instanceTransform(body);
-    const headTransform = instanceTransform(head);
-    const leftArmTransform = instanceTransform(armLeft);
-    const rightArmTransform = instanceTransform(armRight);
-    const leftLegTransform = instanceTransform(legLeft);
-    const rightLegTransform = instanceTransform(legRight);
-    const tieTransform = instanceTransform(tie);
-    expect(headTransform.position.y).toBeGreaterThan(bodyTransform.position.y + 0.7);
-    expect(leftLegTransform.position.y).toBeLessThan(bodyTransform.position.y);
-    expect(rightLegTransform.position.y).toBeLessThan(bodyTransform.position.y);
-    expect(leftArmTransform.position.x).toBeLessThan(bodyTransform.position.x);
-    expect(rightArmTransform.position.x).toBeGreaterThan(bodyTransform.position.x);
-    expect(tieTransform.position.y).toBeGreaterThan(bodyTransform.position.y);
-    expect(tieTransform.position.z).toBeLessThan(bodyTransform.position.z);
-    expect(Math.abs(tieTransform.scale.x * tieTransform.scale.y * tieTransform.scale.z)).toBeGreaterThan(0);
-
-    for (const hidden of [earLeft, earRight, tail]) {
-      const matrix = new Matrix4();
-      hidden.getMatrixAt(0, matrix);
-      expect(Math.abs(matrix.determinant())).toBe(0);
-    }
-
-    const bodyColor = new Color();
-    const headColor = new Color();
-    const tieColor = new Color();
-    body.getColorAt(0, bodyColor);
-    head.getColorAt(0, headColor);
-    tie.getColorAt(0, tieColor);
-    expect(bodyColor.getHex()).toBe(0x283746);
-    expect(headColor.getHex()).toBe(0xd8a17a);
-    expect(tieColor.getHex()).toBe(0xf29a3f);
-
+    const root = system.getActorRenderRoot('btc-titan')!;
+    const names = visibleMeshNames(root);
+    expect(names).toEqual(expect.arrayContaining([
+      'SaylorSuitTorso',
+      'SaylorLapelLeft',
+      'SaylorLapelRight',
+      'SaylorOrangeTie',
+      'SaylorBitcoinPin',
+      'SaylorSilverBeard',
+      'SaylorSilverMustache',
+      'SaylorSilverHairCap',
+      'SaylorSweptSilverHair',
+      'SaylorShoeLeft',
+      'SaylorShoeRight',
+    ]));
+    expect(names.some((name) => name.startsWith('FoxTail'))).toBe(false);
     const remoteNameplate = system.root.children.find((child) => (
       child instanceof Text && child.text === 'Michael_Saylor'
     )) as Text | undefined;
     expect(remoteNameplate).toBeDefined();
-    expect(remoteNameplate?.position.y).toBeGreaterThan(headTransform.position.y + 0.4);
-
+    expect(remoteNameplate?.position.y).toBeGreaterThan(root.getObjectByName('SaylorFace')!.getWorldPosition(new Vector3()).y);
+    expect(system.getDebugStats()).toMatchObject({ active: 1, rendered: 1, detailed: 1, drawCalls: 1, materials: 1 });
     system.dispose();
-    expect(parent.children).toHaveLength(0);
+  });
+
+  it('keeps canonical matrices finite through appearance churn', () => {
+    let now = 500;
+    const { system } = createSystem({ maxPlayers: 1, now: () => now });
+    const matrix = new Matrix4();
+    for (let index = 0; index < ANIMAL_KINDS.length * 2; index += 1) {
+      const animal = ANIMAL_KINDS[index % ANIMAL_KINDS.length] as AnimalKind;
+      system.setPlayers([remote('shape-shifter', 3, index + 1, 'base', animal)], now);
+      now += 200;
+      system.update(1 / 60);
+      const root = system.getActorRenderRoot('shape-shifter')!;
+      root.updateMatrixWorld(true);
+      root.traverse((object) => {
+        if (!(object instanceof Mesh) || !effectivelyVisible(object, root)) return;
+        matrix.copy(object.matrixWorld);
+        expect(matrix.elements.every(Number.isFinite), `${animal}:${object.name}`).toBe(true);
+      });
+    }
+    expect(system.getDebugStats().drawCalls).toBe(1);
+    system.dispose();
   });
 });
