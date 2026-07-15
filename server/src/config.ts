@@ -119,7 +119,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
   const launchSwitches: RuntimeKillSwitches = {
     admissions: booleanValue(env, 'ENABLE_ADMISSIONS', true),
     chatSend: booleanValue(env, 'ENABLE_CHAT_SEND', true),
-    newsIngest: production && Boolean(xBearerToken)
+    newsIngest: Boolean(xBearerToken)
       ? true
       : booleanValue(
         env,

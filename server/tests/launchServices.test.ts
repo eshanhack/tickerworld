@@ -88,6 +88,16 @@ describe('viral launch services', () => {
     expect(config.launchSwitches.newsIngest).toBe(true);
   });
 
+  it('uses a configured token as the news opt-in in managed runtimes with a stale environment label', () => {
+    const config = loadConfig({
+      NODE_ENV: 'Production',
+      X_BEARER_TOKEN: 'paid-production-token',
+      ENABLE_NEWS_INGEST: 'false',
+    });
+
+    expect(config.launchSwitches.newsIngest).toBe(true);
+  });
+
   it('keeps production wallet and purchases fail-closed without credentials', () => {
     const config = loadConfig({
       NODE_ENV: 'production',

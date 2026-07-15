@@ -179,6 +179,8 @@ export function configureHttp(app: Application, runtime: ServerRuntime): void {
       marketAgeMs: marketRelay.ageMs,
       news: runtime.news.available(),
       newsIngestor: runtime.news.leaderStatus(),
+      newsTokenConfigured: Boolean(runtime.config.xBearerToken),
+      runtimeEnvironment: runtime.config.nodeEnv,
     };
     const productionProvidersReady = features.trustedProxy
       && (!runtime.switches.enabled('publicWalletAuth') || features.walletAuth)
