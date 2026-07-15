@@ -114,6 +114,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
       : 'development';
   const production = nodeEnv === 'production';
   const managedCloudBootstrap = production && env.COLYSEUS_CLOUD !== undefined;
+  const databaseUrl = envString(env, 'DATABASE_URL');
   const xBearerToken = envString(env, 'X_BEARER_TOKEN');
   const launchSwitches: RuntimeKillSwitches = {
     admissions: booleanValue(env, 'ENABLE_ADMISSIONS', true),
@@ -121,7 +122,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     // Colyseus Cloud writes a generated .env.cloud file after its application
     // environment. A paid token is therefore the durable production opt-in;
     // the authenticated runtime switch remains available for emergency stops.
-    newsIngest: managedCloudBootstrap && Boolean(xBearerToken)
+    newsIngest: managedCloudBootstrap && Boolean(databaseUrl)
       ? true
       : booleanValue(env, 'ENABLE_NEWS_INGEST', false),
     directMarketFallback: booleanValue(env, 'ENABLE_DIRECT_MARKET_FALLBACK', true),
@@ -130,7 +131,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     purchases: booleanValue(env, 'ENABLE_PURCHASES', false),
     adminActions: booleanValue(env, 'ENABLE_ADMIN_ACTIONS', false),
   };
-  const databaseUrl = envString(env, 'DATABASE_URL');
   const sensitiveFeaturesEnabled = launchSwitches.publicWalletAuth
     || launchSwitches.purchases
     || launchSwitches.adminActions
