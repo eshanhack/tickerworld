@@ -52,6 +52,8 @@ provide the shared production `DATABASE_URL`, then point Vercel's
 `NEWS_CACHE_ORIGIN` at this service. No token means
 `unconfigured`, never demo headlines. Reset headers, exponential backoff, a
 daily request limit, catalog caps, and the runtime kill switch bound spend.
+After changing Colyseus Cloud environment variables, deploy a new Git revision
+and verify `/readyz` plus `/api/news?scope=BTC` before treating ingestion as live.
 
 A six-hour retention job removes ordinary auth/IP challenge records after 24
 hours, report evidence after 90 days, expired moderation audit records after 12
