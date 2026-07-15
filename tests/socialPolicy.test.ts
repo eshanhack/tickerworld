@@ -28,7 +28,9 @@ class MemoryStorage implements Storage {
 describe('social policy', () => {
   it('distinguishes a deliberate tab handoff from a network reconnect', () => {
     expect(chatConnectionStatus('online', 1)).toBe('1 PLAYER · THIS ROOM');
+    expect(chatConnectionStatus('connecting', 0)).toBe('CONNECTING TO CHAT');
     expect(chatConnectionStatus('reconnecting', 0)).toBe('CHAT RECONNECTING…');
+    expect(chatConnectionStatus('offline', 0)).toBe('CHAT OFFLINE');
     expect(chatConnectionStatus('offline', 0, 'session_replaced')).toBe('CHAT OPEN IN ANOTHER TAB');
   });
 

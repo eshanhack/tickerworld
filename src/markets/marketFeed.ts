@@ -654,7 +654,14 @@ export class HyperliquidMarketFeed implements MarketFeed {
       this.connect(generation);
       return;
     }
-    this.setAllModes(initial ? 'connecting' : 'reconnecting');
+    const activeBeforeSync = this.getState(this.activeSymbol);
+    const hasLiveDexQuote = isDexAssetSymbol(this.activeSymbol)
+      && activeBeforeSync.mode === 'live'
+      && activeBeforeSync.price !== null
+      && activeBeforeSync.candles.length > 0;
+    // History enriches a DEX chart, but it must never take a healthy,
+    // identity-checked DexScreener quote offline while GeckoTerminal retries.
+    if (!hasLiveDexQuote) this.setAllModes(initial ? 'connecting' : 'reconnecting');
 
     try {
       const symbol = this.activeSymbol;
@@ -706,7 +713,12 @@ export class HyperliquidMarketFeed implements MarketFeed {
       this.connect(generation);
     } catch {
       if (generation !== this.syncGeneration || this.paused || this.disposed) return;
-      this.setAllModes('reconnecting');
+      const active = this.getState(this.activeSymbol);
+      const preserveLiveDexQuote = isDexAssetSymbol(this.activeSymbol)
+        && active.mode === 'live'
+        && active.price !== null
+        && active.candles.length > 0;
+      if (!preserveLiveDexQuote) this.setAllModes('reconnecting');
       this.scheduleReconnect();
     } finally {
       if (generation === this.syncGeneration) this.connectPending = false;
@@ -941,11 +953,9 @@ export class HyperliquidMarketFeed implements MarketFeed {
       for (const quote of parsed.markets) {
         receivedSymbols.add(quote.symbol);
         if (quote.symbol === this.activeSymbol) {
-          if (!canApplyActiveChart) continue;
           const state = this.getState(quote.symbol);
-          // Keep the truthful empty/connecting state until history succeeds.
           const lastQuoteTime = this.lastDexQuoteTimes.get(quote.symbol) ?? Number.NEGATIVE_INFINITY;
-          if (state.candles.length >= 2 && quote.checkedAt > lastQuoteTime) {
+          if (quote.checkedAt > lastQuoteTime) {
             this.lastDexQuoteTimes.set(quote.symbol, quote.checkedAt);
             // DexScreener's pair quote is a truthful current observation, not
             // necessarily an individual trade. Exact GeckoTerminal prints

@@ -192,7 +192,8 @@ describe('/api/dex-market', () => {
       fetcher,
     );
     expect(response.status).toBe(200);
-    expect(response.headers.get('Vercel-CDN-Cache-Control')).toContain('s-maxage=55');
+    expect(response.headers.get('Vercel-CDN-Cache-Control')).toContain('s-maxage=300');
+    expect(response.headers.get('Vercel-CDN-Cache-Control')).toContain('stale-while-revalidate=86400');
     const history = parseDexHistoryResponse(await response.json(), NOW);
     expect(history?.candles).toHaveLength(3);
     expect(history?.dailyCandles).toHaveLength(3);
@@ -219,7 +220,8 @@ describe('/api/dex-market', () => {
       fetcher,
     );
     expect(response.status).toBe(200);
-    expect(response.headers.get('Vercel-CDN-Cache-Control')).toContain('s-maxage=2');
+    expect(response.headers.get('Vercel-CDN-Cache-Control')).toContain('s-maxage=10');
+    expect(response.headers.get('Vercel-CDN-Cache-Control')).toContain('stale-while-revalidate=60');
     const parsed = parseDexTradesResponse(await response.json(), NOW);
     expect(parsed?.trades.map(({ id }) => id)).toEqual(['older', 'newer']);
     expect(String(fetcher.mock.calls[0]?.[0])).toContain('/networks/solana/pools/');
@@ -249,6 +251,90 @@ describe('/api/dex-market', () => {
     expect(parseDexTradesResponse(await fallback.json(), NOW + 10_001)?.trades).toHaveLength(2);
   });
 
+  it('coalesces concurrent history and trade cache misses per exact pool', async () => {
+    let releaseHistory!: () => void;
+    const historyGate = new Promise<void>((resolve) => { releaseHistory = resolve; });
+    const historyFetcher = vi.fn(async () => {
+      await historyGate;
+      return Response.json(historyPayload());
+    });
+    const historyRequests = [
+      handleDexMarketRequest(
+        new Request('https://tickerworld.test/api/dex-market?history=ANSEM'),
+        NOW + 20_000,
+        historyFetcher,
+      ),
+      handleDexMarketRequest(
+        new Request('https://tickerworld.test/api/dex-market?history=ANSEM'),
+        NOW + 20_000,
+        historyFetcher,
+      ),
+    ];
+    releaseHistory();
+    const historyResponses = await Promise.all(historyRequests);
+    expect(historyResponses.every(({ status }) => status === 200)).toBe(true);
+    // One minute and one daily request, shared by both callers.
+    expect(historyFetcher).toHaveBeenCalledTimes(2);
+    await expect(Promise.all(historyResponses.map((response) => response.json())))
+      .resolves.toHaveLength(2);
+
+    let releaseTrades!: () => void;
+    const tradeGate = new Promise<void>((resolve) => { releaseTrades = resolve; });
+    const tradeFetcher = vi.fn(async () => {
+      await tradeGate;
+      return Response.json(tradesPayload());
+    });
+    const tradeRequests = [
+      handleDexMarketRequest(
+        new Request('https://tickerworld.test/api/dex-market?trades=SHFL'),
+        NOW + 20_000,
+        tradeFetcher,
+      ),
+      handleDexMarketRequest(
+        new Request('https://tickerworld.test/api/dex-market?trades=SHFL'),
+        NOW + 20_000,
+        tradeFetcher,
+      ),
+    ];
+    releaseTrades();
+    const tradeResponses = await Promise.all(tradeRequests);
+    expect(tradeResponses.every(({ status }) => status === 200)).toBe(true);
+    expect(tradeFetcher).toHaveBeenCalledTimes(1);
+    await expect(Promise.all(tradeResponses.map((response) => response.json())))
+      .resolves.toHaveLength(2);
+  });
+
+  it('serves only previously verified history during a Gecko outage and opens a ten-second circuit', async () => {
+    const healthy = vi.fn(async () => Response.json(historyPayload()));
+    const first = await handleDexMarketRequest(
+      new Request('https://tickerworld.test/api/dex-market?history=SHFL'),
+      NOW + 30_000,
+      healthy,
+    );
+    expect(first.status).toBe(200);
+
+    const unavailable = vi.fn(async () => new Response('upstream unavailable', { status: 429 }));
+    const fallback = await handleDexMarketRequest(
+      new Request('https://tickerworld.test/api/dex-market?history=SHFL'),
+      NOW + 30_001,
+      unavailable,
+    );
+    expect(fallback.status).toBe(200);
+    expect(fallback.headers.get('X-Tickerworld-Data')).toBe('stale-onchain-history');
+    expect(fallback.headers.get('Vercel-CDN-Cache-Control')).toContain('s-maxage=30');
+    expect(parseDexHistoryResponse(await fallback.json(), NOW + 30_001)?.candles).toHaveLength(3);
+
+    const circuit = await handleDexMarketRequest(
+      new Request('https://tickerworld.test/api/dex-market?history=SHFL'),
+      NOW + 30_002,
+      unavailable,
+    );
+    expect(circuit.status).toBe(200);
+    expect(circuit.headers.get('X-Tickerworld-Data')).toBe('stale-onchain-history');
+    // The circuit response never touches the constrained upstream.
+    expect(unavailable).toHaveBeenCalledTimes(2);
+  });
+
   it('never returns a similarly named pair when the configured pool identity fails', async () => {
     const fetcher = vi.fn(async () => Response.json({
       pairs: [{
@@ -269,6 +355,91 @@ describe('/api/dex-market', () => {
 });
 
 describe('DEX chart presentation', () => {
+  it('brings an active DEX world live from a genuine quote before history is available', async () => {
+    const fetcher = vi.fn(async () => Response.json({
+      provider: 'dexscreener',
+      markets: [{
+        symbol: 'PUMP',
+        chain: DEX_MARKETS.PUMP.chain,
+        poolAddress: DEX_MARKETS.PUMP.poolAddress,
+        priceUsd: 0.0042,
+        checkedAt: NOW,
+      }],
+      checkedAt: NOW,
+    }));
+    vi.stubGlobal('fetch', fetcher);
+    vi.stubGlobal('window', { setTimeout: vi.fn(() => 1), clearTimeout: vi.fn() });
+    vi.spyOn(Date, 'now').mockReturnValue(NOW);
+    const feed = new HyperliquidMarketFeed();
+    const internals = feed as unknown as {
+      activeSymbol: 'PUMP';
+      pollDexMarkets(): Promise<void>;
+    };
+    internals.activeSymbol = 'PUMP';
+
+    await internals.pollDexMarkets();
+
+    const state = feed.getState('PUMP');
+    expect(state).toMatchObject({
+      provider: 'dexscreener',
+      price: 0.0042,
+      previousPrice: 0.0042,
+      mode: 'live',
+      updateKind: 'snapshot',
+    });
+    expect(state.candles).toEqual([{
+      openTime: Math.floor(NOW / 60_000) * 60_000,
+      open: 0.0042,
+      high: 0.0042,
+      low: 0.0042,
+      close: 0.0042,
+      closed: false,
+    }]);
+    feed.dispose();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it('keeps a genuine live DEX quote while enriched history retries', async () => {
+    const quote = Response.json({
+      provider: 'dexscreener',
+      markets: [{
+        symbol: 'SHFL',
+        chain: DEX_MARKETS.SHFL.chain,
+        poolAddress: DEX_MARKETS.SHFL.poolAddress,
+        priceUsd: 0.27,
+        checkedAt: NOW,
+      }],
+      checkedAt: NOW,
+    });
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(quote)
+      .mockResolvedValueOnce(new Response('history rate limited', { status: 503 }));
+    vi.stubGlobal('fetch', fetcher);
+    vi.stubGlobal('window', { setTimeout: vi.fn(() => 1), clearTimeout: vi.fn() });
+    vi.spyOn(Date, 'now').mockReturnValue(NOW);
+    const feed = new HyperliquidMarketFeed();
+    const internals = feed as unknown as {
+      activeSymbol: 'SHFL';
+      pollDexMarkets(): Promise<void>;
+      resyncAndConnect(initial: boolean): Promise<void>;
+    };
+    internals.activeSymbol = 'SHFL';
+    await internals.pollDexMarkets();
+    expect(feed.getState('SHFL')).toMatchObject({ price: 0.27, mode: 'live' });
+
+    await internals.resyncAndConnect(false);
+
+    expect(feed.getState('SHFL')).toMatchObject({
+      provider: 'dexscreener',
+      price: 0.27,
+      mode: 'live',
+    });
+    feed.dispose();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
   it('keeps passive DEX portal prices when a CEX relay changes chart generation mid-poll', async () => {
     let resolveResponse: ((response: Response) => void) | undefined;
     const pendingResponse = new Promise<Response>((resolve) => {

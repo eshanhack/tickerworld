@@ -16,10 +16,17 @@ type ServerFetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<R
 
 const REQUEST_TIMEOUT_MS = 7_000;
 const FAILURE_CIRCUIT_MS = 2_000;
+const GECKO_FAILURE_CIRCUIT_MS = 10_000;
+const HISTORY_CACHE_CONTROL = 'public, s-maxage=300, stale-while-revalidate=86400';
+const STALE_HISTORY_CACHE_CONTROL = 'public, s-maxage=30, stale-while-revalidate=300';
+const TRADE_CACHE_CONTROL = 'public, s-maxage=10, stale-while-revalidate=60';
 const UPSTREAM_USER_AGENT = 'Tickerworld/1.0 (+https://tickerworld.io)';
 let quoteFailureUntil = 0;
 const historyFailureUntil = new Map<DexAssetSymbol, number>();
 const tradeFailureUntil = new Map<DexAssetSymbol, number>();
+const pendingHistory = new Map<DexAssetSymbol, Promise<Response>>();
+const pendingTrades = new Map<DexAssetSymbol, Promise<Response>>();
+const lastGoodHistory = new Map<DexAssetSymbol, DexHistoryResponse>();
 const lastGoodTrades = new Map<DexAssetSymbol, DexTradesResponse>();
 
 function headers(cacheControl: string): HeadersInit {
@@ -43,12 +50,42 @@ function reject(status: 400 | 405): Response {
   });
 }
 
-function unavailable(checkedAt: number): Response {
+function unavailable(checkedAt: number, retrySeconds = 2): Response {
   return Response.json({ error: 'dex_market_unavailable', checkedAt }, {
     status: 503,
     headers: {
-      ...headers('public, s-maxage=2, stale-while-revalidate=5'),
-      'Retry-After': '2',
+      ...headers(`public, s-maxage=${retrySeconds}, stale-while-revalidate=${retrySeconds * 2}`),
+      'Retry-After': String(retrySeconds),
+    },
+  });
+}
+
+/** Collapse same-symbol cache misses inside a warm function isolate. The
+ * Vercel cache handles steady-state traffic; this prevents a cold-edge burst
+ * from multiplying the same constrained GeckoTerminal request. */
+function coalesce(
+  requests: Map<DexAssetSymbol, Promise<Response>>,
+  symbol: DexAssetSymbol,
+  create: () => Promise<Response>,
+): Promise<Response> {
+  const existing = requests.get(symbol);
+  if (existing) return existing.then((response) => response.clone());
+  let pending: Promise<Response>;
+  pending = create().finally(() => {
+    if (requests.get(symbol) === pending) requests.delete(symbol);
+  });
+  requests.set(symbol, pending);
+  return pending.then((response) => response.clone());
+}
+
+/** Retain only a history payload that already passed exact pool/token parsing. */
+function staleHistory(symbol: DexAssetSymbol): Response | null {
+  const cached = lastGoodHistory.get(symbol);
+  if (!cached) return null;
+  return Response.json(cached, {
+    headers: {
+      ...headers(STALE_HISTORY_CACHE_CONTROL),
+      'X-Tickerworld-Data': 'stale-onchain-history',
     },
   });
 }
@@ -133,7 +170,8 @@ async function candleHistory(
   ]);
   if (candles.length < 2) throw new Error('invalid_candle_history');
   const body: DexHistoryResponse = { provider: 'geckoterminal', market, candles, dailyCandles, checkedAt };
-  return Response.json(body, { headers: headers('public, s-maxage=55, stale-while-revalidate=15') });
+  lastGoodHistory.set(symbol, body);
+  return Response.json(body, { headers: headers(HISTORY_CACHE_CONTROL) });
 }
 
 async function recentTrades(
@@ -158,7 +196,7 @@ async function recentTrades(
   const trades = parseGeckoTerminalTrades(await fetchJson(url, fetcher, apiHeaders), market, checkedAt);
   const body: DexTradesResponse = { provider: 'geckoterminal', market, trades, checkedAt };
   lastGoodTrades.set(symbol, body);
-  return Response.json(body, { headers: headers('public, s-maxage=2, stale-while-revalidate=2') });
+  return Response.json(body, { headers: headers(TRADE_CACHE_CONTROL) });
 }
 
 export async function handleDexMarketRequest(
@@ -180,28 +218,41 @@ export async function handleDexMarketRequest(
   if (trades !== undefined && !(DEX_ASSET_SYMBOLS as readonly string[]).includes(trades)) return reject(400);
   if (history) {
     const retryAt = historyFailureUntil.get(history as DexAssetSymbol) ?? 0;
-    if (checkedAt < retryAt) return unavailable(checkedAt);
+    if (checkedAt < retryAt) {
+      return staleHistory(history as DexAssetSymbol) ?? unavailable(checkedAt, 10);
+    }
   } else if (trades) {
     const retryAt = tradeFailureUntil.get(trades as DexAssetSymbol) ?? 0;
-    if (checkedAt < retryAt) return staleTrades(trades as DexAssetSymbol) ?? unavailable(checkedAt);
+    if (checkedAt < retryAt) return staleTrades(trades as DexAssetSymbol) ?? unavailable(checkedAt, 10);
   } else if (checkedAt < quoteFailureUntil) {
     return unavailable(checkedAt);
   }
   try {
     const response = history
-      ? await candleHistory(history as DexAssetSymbol, checkedAt, fetcher)
+      ? await coalesce(
+        pendingHistory,
+        history as DexAssetSymbol,
+        () => candleHistory(history as DexAssetSymbol, checkedAt, fetcher),
+      )
       : trades
-        ? await recentTrades(trades as DexAssetSymbol, checkedAt, fetcher)
+        ? await coalesce(
+          pendingTrades,
+          trades as DexAssetSymbol,
+          () => recentTrades(trades as DexAssetSymbol, checkedAt, fetcher),
+        )
         : await currentQuotes(checkedAt, fetcher);
     if (history) historyFailureUntil.delete(history as DexAssetSymbol);
     else if (trades) tradeFailureUntil.delete(trades as DexAssetSymbol);
     else quoteFailureUntil = 0;
     return response;
   } catch {
-    if (history) historyFailureUntil.set(history as DexAssetSymbol, checkedAt + FAILURE_CIRCUIT_MS);
+    if (history) {
+      historyFailureUntil.set(history as DexAssetSymbol, checkedAt + GECKO_FAILURE_CIRCUIT_MS);
+      return staleHistory(history as DexAssetSymbol) ?? unavailable(checkedAt, 10);
+    }
     else if (trades) {
-      tradeFailureUntil.set(trades as DexAssetSymbol, checkedAt + FAILURE_CIRCUIT_MS);
-      return staleTrades(trades as DexAssetSymbol) ?? unavailable(checkedAt);
+      tradeFailureUntil.set(trades as DexAssetSymbol, checkedAt + GECKO_FAILURE_CIRCUIT_MS);
+      return staleTrades(trades as DexAssetSymbol) ?? unavailable(checkedAt, 10);
     }
     else quoteFailureUntil = checkedAt + FAILURE_CIRCUIT_MS;
     return unavailable(checkedAt);

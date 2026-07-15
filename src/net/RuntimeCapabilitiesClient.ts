@@ -10,6 +10,14 @@ interface BrowserLocationLike {
   readonly hostname: string;
 }
 
+const TRUSTED_TICKERWORLD_HOSTS = new Set([
+  'tickerworld.io',
+  'www.tickerworld.io',
+  'game-tickerworld.vercel.app',
+  'game-tickerworld-ishans-projects-5e73516c.vercel.app',
+  'game-tickerworld-git-main-ishans-projects-5e73516c.vercel.app',
+]);
+
 function normalizeMultiplayerEndpoint(value: string): string {
   const trimmed = value.trim();
   if (!trimmed) return '';
@@ -27,9 +35,10 @@ function normalizeMultiplayerEndpoint(value: string): string {
 }
 
 /**
- * Canonical production pages can safely probe the canonical room service
- * without a Vercel rebuild. Preview and local origins remain fail-closed unless
- * they opt into an explicit endpoint that the room server allowlists.
+ * Canonical production pages and Tickerworld's stable Vercel aliases can safely
+ * probe the canonical room service without a Vercel rebuild. Arbitrary preview
+ * and local origins remain fail-closed unless they opt into an explicit
+ * endpoint that the room server allowlists.
  */
 export function resolveMultiplayerEndpoint(
   configured = import.meta.env.VITE_MULTIPLAYER_URL ?? '',
@@ -38,7 +47,7 @@ export function resolveMultiplayerEndpoint(
   const explicit = normalizeMultiplayerEndpoint(configured);
   if (explicit) return explicit;
   const hostname = browserLocation?.hostname.toLowerCase();
-  return hostname === 'tickerworld.io' || hostname === 'www.tickerworld.io'
+  return hostname && TRUSTED_TICKERWORLD_HOSTS.has(hostname)
     ? CANONICAL_MULTIPLAYER_ENDPOINT
     : '';
 }

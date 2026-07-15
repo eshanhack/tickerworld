@@ -48,6 +48,8 @@ export function chatConnectionStatus(
   if (state === 'online') return `${online} ${online === 1 ? 'PLAYER' : 'PLAYERS'} · THIS ROOM`;
   if (detail === SESSION_REPLACED_REASON) return 'CHAT OPEN IN ANOTHER TAB';
   if (state === 'incompatible') return 'CHAT UPDATING';
+  if (state === 'offline') return 'CHAT OFFLINE';
+  if (state === 'connecting') return 'CONNECTING TO CHAT';
   return 'CHAT RECONNECTING…';
 }
 
