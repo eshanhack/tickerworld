@@ -33,6 +33,18 @@ function encodeBase58(bytes: Uint8Array): string {
   return encoded;
 }
 
+async function waitForCondition(
+  condition: () => boolean,
+  message: string,
+  timeoutMs = 3_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition()) {
+    if (Date.now() >= deadline) throw new Error(message);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
 describe.sequential('Colyseus market rooms', () => {
   let runtime: ServerRuntime;
   let testServer: ColyseusTestServer;
@@ -171,26 +183,41 @@ describe.sequential('Colyseus market rooms', () => {
 
   it('creates one correctly filtered room for every supported market slug', async () => {
     const rooms = [];
-    for (const market of MARKET_SLUGS) {
-      const identity = runtime.anonymous.issue();
-      const room = await testServer.sdk.joinOrCreate('market', {
-        protocolVersion: PROTOCOL_VERSION,
-        market,
-        animal: identity.animal,
-        anonymousToken: identity.token,
-      });
-      room.onMessage(SERVER_MESSAGES.population, () => {});
-      expect((testServer.getRoomById(room.roomId).state as { market?: string }).market).toBe(market);
-      rooms.push(room);
+    try {
+      for (const market of MARKET_SLUGS) {
+        const identity = runtime.anonymous.issue();
+        const room = await testServer.sdk.joinOrCreate('market', {
+          protocolVersion: PROTOCOL_VERSION,
+          market,
+          animal: identity.animal,
+          anonymousToken: identity.token,
+        });
+        room.onMessage(SERVER_MESSAGES.population, () => {});
+        expect((testServer.getRoomById(room.roomId).state as { market?: string }).market).toBe(market);
+        rooms.push(room);
+      }
+      expect(new Set(rooms.map(({ roomId }) => roomId)).size).toBe(MARKET_SLUGS.length);
+      await waitForCondition(
+        () => MARKET_SLUGS.every((market) => {
+          const population = runtime.populations.snapshot().find((entry) => entry.market === market);
+          return population?.online === 1 && population.shards === 1;
+        }),
+        'all market populations did not settle after joining',
+      );
+      for (const market of MARKET_SLUGS) {
+        expect(runtime.populations.snapshot().find((entry) => entry.market === market))
+          .toMatchObject({ online: 1, shards: 1 });
+      }
+    } finally {
+      await Promise.allSettled(rooms.map((room) => room.leave()));
+      await waitForCondition(
+        () => MARKET_SLUGS.every((market) => {
+          const population = runtime.populations.snapshot().find((entry) => entry.market === market);
+          return population?.online === 0 && population.shards === 0;
+        }),
+        'market populations did not settle after leaving',
+      );
     }
-    expect(new Set(rooms.map(({ roomId }) => roomId)).size).toBe(MARKET_SLUGS.length);
-    await new Promise((resolve) => setTimeout(resolve, 250));
-    for (const market of MARKET_SLUGS) {
-      expect(runtime.populations.snapshot().find((entry) => entry.market === market))
-        .toMatchObject({ online: 1, shards: 1 });
-    }
-    await Promise.all(rooms.map((room) => room.leave()));
-    await new Promise((resolve) => setTimeout(resolve, 150));
   });
 
   it('replicates one monotonic day/night weather timeline to every player in a room', async () => {

@@ -378,6 +378,9 @@ export class MarketRoom extends Room<{ state: MarketRoomState; client: MarketCli
     player.username = identity.username ?? '';
     player.updatedAt = Date.now();
     this.state.players.set(client.sessionId, player);
+    // Keep matchmaking, portal counts, and HTTP population snapshots authoritative
+    // immediately. Client bootstrap messages can remain deferred until handlers exist.
+    getRoomServices().populations.update(this.roomId, this.state.players.size);
     getRoomServices().admissions.updatePosition(connectionKey, player.x, player.z);
     getRoomServices().moderation.registerConnection(connectionKey, {
       actorId: identity.actorId,
@@ -389,7 +392,6 @@ export class MarketRoom extends Room<{ state: MarketRoomState; client: MarketCli
     // messages until the client has installed its handlers.
     this.clock.setTimeout(() => {
       if (!this.clients.includes(client)) return;
-      getRoomServices().populations.update(this.roomId, this.clients.length);
       client.send(SERVER_MESSAGES.population, getRoomServices().populations.snapshot());
       for (const message of getRoomServices().chatRelay.historyForJoin(
         this.roomId,
