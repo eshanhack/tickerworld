@@ -7,6 +7,7 @@ import {
   MARKET_SLUGS,
   PREMIUM_SKINS,
   isActorId,
+  isAssetSymbol,
   type RuntimeKillSwitches,
 } from '@tickerworld/shared';
 import { z } from 'zod';
@@ -201,10 +202,10 @@ export function configureHttp(app: Application, runtime: ServerRuntime): void {
       throw new InputError('invalid_news_scope', 'Only the bounded scope query is supported');
     }
     const rawScope = typeof request.query.scope === 'string' ? request.query.scope.toUpperCase() : undefined;
-    if (rawScope && !(MARKET_SLUGS as readonly string[]).includes(rawScope.toLowerCase())) {
+    if (rawScope && !isAssetSymbol(rawScope)) {
       throw new InputError('invalid_news_scope', 'Unknown market scope');
     }
-    const scope = rawScope && (MARKET_SLUGS as readonly string[]).includes(rawScope.toLowerCase())
+    const scope = rawScope && isAssetSymbol(rawScope)
       ? rawScope as Parameters<ServerRuntime['news']['snapshot']>[0]
       : undefined;
     response.setHeader('Cache-Control', 'public, max-age=10, stale-while-revalidate=10');

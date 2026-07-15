@@ -14,6 +14,17 @@ export const BASE_PRICES: Record<AssetSymbol, number> = {
   PUMP: 0.0015,
   ANSEM: 0.24,
   SHFL: 0.26,
+  SKHYNIX: 350,
+  HYPE: 38,
+  XYZ100: 25_000,
+  SP500: 6_500,
+  MU: 320,
+  SPACEX: 480,
+  NVDA: 170,
+  GOLD: 3_350,
+  AAPL: 230,
+  META: 700,
+  GOOGL: 200,
 };
 
 const VOLATILITY: Record<AssetSymbol, number> = {
@@ -32,6 +43,17 @@ const VOLATILITY: Record<AssetSymbol, number> = {
   PUMP: 0.0042,
   ANSEM: 0.0052,
   SHFL: 0.0032,
+  SKHYNIX: 0.0016,
+  HYPE: 0.0025,
+  XYZ100: 0.0008,
+  SP500: 0.0006,
+  MU: 0.0017,
+  SPACEX: 0.0015,
+  NVDA: 0.0014,
+  GOLD: 0.0007,
+  AAPL: 0.001,
+  META: 0.0011,
+  GOOGL: 0.0011,
 };
 
 export function hashString(value: string): number {

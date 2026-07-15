@@ -1,9 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
+import {
+  HYPERLIQUID_ASSET_SYMBOLS,
+  hyperliquidCoinForAsset,
+} from '@tickerworld/shared';
 import { loadConfig } from '../src/config.js';
 import { createDatabase, migrateDatabase } from '../src/db/database.js';
 import { PartyInviteService } from '../src/services/partyInvites.js';
 import {
   applyRelayedTrade,
+  HyperliquidMarketRelay,
+  mergeRelayedCandleWindows,
   parseRelayedCandle,
   reconcileRelayedCandles,
 } from '../src/services/marketRelay.js';
@@ -171,6 +177,166 @@ describe('viral launch services', () => {
     const traded = applyRelayedTrade(window, 1_001, window.at(-1)!.openTime + 30_000);
     expect(traded.at(-1)).toMatchObject({ close: 1_001, high: 1_001 });
     expect(applyRelayedTrade(traded, 2, traded.at(-1)!.openTime - 60_000)).toEqual(traded);
+  });
+
+  it('prepends a late REST bootstrap without overwriting its newer socket candle', () => {
+    const history = Array.from({ length: 30 }, (_, index) => ({
+      openTime: index * 60_000,
+      open: 100 + index,
+      high: 102 + index,
+      low: 99 + index,
+      close: 101 + index,
+    }));
+    const live = {
+      ...history.at(-1)!,
+      high: 999,
+      close: 999,
+    };
+    const merged = mergeRelayedCandleWindows(history, [live]);
+    expect(merged).toHaveLength(30);
+    expect(merged.at(-1)).toEqual(live);
+
+    const later = {
+      openTime: 30 * 60_000,
+      open: 999,
+      high: 1_001,
+      low: 998,
+      close: 1_000,
+    };
+    const rolled = mergeRelayedCandleWindows(history, [live, later]);
+    expect(rolled).toHaveLength(30);
+    expect(rolled[0]?.openTime).toBe(60_000);
+    expect(rolled.at(-1)).toEqual(later);
+  });
+
+  it('keeps a same-millisecond socket candle when REST bootstrap resolves later', async () => {
+    let resolveBtc!: (response: Response) => void;
+    const btcResponse = new Promise<Response>((resolve) => { resolveBtc = resolve; });
+    const fetcher = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { req: { coin: string } };
+      return body.req.coin === 'BTC' ? btcResponse : Response.json([]);
+    });
+    const relay = new HyperliquidMarketRelay(
+      fetcher as typeof fetch,
+      undefined,
+      () => 5_000,
+    );
+    const published: Array<{ candles: readonly { close: number }[] }> = [];
+    relay.subscribe('btc', (state) => published.push(state));
+    const internals = relay as unknown as {
+      bootstrap(): Promise<void>;
+      handleMessage(raw: string): void;
+      publish(): void;
+    };
+    const bootstrap = internals.bootstrap();
+    await Promise.resolve();
+    internals.handleMessage(JSON.stringify({
+      channel: 'candle',
+      data: { s: 'BTC', t: 29 * 60_000, o: '129', h: '999', l: '128', c: '999' },
+    }));
+    resolveBtc(Response.json(Array.from({ length: 30 }, (_, index) => ({
+      t: index * 60_000,
+      o: String(100 + index),
+      h: String(102 + index),
+      l: String(99 + index),
+      c: String(101 + index),
+    }))));
+    await bootstrap;
+    internals.publish();
+    expect(published.at(-1)?.candles).toHaveLength(30);
+    expect(published.at(-1)?.candles.at(-1)?.close).toBe(999);
+    relay.dispose();
+  });
+
+  it('subscribes the process relay to each exact canonical Hyperliquid instrument once', () => {
+    class FakeRelaySocket extends EventTarget {
+      public readyState = 1;
+      public readonly sent: string[] = [];
+
+      public send(payload: string): void {
+        this.sent.push(payload);
+      }
+
+      public close(): void {
+        this.readyState = 3;
+        this.dispatchEvent(new Event('close'));
+      }
+    }
+
+    const socket = new FakeRelaySocket();
+    const fetcher = vi.fn(async () => Response.json([]));
+    const relay = new HyperliquidMarketRelay(
+      fetcher as typeof fetch,
+      () => socket as unknown as WebSocket,
+    );
+    relay.start();
+    socket.dispatchEvent(new Event('open'));
+
+    const subscriptions = socket.sent.map((payload) => (
+      (JSON.parse(payload) as { subscription: Record<string, unknown> }).subscription
+    ));
+    expect(subscriptions).toHaveLength(2 + HYPERLIQUID_ASSET_SYMBOLS.length * 2);
+    expect(subscriptions.slice(0, 2)).toEqual([
+      { type: 'allMids' },
+      { type: 'allMids', dex: 'xyz' },
+    ]);
+    for (const symbol of HYPERLIQUID_ASSET_SYMBOLS) {
+      const coin = hyperliquidCoinForAsset(symbol);
+      expect(coin).not.toBeNull();
+      expect(subscriptions.filter((subscription) => (
+        subscription.type === 'trades' && subscription.coin === coin
+      ))).toHaveLength(1);
+      expect(subscriptions.filter((subscription) => (
+        subscription.type === 'candle'
+        && subscription.coin === coin
+        && subscription.interval === '1m'
+      ))).toHaveLength(1);
+    }
+    expect(subscriptions).toContainEqual({ type: 'trades', coin: 'xyz:SKHX' });
+    expect(subscriptions).toContainEqual({ type: 'trades', coin: 'HYPE' });
+    expect(subscriptions).toContainEqual({ type: 'trades', coin: 'xyz:SPCX' });
+    expect(subscriptions).not.toContainEqual({ type: 'trades', coin: 'TEST' });
+    relay.dispose();
+  });
+
+  it('publishes a monotonic trade identity without advancing it on timer snapshots', () => {
+    const relay = new HyperliquidMarketRelay();
+    const published: Array<{ tradeSequence?: number; tradeAt?: number | null; price: number | null }> = [];
+    relay.subscribe('btc', (state) => published.push({
+      tradeSequence: state.tradeSequence,
+      tradeAt: state.tradeAt,
+      price: state.price,
+    }));
+    const internals = relay as unknown as {
+      handleMessage(raw: string): void;
+      publish(): void;
+    };
+    internals.handleMessage(JSON.stringify({
+      channel: 'candle',
+      data: { s: 'BTC', t: 60_000, o: '100', h: '101', l: '99', c: '100' },
+    }));
+    internals.publish();
+    expect(published.at(-1)).toMatchObject({ tradeSequence: 0, tradeAt: null, price: 100 });
+
+    internals.handleMessage(JSON.stringify({
+      channel: 'trades',
+      data: [{ coin: 'BTC', px: '102', time: 70_000 }],
+    }));
+    internals.publish();
+    internals.publish();
+    expect(published.slice(-2)).toEqual([
+      { tradeSequence: 1, tradeAt: 70_000, price: 102 },
+      { tradeSequence: 1, tradeAt: 70_000, price: 102 },
+    ]);
+
+    // A stale replay cannot mint a fresh client-side pulse.
+    internals.handleMessage(JSON.stringify({
+      channel: 'trades',
+      data: [{ coin: 'BTC', px: '99', time: 69_000 }],
+    }));
+    internals.publish();
+    expect(published.at(-1)).toEqual({ tradeSequence: 1, tradeAt: 70_000, price: 102 });
+    relay.dispose();
   });
 
   it('centralizes X reads, scopes explicit cashtags, and stops at the daily budget', async () => {

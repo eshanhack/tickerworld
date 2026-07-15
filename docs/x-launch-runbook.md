@@ -1,6 +1,6 @@
 # Tickerworld X launch runbook
 
-Positioning: **Walk inside live crypto markets with friends.**
+Positioning: **Walk inside live markets with friends.**
 
 Public launch stays closed until every go/no-go item below has real evidence. A successful build is
 not evidence that multiplayer, news, DNS, moderation, or a human soft launch is ready.
@@ -11,8 +11,9 @@ not evidence that multiplayer, news, DNS, moderation, or a human soft launch is 
 - Multiplayer/API: `https://us-lax-489a84b6.colyseus.cloud`
 - Client hosting: the single `game-tickerworld` Vercel project
 - Multiplayer: one capped Colyseus process, maximum 400 connected players and 50 per shard
-- Market data: one process-wide Hyperliquid relay; direct browsers load only the active market when
-  the relay is unavailable and the remote fallback switch permits it
+- Market data: one process-wide Hyperliquid relay, including exact XYZ builder-deployed perpetual
+  instruments; direct browsers load only the active market when the relay is unavailable and the
+  remote fallback switch permits it
 - News: one leased server-side X filtered stream, per-world account catalog, and ten-minute cache;
   browsers keep private watchlists and Vercel reads only `NEWS_CACHE_ORIGIN`; every rolling server
   instance uses the same production `DATABASE_URL`
@@ -44,9 +45,10 @@ Redis Presence/Driver and distributed safety/admission state are implemented.
 4. Verify `/healthz`, `/readyz`, `/api/capabilities`, market age, news cache mode, and structured logs.
 5. Run two real bots through join, movement, emote, chat, block, invite, and portal transfer.
 6. Deploy the Vercel client from `main`.
-7. Verify all ten direct tickerworld shells, `/admin` noindex, five trust pages, news truthfulness, and
-   solo fallback. The smoke also requires ten unique 1200×630 route cards; a missing card
-   that falls through to the SPA is a launch failure, not an acceptable placeholder.
+7. Verify all 24 direct tickerworld shells, `/admin` noindex, five trust pages, news truthfulness, and
+   solo fallback. Public-launch approval requires 24 unique 1200×630 route cards captured from the
+   finished worlds. Integration builds may use the canonical non-live brand card for an unfinished
+   world's metadata, but that fallback remains a launch blocker rather than invented gameplay art.
 8. Run the private soft launch. Start with 50 invited people, then increase only while telemetry and
    resource limits remain healthy.
 9. Hold public launch for at least 24 stable hours.
@@ -77,9 +79,9 @@ Use a production-shaped staging server, not a developer laptop result, for go/no
 
 ## Launch creative
 
-The game repository contains route-specific static social-card targets under `public/social/` and the
-final 1200×675 in-game postcard renderer. Capture cards only from the finished build; do not put live
-prices in cacheable OG art.
+The game repository contains route-specific static social-card targets and the final 1200×675
+in-game postcard renderer. Capture cards only from the finished build; do not put live prices in
+cacheable OG art.
 
 Launch video shot list (12–15 seconds, captions always on):
 
@@ -96,7 +98,7 @@ then review the final export before posting.
 
 Recommended launch post:
 
-> I turned live crypto charts into a tiny multiplayer world. Pick an animal, walk inside BTC, and
+> I turned live market charts into a tiny multiplayer world. Pick an animal, walk inside BTC, and
 > bring a friend → tickerworld.io/btc
 
 Invite 10–20 real friends into BTC for the recording and initial public session. Do not use bots,

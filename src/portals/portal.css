@@ -411,7 +411,10 @@
   .world-navigator-channels { padding: 14px 16px; border-top: 1px solid rgb(81 72 58 / 8%); border-left: 0; }
   .world-navigator-channels [role='radiogroup'] { grid-template-columns: repeat(2, minmax(0, 1fr)); max-height: 120px; }
   .world-navigator-book footer { display: none; }
-  .tickerworld-online-badge { top: calc(max(.65rem, env(safe-area-inset-top)) + 3.2rem); right: max(.7rem, env(safe-area-inset-right)); width: 144px; }
+  /* Keep the population summary in its own row below the clock and share
+     controls. All three controls occupy the same top-right safe area on
+     portrait screens, so sharing the former offset made them overlap. */
+  .tickerworld-online-badge { top: calc(max(.65rem, env(safe-area-inset-top)) + 7.15rem); right: max(.7rem, env(safe-area-inset-right)); width: 144px; }
 }
 
 @media (max-width: 430px) {

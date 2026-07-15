@@ -1,6 +1,6 @@
 # Tickerworld multiplayer server
 
-Independent Colyseus 0.17 service for the ten bounded ticker worlds. The root
+Independent Colyseus 0.17 service for Tickerworld's bounded market worlds. The root
 Vite application does not install this package.
 
 ## Local development
@@ -116,5 +116,5 @@ until shared Presence/Driver and distributed admission/moderation are implemente
 The `market` room filters by ticker and sorts by descending client count. Each
 room auto-locks at 50, so `joinOrCreate('market', { market, ... })` fills the
 most populated non-full shard before creating an overflow shard.
-Launch admission is capped at 400 connections and 18 rooms. A hot market may
-use at most eight shards, leaving room capacity for all ten worlds.
+Launch admission is capped at 400 connections and 40 rooms. A hot market may
+use at most eight shards, leaving room capacity for all 24 worlds.

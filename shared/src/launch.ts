@@ -97,6 +97,14 @@ export interface RelayedMarketState {
   candles: readonly RelayedMarketCandle[];
   candle: RelayedMarketCandle | null;
   price: number | null;
+  /**
+   * Process-local monotonic identity for the latest genuine trade observed by
+   * the relay. Optional so a new client stays compatible with the previous
+   * protocol during a rolling deployment.
+   */
+  tradeSequence?: number;
+  /** Upstream timestamp of the trade identified by `tradeSequence`. */
+  tradeAt?: number | null;
   upstreamAt: number | null;
   publishedAt: number;
   ageMs: number | null;

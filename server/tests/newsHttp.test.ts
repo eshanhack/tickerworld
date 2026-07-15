@@ -1,6 +1,7 @@
 import express from 'express';
 import request from 'supertest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { ASSET_SYMBOLS } from '@tickerworld/shared';
 import { configureHttp } from '../src/http.js';
 import { loadConfig } from '../src/config.js';
 import { createDatabase, migrateDatabase } from '../src/db/database.js';
@@ -112,6 +113,19 @@ describe('news account HTTP acquisition', () => {
       .where('source_id', '=', '1000000000000000010')
       .where('scope', '=', 'BTC')
       .executeTakeFirstOrThrow()).last_requested_at).toBeGreaterThan(0);
+  });
+
+  it('serves the bounded account/news view for every registered tickerworld scope', async () => {
+    for (const scope of ASSET_SYMBOLS) {
+      const snapshot = await api.get(`/api/news?scope=${scope}`);
+      expect(snapshot.status, scope).toBe(200);
+      expect(snapshot.body).toMatchObject({
+        items: expect.any(Array),
+        accounts: expect.any(Array),
+        maxAccounts: 8,
+      });
+      expect(['live', 'unconfigured', 'unavailable']).toContain(snapshot.body.mode);
+    }
   });
 
   it('limits new acquisitions to two per actor per day', async () => {

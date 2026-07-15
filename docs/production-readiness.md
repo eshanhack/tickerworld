@@ -42,7 +42,7 @@ read-only and must pass before a public announcement.
   explicitly allowlisted local/preview server. Do not mark multiplayer live
   until the canonical server is healthy. Configure `X_BEARER_TOKEN` only as a
   server-side secret; never use a `VITE_` prefix.
-- Verify all ten direct tickerworld routes, `/admin` with its `X-Robots-Tag:
+- Verify all 24 direct tickerworld routes, `/admin` with its `X-Robots-Tag:
   noindex`, `/api/news`, and the legacy-domain redirect in a preview deployment
   before promotion. Route-specific launch metadata and legal pages belong to the
   separate viral-launch pass and are not represented as complete here.

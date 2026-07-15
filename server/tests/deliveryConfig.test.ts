@@ -54,7 +54,12 @@ describe('delivery configuration', () => {
     expect(buildProject).toContain("['scripts/verify-release-assets.mjs']");
     expect(buildProject).toContain("process.env.COLYSEUS_CLOUD !== undefined");
     const rewrites = vercel.rewrites as Array<Record<string, unknown>>;
-    for (const slug of ['btc', 'eth', 'sol', 'xrp', 'doge', 'bnb', 'link', 'avax', 'wti', 'test']) {
+    for (const slug of [
+      'btc', 'eth', 'sol', 'xrp', 'doge', 'bnb', 'link', 'avax', 'wti', 'test',
+      'pump', 'ansem', 'shfl',
+      'skhynix', 'hype', 'xyz100', 'sp500', 'micron', 'spacex', 'nvidia',
+      'gold', 'apple', 'meta', 'google',
+    ]) {
       expect(rewrites).toContainEqual({ source: `/${slug}`, destination: `/${slug}.html` });
     }
     expect(rewrites.at(-1)).toEqual({ source: '/(.*)', destination: '/index.html' });

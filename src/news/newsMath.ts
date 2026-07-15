@@ -8,7 +8,7 @@ import {
   type NewsSource,
   type TrackedNewsAccount,
 } from './types.js';
-import { NEWS_CLIENT_ACCOUNT_MAX } from '../../shared/src/index.js';
+import { NEWS_CLIENT_ACCOUNT_MAX, isAssetSymbol } from '../../shared/src/index.js';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -144,20 +144,7 @@ function parseNewsItem(value: unknown): NewsItem | undefined {
       && /^[^\s\u0000-\u001f\u007f]{1,128}$/.test(value.authorId.trim())
       ? value.authorId.trim()
       : null;
-  const scope = value.scope === 'global'
-    || value.scope === 'BTC'
-    || value.scope === 'ETH'
-    || value.scope === 'SOL'
-    || value.scope === 'XRP'
-    || value.scope === 'DOGE'
-    || value.scope === 'BNB'
-    || value.scope === 'LINK'
-    || value.scope === 'AVAX'
-    || value.scope === 'WTI'
-    || value.scope === 'TEST'
-    || value.scope === 'PUMP'
-    || value.scope === 'ANSEM'
-    || value.scope === 'SHFL'
+  const scope = value.scope === 'global' || isAssetSymbol(value.scope)
     ? value.scope
     : 'global';
   if (

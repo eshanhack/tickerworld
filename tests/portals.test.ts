@@ -1,15 +1,17 @@
 import * as THREE from 'three';
 import { Text } from 'troika-three-text';
 import { describe, expect, it, vi } from 'vitest';
-import { ASSET_SYMBOLS } from '../src/types';
+import { ASSET_SYMBOLS, type AssetSymbol } from '../src/types';
 import {
   createPortalRoutes as createSharedPortalRoutes,
   marketForSymbol,
+  WORLD_RADIUS,
 } from '../shared/src/index.js';
 import {
   DEX_FIELD_PORTAL_RADIUS,
   PORTAL_DWELL_SECONDS,
   PORTAL_RADIUS,
+  SIGNATURE_WORLD_PORTAL_RADIUS,
   PortalDwellController,
   PortalSystem,
   createPortalLabelModel,
@@ -22,6 +24,11 @@ import {
   portalLabelLineBounds,
   portalArrivalSpawn,
 } from '../src/portals';
+
+const SIGNATURE_WORLD_SYMBOLS = new Set<AssetSymbol>([
+  'SKHYNIX', 'HYPE', 'XYZ100', 'SP500', 'MU', 'SPACEX',
+  'NVDA', 'GOLD', 'AAPL', 'META', 'GOOGL',
+]);
 
 describe('fixed portal routes', () => {
   it('provides every other destination in stable road slots for every world', () => {
@@ -45,7 +52,9 @@ describe('fixed portal routes', () => {
       const client = createPortalRoutes(symbol);
       const shared = createSharedPortalRoutes(marketForSymbol(symbol));
       for (const route of client) {
-        const serverRoute = shared.find(({ to }) => to === route.destination.toLowerCase());
+        // Friendly routes are not derivable by lowercasing the display symbol:
+        // MU -> /micron, NVDA -> /nvidia, AAPL -> /apple, and GOOGL -> /google.
+        const serverRoute = shared.find(({ to }) => to === marketForSymbol(route.destination));
         expect(serverRoute).toBeDefined();
         expect(serverRoute?.x).toBeCloseTo(route.x, 10);
         expect(serverRoute?.z).toBeCloseTo(route.z, 10);
@@ -148,9 +157,18 @@ describe('fixed portal routes', () => {
       expect([...rows.values()].every((row) => row >= 0 && Number.isInteger(row))).toBe(true);
       for (let firstIndex = 0; firstIndex < routes.length; firstIndex += 1) {
         const first = routes[firstIndex]!;
+        const expectedRadius = SIGNATURE_WORLD_SYMBOLS.has(first.slotMarket)
+          ? SIGNATURE_WORLD_PORTAL_RADIUS
+          : ['PUMP', 'ANSEM', 'SHFL'].includes(first.slotMarket)
+            ? DEX_FIELD_PORTAL_RADIUS
+            : PORTAL_RADIUS;
+        expect(first.radius).toBeCloseTo(expectedRadius, 10);
         // Portals and their cards sit beyond the central chart/plaza sightline.
         expect(Math.hypot(first.x, first.z) - 2.05).toBeGreaterThan(31);
-        expect(Math.hypot(first.x, first.z)).toBeLessThan(62);
+        // Even the outer discovery ring and its conservative full card width
+        // remain safely inside the shared 84-unit player/camera boundary.
+        expect(Math.hypot(first.x, first.z) + PORTAL_LABEL_LAYOUT.cardWidth * 0.5)
+          .toBeLessThan(WORLD_RADIUS);
         const firstRow = rows.get(first.id) ?? 0;
         expect(portalLabelCenterY(firstRow) - PORTAL_LABEL_LAYOUT.cardHeight * 0.5)
           .toBeGreaterThan(2.22 + 2.05);
@@ -199,6 +217,26 @@ describe('portal dwell state', () => {
 });
 
 describe('PortalSystem presentation', () => {
+  it('reveals outer-world labels only as the player approaches their ring', () => {
+    const system = new PortalSystem({ parent: new THREE.Group(), activeMarket: 'BTC' });
+    const route = system.getRoutes().find(({ radius }) => radius === SIGNATURE_WORLD_PORTAL_RADIUS);
+    expect(route).toBeDefined();
+    if (!route) return;
+    const front = system.root.getObjectByName(`${route.id}-front-label`);
+    const back = system.root.getObjectByName(`${route.id}-back-label`);
+    expect(front).toBeDefined();
+    expect(back).toBeDefined();
+    system.setPlayerProbe({ x: 0, z: 0, grounded: true });
+    system.update(0, 0);
+    expect(front?.visible).toBe(false);
+    expect(back?.visible).toBe(false);
+    system.setPlayerProbe({ x: route.x, z: route.z, grounded: true });
+    system.update(0, 0);
+    expect(front?.visible).toBe(true);
+    expect(back?.visible).toBe(true);
+    system.dispose();
+  });
+
   it('builds shared-geometry portals, updates labels, and requests one trip', () => {
     const parent = new THREE.Group();
     const travel = vi.fn();

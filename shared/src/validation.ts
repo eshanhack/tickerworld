@@ -16,6 +16,7 @@ import type {
   ModerationReason,
   SkinId,
 } from './contracts.js';
+import { assetSymbolForMarket, marketSlugForAsset } from './markets.js';
 
 const ANONYMOUS_ACTOR_PATTERN = /^anon_[a-f0-9]{32}$/;
 const PLAYER_ACTOR_PATTERN = /^player_[A-Za-z0-9]{16,57}$/;
@@ -77,9 +78,9 @@ export function canonicalUsername(value: string): string | null {
 }
 
 export function symbolForMarket(market: MarketSlug): AssetSymbol {
-  return market.toUpperCase() as AssetSymbol;
+  return assetSymbolForMarket(market);
 }
 
 export function marketForSymbol(symbol: AssetSymbol): MarketSlug {
-  return symbol.toLowerCase() as MarketSlug;
+  return marketSlugForAsset(symbol);
 }

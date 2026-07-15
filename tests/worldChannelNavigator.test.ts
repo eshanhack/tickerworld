@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { ASSET_SYMBOLS } from '../src/types';
 import {
   normalizeWorldChannels,
   populationBadgeLabels,
@@ -8,6 +9,29 @@ import {
 } from '../src/portals';
 
 describe('world and channel navigator model', () => {
+  it('keeps every registered world reachable and population-labelled', () => {
+    const visited = new Set<number>();
+    let index = 0;
+    for (let step = 0; step < ASSET_SYMBOLS.length; step += 1) {
+      visited.add(index);
+      index = worldGridNavigationIndex(index, 'ArrowRight', ASSET_SYMBOLS.length, 4);
+    }
+    expect(visited).toEqual(new Set(ASSET_SYMBOLS.map((_symbol, itemIndex) => itemIndex)));
+    expect(index).toBe(0);
+
+    for (const symbol of ASSET_SYMBOLS) {
+      const population = { symbol, online: 1, shards: 1, connection: 'online' as const };
+      expect(worldPopulationLabel(population)).toBe('1 / 50 PEOPLE INSIDE');
+      expect(populationBadgeLabels({
+        totalOnline: ASSET_SYMBOLS.length,
+        worldOnline: 1,
+        world: symbol,
+        connection: 'online',
+        usernames: [],
+      }).world).toBe(`1 / 50 IN ${symbol}`);
+    }
+  });
+
   it('navigates all four directions and skips nonexistent cells in the short final row', () => {
     expect(worldGridNavigationIndex(0, 'ArrowLeft', 13, 4)).toBe(12);
     expect(worldGridNavigationIndex(12, 'ArrowRight', 13, 4)).toBe(0);

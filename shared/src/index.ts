@@ -1,6 +1,7 @@
 export * from './constants.js';
 export * from './contracts.js';
 export * from './launch.js';
+export * from './markets.js';
 export * from './portals.js';
 export * from './spawns.js';
 export * from './terrain.js';

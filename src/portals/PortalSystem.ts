@@ -34,6 +34,8 @@ import {
 const RING_RADIUS = 2.05;
 const RING_TUBE = 0.18;
 const PORTAL_CENTER_Y = 2.22;
+/** Labels resolve as the player approaches; distant outer worlds remain calm silhouettes. */
+const PORTAL_LABEL_REVEAL_RADIUS = 42;
 
 const DESTINATION_COLORS: Readonly<Record<AssetSymbol, number>> = {
   BTC: 0xe7a869,
@@ -49,6 +51,17 @@ const DESTINATION_COLORS: Readonly<Record<AssetSymbol, number>> = {
   PUMP: 0xe990b7,
   ANSEM: 0x746b83,
   SHFL: 0x75a9d6,
+  SKHYNIX: 0xb291d1,
+  HYPE: 0x69cfc0,
+  XYZ100: 0x70a9dc,
+  SP500: 0x91b99b,
+  MU: 0x8d83cf,
+  SPACEX: 0xaeb8c8,
+  NVDA: 0x84bd69,
+  GOLD: 0xe2c36d,
+  AAPL: 0xc9ced4,
+  META: 0x72a0df,
+  GOOGL: 0xda8a79,
 };
 
 interface PortalVisual {
@@ -388,6 +401,12 @@ export class PortalSystem implements GameSystem {
       visual.ring.scale.setScalar(pulse);
       visual.group.position.y = finiteHeight(this.heightAt(visual.route.x, visual.route.z))
         + Math.sin(phase * 0.72) * 0.045 * motionScale;
+      const labelVisible = Math.hypot(
+        this.probe.x - visual.route.x,
+        this.probe.z - visual.route.z,
+      ) <= PORTAL_LABEL_REVEAL_RADIUS;
+      visual.frontLabel.root.visible = labelVisible;
+      visual.backLabel.root.visible = labelVisible;
     });
   }
 

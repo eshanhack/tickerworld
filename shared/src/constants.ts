@@ -12,6 +12,17 @@ export const ASSET_SYMBOLS = [
   'PUMP',
   'ANSEM',
   'SHFL',
+  'SKHYNIX',
+  'HYPE',
+  'XYZ100',
+  'SP500',
+  'MU',
+  'SPACEX',
+  'NVDA',
+  'GOLD',
+  'AAPL',
+  'META',
+  'GOOGL',
 ] as const;
 
 export const MARKET_SLUGS = [
@@ -28,6 +39,17 @@ export const MARKET_SLUGS = [
   'pump',
   'ansem',
   'shfl',
+  'skhynix',
+  'hype',
+  'xyz100',
+  'sp500',
+  'micron',
+  'spacex',
+  'nvidia',
+  'gold',
+  'apple',
+  'meta',
+  'google',
 ] as const;
 
 export const ANIMAL_KINDS = [

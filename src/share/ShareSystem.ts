@@ -7,6 +7,7 @@ import {
   type PartyShareBinding,
 } from './party';
 import { shareOrCopyLink, sharePostcard, type ShareCompletionMode } from './shareActions';
+import { marketShareAttribution, marketShareDescription } from './marketAttribution';
 import './share.css';
 
 export type ShareOutput = 'market-link' | 'party-invite' | 'postcard';
@@ -154,10 +155,11 @@ export class ShareSystem implements GameSystem {
     if (this.busy) return;
     const context = this.options.context();
     const marketUrl = publicShareUrl(context.url);
+    const attribution = marketShareAttribution(context.symbol, context.provider);
     await this.perform('market-link', 'Sharing market…', () => shareOrCopyLink({
       url: marketUrl,
-      title: `${context.symbol} in Tickerworld`,
-      text: `Meet me at the ${context.symbol} shrine in Tickerworld.`,
+      title: `${attribution.displayName} in Tickerworld`,
+      text: `Meet me at the ${attribution.displayName} shrine in Tickerworld. ${marketShareDescription(context.symbol, context.provider)}`,
     }));
   };
 
@@ -167,10 +169,11 @@ export class ShareSystem implements GameSystem {
       const invite = await this.options.party.requestPartyInvite();
       if (!invite || invite.expiresAt <= this.now()) throw new Error('A same-room invite is unavailable right now.');
       const context = this.options.context();
+      const attribution = marketShareAttribution(context.symbol, context.provider);
       const candidateUrl = withPartyToken(publicShareUrl(context.url), invite.token);
       const result = await shareOrCopyLink({
         url: candidateUrl,
-        title: `Join my ${context.symbol} Tickerworld room`,
+        title: `Join my ${attribution.displayName} Tickerworld room`,
         text: 'This invite requests my exact shard. If it fills up, Tickerworld will keep you playing in another room.',
       });
       if (result.completed) {
@@ -189,6 +192,7 @@ export class ShareSystem implements GameSystem {
     if (this.busy) return;
     await this.perform('postcard', 'Painting a private postcard…', async () => {
       const context = this.options.context();
+      const attribution = marketShareAttribution(context.symbol, context.provider);
       const partyUrl = this.activePartyUrl(context);
       const png = await this.options.capturePostcard(partyUrl);
       const stamp = new Date(this.now()).toISOString().replaceAll(':', '-').replace(/\.\d{3}Z$/, 'Z');
@@ -196,8 +200,8 @@ export class ShareSystem implements GameSystem {
         png,
         filename: `tickerworld-${context.symbol.toLowerCase()}-${stamp}.png`,
         url: partyUrl ?? publicShareUrl(context.url),
-        title: `${context.symbol} Tickerworld postcard`,
-        text: `A live ${context.symbol} moment from Tickerworld.`,
+        title: `${attribution.displayName} Tickerworld postcard`,
+        text: marketShareDescription(context.symbol, context.provider),
       });
     });
   };

@@ -20,8 +20,7 @@ import {
   Vector3,
 } from 'three';
 import { Text } from 'troika-three-text';
-import { DEX_FIELD_PORTAL_RADIUS, PORTAL_RADIUS } from '../../shared/src/index.js';
-import { GRAND_MONUMENTS } from '../config';
+import { createPortalRoutes } from '../../shared/src/index.js';
 import type { AssetSymbol } from '../types';
 import { createRandom } from './random';
 import { PARKOUR_PARK_BOUNDS } from './ParkourParkSystem';
@@ -126,16 +125,12 @@ function canonicalRoadDirections(): readonly Readonly<{
   z: number;
   portalRadius: number;
 }>[] {
-  return GRAND_MONUMENTS.filter((monument) => monument.symbol !== 'BTC').map((monument) => {
-    const length = Math.hypot(monument.x, monument.z) || 1;
+  return createPortalRoutes('btc').map((route) => {
+    const length = Math.hypot(route.x, route.z) || 1;
     return {
-      x: monument.x / length,
-      z: monument.z / length,
-      portalRadius: monument.symbol === 'PUMP'
-        || monument.symbol === 'ANSEM'
-        || monument.symbol === 'SHFL'
-        ? DEX_FIELD_PORTAL_RADIUS
-        : PORTAL_RADIUS,
+      x: route.x / length,
+      z: route.z / length,
+      portalRadius: length,
     };
   });
 }

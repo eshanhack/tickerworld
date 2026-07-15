@@ -22,12 +22,10 @@ import {
   Vector3,
 } from 'three';
 import {
-  DEX_FIELD_PORTAL_RADIUS,
   MARKET_SLUGS,
-  PORTAL_RADIUS,
+  createPortalRoutes,
   createSpawnAssignments,
 } from '../../shared/src/index.js';
-import { GRAND_MONUMENTS } from '../config';
 import type { AssetSymbol } from '../types';
 import { createRandom } from './random';
 import { PARKOUR_PARK_BOUNDS } from './ParkourParkSystem';
@@ -141,22 +139,11 @@ export interface DesertOilDistrictStats {
   readonly pooledDrawCalls: number;
 }
 
-const ROAD_DIRECTIONS = GRAND_MONUMENTS
-  .filter(({ symbol }) => symbol !== 'BTC')
-  .map(({ x, z }) => {
-    const length = Math.hypot(x, z) || 1;
-    return { x: x / length, z: z / length };
-  });
-
-const WTI_PORTALS = GRAND_MONUMENTS
-  .filter(({ symbol }) => symbol !== 'BTC')
-  .map(({ symbol, x, z }) => {
-    const length = Math.hypot(x, z) || 1;
-    const radius = symbol === 'PUMP' || symbol === 'ANSEM' || symbol === 'SHFL'
-      ? DEX_FIELD_PORTAL_RADIUS
-      : PORTAL_RADIUS;
-    return { x: x / length * radius, z: z / length * radius };
-  });
+const WTI_PORTALS = createPortalRoutes('btc').map(({ x, z }) => ({ x, z }));
+const ROAD_DIRECTIONS = WTI_PORTALS.map(({ x, z }) => {
+  const length = Math.hypot(x, z) || 1;
+  return { x: x / length, z: z / length };
+});
 
 /**
  * Every point the authoritative allocator may use when a player first joins

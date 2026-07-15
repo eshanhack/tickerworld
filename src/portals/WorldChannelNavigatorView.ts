@@ -74,6 +74,17 @@ const WORLD_ACCENTS: Readonly<Record<AssetSymbol, string>> = {
   PUMP: '#e990b7',
   ANSEM: '#746b83',
   SHFL: '#75a9d6',
+  SKHYNIX: '#b291d1',
+  HYPE: '#69cfc0',
+  XYZ100: '#70a9dc',
+  SP500: '#91b99b',
+  MU: '#8d83cf',
+  SPACEX: '#aeb8c8',
+  NVDA: '#84bd69',
+  GOLD: '#e2c36d',
+  AAPL: '#c9ced4',
+  META: '#72a0df',
+  GOOGL: '#da8a79',
 };
 
 function boundedCount(value: number | null | undefined): number | null {

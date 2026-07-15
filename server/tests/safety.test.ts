@@ -227,24 +227,29 @@ describe('launch safety controls', () => {
   });
 
   it('reserves a room for every other market even when BTC is hot', () => {
+    const maxRooms = 40;
     const admissions = new AdmissionControl({
       maxProcessConnections: 400,
-      maxRooms: 24,
+      maxRooms,
       maxMarketShards: 8,
       maxConcurrentConnectionsPerIp: 20,
       actorJoinsPerMinute: 12,
       ipJoinsPerMinute: 30,
     });
     for (let index = 0; index < 8; index += 1) admissions.registerRoom(`btc-${index}`, 'btc');
-    for (const market of MARKET_SLUGS.filter((market) => market !== 'btc')) {
+    const otherMarkets = MARKET_SLUGS.filter((market) => market !== 'btc');
+    for (const market of otherMarkets) {
       admissions.registerRoom(`${market}-0`, market);
     }
-    admissions.registerRoom('eth-1', 'eth');
-    admissions.registerRoom('sol-1', 'sol');
-    admissions.registerRoom('xrp-1', 'xrp');
-    admissions.registerRoom('doge-1', 'doge');
-    expect(admissions.snapshot().rooms).toBe(24);
-    expect(() => admissions.registerRoom('bnb-1', 'bnb')).toThrowError('process_capacity');
+    const overflowSeats = maxRooms - 8 - otherMarkets.length;
+    for (const market of otherMarkets.slice(0, overflowSeats)) {
+      admissions.registerRoom(`${market}-1`, market);
+    }
+    expect(admissions.snapshot().rooms).toBe(maxRooms);
+    const rejectedMarket = otherMarkets[overflowSeats];
+    if (!rejectedMarket) throw new Error('Expected one market beyond the bounded overflow slots');
+    expect(() => admissions.registerRoom(`${rejectedMarket}-1`, rejectedMarket))
+      .toThrowError('process_capacity');
   });
 
   it('coalesces population broadcasts to at most two per second', () => {
@@ -283,7 +288,7 @@ describe('launch safety controls', () => {
     expect(config.databaseSsl).toBe('verify-full');
     expect(config.limits).toMatchObject({
       maxProcessConnections: 400,
-      maxRooms: 24,
+      maxRooms: 40,
       maxMarketShards: 8,
     });
     expect(() => loadConfig({

@@ -1,5 +1,9 @@
 import {
   ASSET_SYMBOLS,
+  assetSymbolForHyperliquidCoin,
+  assetSymbolForMarket,
+  hyperliquidCoinForAsset,
+  marketSlugForAsset,
   type AssetSymbol,
   type CompactMarketMid,
   type MarketSlug,
@@ -12,7 +16,6 @@ const SOCKET_URL = 'wss://api.hyperliquid.xyz/ws';
 const PUBLISH_INTERVAL_MS = 400;
 const STALE_AFTER_MS = 8_000;
 const MAX_CANDLES = 30;
-const NON_HYPERLIQUID_SYMBOLS = new Set<AssetSymbol>(['TEST', 'PUMP', 'ANSEM', 'SHFL']);
 
 type StateListener = (state: RelayedMarketState, mids: readonly CompactMarketMid[]) => void;
 
@@ -28,6 +31,10 @@ interface InternalMarketState {
   candles: RelayedMarketCandle[];
   price: number | null;
   lastReceivedAt: number | null;
+  revision: number;
+  candleRevision: number;
+  tradeSequence: number;
+  tradeAt: number | null;
 }
 
 function finiteNumber(value: unknown): number | null {
@@ -62,6 +69,23 @@ export function reconcileRelayedCandles(
   return next.sort((left, right) => left.openTime - right.openTime).slice(-MAX_CANDLES);
 }
 
+/**
+ * Merges an ordered REST history with candles already observed on the socket.
+ * The latter wins at identical open times, so a late bootstrap response can
+ * prepend history without rolling the live candle backwards.
+ */
+export function mergeRelayedCandleWindows(
+  history: readonly RelayedMarketCandle[],
+  live: readonly RelayedMarketCandle[],
+): RelayedMarketCandle[] {
+  const byOpenTime = new Map<number, RelayedMarketCandle>();
+  for (const candle of history) byOpenTime.set(candle.openTime, { ...candle });
+  for (const candle of live) byOpenTime.set(candle.openTime, { ...candle });
+  return [...byOpenTime.values()]
+    .sort((left, right) => left.openTime - right.openTime)
+    .slice(-MAX_CANDLES);
+}
+
 export function applyRelayedTrade(
   current: readonly RelayedMarketCandle[],
   price: number,
@@ -87,20 +111,16 @@ export function applyRelayedTrade(
 }
 
 function symbolForMarket(market: MarketSlug): AssetSymbol {
-  return market.toUpperCase() as AssetSymbol;
+  return assetSymbolForMarket(market);
 }
 
 function marketForSymbol(symbol: string): MarketSlug | null {
-  if (symbol.toLowerCase() === 'xyz:cl') return 'wti';
-  const upper = symbol.toUpperCase() as AssetSymbol;
-  return !NON_HYPERLIQUID_SYMBOLS.has(upper) && (ASSET_SYMBOLS as readonly string[]).includes(upper)
-    ? upper.toLowerCase() as MarketSlug
-    : null;
+  const asset = assetSymbolForHyperliquidCoin(symbol);
+  return asset ? marketSlugForAsset(asset) : null;
 }
 
 function coinForSymbol(symbol: AssetSymbol): string | null {
-  if (NON_HYPERLIQUID_SYMBOLS.has(symbol)) return null;
-  return symbol === 'WTI' ? 'xyz:CL' : symbol;
+  return hyperliquidCoinForAsset(symbol);
 }
 
 /** One process-wide Hyperliquid connection and bounded 30-candle windows. */
@@ -122,10 +142,14 @@ export class HyperliquidMarketRelay implements MarketRelay {
     private readonly now: () => number = Date.now,
   ) {
     for (const symbol of ASSET_SYMBOLS) {
-      this.states.set(symbol.toLowerCase() as MarketSlug, {
+      this.states.set(marketSlugForAsset(symbol), {
         candles: [],
         price: null,
         lastReceivedAt: null,
+        revision: 0,
+        candleRevision: 0,
+        tradeSequence: 0,
+        tradeAt: null,
       });
     }
   }
@@ -182,10 +206,17 @@ export class HyperliquidMarketRelay implements MarketRelay {
   private async bootstrap(): Promise<void> {
     const endTime = this.now();
     const startTime = endTime - 32 * 60_000;
-    await Promise.allSettled(ASSET_SYMBOLS.map(async (symbol) => {
+    const symbols = ASSET_SYMBOLS.filter((symbol) => coinForSymbol(symbol) !== null);
+    // HIP-3 snapshots share the same public API budget. A small deterministic
+    // pool avoids a reconnect stampede now that the catalogue spans 20 live
+    // instruments, while still filling every chart within a few short batches.
+    const bootstrapOne = async (symbol: AssetSymbol): Promise<void> => {
       const coin = coinForSymbol(symbol);
       if (!coin) return;
-      const requestedAt = this.now();
+      const market = marketSlugForAsset(symbol);
+      const requestedState = this.states.get(market);
+      const requestedRevision = requestedState?.revision ?? 0;
+      const requestedCandleRevision = requestedState?.candleRevision ?? 0;
       const response = await this.fetcher(HTTP_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -199,18 +230,20 @@ export class HyperliquidMarketRelay implements MarketRelay {
       const payload = await response.json() as unknown;
       if (!Array.isArray(payload)) throw new Error('invalid_snapshot');
       const candles = payload.map(parseRelayedCandle).filter((value): value is RelayedMarketCandle => value !== null);
-      const market = symbol.toLowerCase() as MarketSlug;
       const state = this.states.get(market);
       if (!state || candles.length === 0) return;
-      const liveOpenTime = state.lastReceivedAt !== null && state.lastReceivedAt > requestedAt
-        ? state.candles.at(-1)?.openTime
-        : undefined;
-      state.candles = candles
-        .filter((candle) => liveOpenTime === undefined || candle.openTime < liveOpenTime)
-        .reduce(reconcileRelayedCandles, state.candles);
-      state.price = state.candles.at(-1)?.close ?? null;
+      const socketCandles = state.candleRevision > requestedCandleRevision
+        ? state.candles
+        : [];
+      const socketPrice = state.revision > requestedRevision ? state.price : null;
+      state.candles = mergeRelayedCandleWindows(candles, socketCandles);
+      state.price = socketPrice ?? state.candles.at(-1)?.close ?? null;
       state.lastReceivedAt = this.now();
-    }));
+    };
+    for (let index = 0; index < symbols.length; index += 4) {
+      await Promise.allSettled(symbols.slice(index, index + 4).map(bootstrapOne));
+      if (this.stopped) return;
+    }
   }
 
   private connect(): void {
@@ -277,6 +310,7 @@ export class HyperliquidMarketRelay implements MarketRelay {
         const state = market ? this.states.get(market) : undefined;
         if (!state || price === null || price <= 0) continue;
         state.price = price;
+        state.revision += 1;
         state.lastReceivedAt = receivedAt;
       }
       return;
@@ -291,6 +325,8 @@ export class HyperliquidMarketRelay implements MarketRelay {
         const state = market ? this.states.get(market) : undefined;
         if (!state || !candle) continue;
         state.candles = reconcileRelayedCandles(state.candles, candle);
+        state.revision += 1;
+        state.candleRevision += 1;
         state.price = candle.close;
         state.lastReceivedAt = this.now();
       }
@@ -304,9 +340,14 @@ export class HyperliquidMarketRelay implements MarketRelay {
         const price = finiteNumber(value.px);
         const tradeTime = finiteNumber(value.time);
         const state = market ? this.states.get(market) : undefined;
-        if (!state || price === null || tradeTime === null) continue;
+        if (!state || price === null || price <= 0 || tradeTime === null || tradeTime < 0) continue;
+        if (state.tradeAt !== null && tradeTime < state.tradeAt) continue;
         state.candles = applyRelayedTrade(state.candles, price, tradeTime);
+        state.revision += 1;
+        state.candleRevision += 1;
         state.price = price;
+        state.tradeSequence += 1;
+        state.tradeAt = tradeTime;
         state.lastReceivedAt = receivedAt;
       }
     }
@@ -316,7 +357,7 @@ export class HyperliquidMarketRelay implements MarketRelay {
     const publishedAt = this.now();
     const mids: CompactMarketMid[] = [];
     for (const symbol of ASSET_SYMBOLS) {
-      const state = this.states.get(symbol.toLowerCase() as MarketSlug);
+      const state = this.states.get(marketSlugForAsset(symbol));
       if (state?.price !== null && state?.price !== undefined && state.lastReceivedAt !== null) {
         mids.push({ instrument: symbol, price: state.price, upstreamAt: state.lastReceivedAt });
       }
@@ -330,6 +371,8 @@ export class HyperliquidMarketRelay implements MarketRelay {
         candles: state.candles.map((candle) => ({ ...candle })),
         candle: state.candles.at(-1) ?? null,
         price: state.price,
+        tradeSequence: state.tradeSequence,
+        tradeAt: state.tradeAt,
         upstreamAt: state.lastReceivedAt,
         publishedAt,
         ageMs,

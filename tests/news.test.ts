@@ -18,6 +18,7 @@ import {
   handleNewsRequest,
   normalizeXTimelineResponse,
 } from '../api/news';
+import { ASSET_SYMBOLS } from '../src/types';
 
 const NOW = Date.parse('2026-07-11T04:00:00.000Z');
 
@@ -86,6 +87,19 @@ describe('news item helpers', () => {
     delete legacyItem.links;
     expect(parseNewsApiResponse({ mode: 'live', checkedAt: NOW, items: [legacyItem] }, NOW)?.items[0]?.links)
       .toEqual([]);
+  });
+
+  it('accepts every registered tickerworld as a news scope', () => {
+    const scopedItems = ASSET_SYMBOLS.map((scope, index) => ({
+      ...item(`scope-${index}`, NOW - 1_000 - index),
+      scope,
+    }));
+    const parsed = parseNewsApiResponse({
+      mode: 'live',
+      checkedAt: NOW,
+      items: scopedItems,
+    }, NOW);
+    expect(new Set(parsed?.items.map(({ scope }) => scope))).toEqual(new Set(ASSET_SYMBOLS));
   });
 
   it('deduplicates newest-first, lets incoming edits win, and expires at exactly ten minutes', () => {
@@ -582,6 +596,27 @@ describe('X timeline endpoint helpers', () => {
     expect(cacheFetch).toHaveBeenCalledTimes(1);
     expect(String(cacheFetch.mock.calls[0]?.[0])).toBe(
       'https://multiplayer.tickerworld.test/api/news?scope=BTC',
+    );
+  });
+
+  it('proxies every registered world scope to the shared news cache', async () => {
+    const cacheFetch = vi.fn(async (_input: RequestInfo | URL) => Response.json({
+      mode: 'live',
+      items: [],
+      checkedAt: NOW,
+    }));
+    for (const scope of ASSET_SYMBOLS) {
+      const result = await handleNewsRequest(
+        new Request(`https://tickerworld.test/api/news?scope=${scope}`),
+        '',
+        NOW,
+        'https://multiplayer.tickerworld.test',
+        cacheFetch,
+      );
+      expect(result.status).toBe(200);
+    }
+    expect(cacheFetch.mock.calls.map(([input]) => String(input))).toEqual(
+      ASSET_SYMBOLS.map((scope) => `https://multiplayer.tickerworld.test/api/news?scope=${scope}`),
     );
   });
 

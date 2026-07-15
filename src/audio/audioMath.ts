@@ -37,6 +37,17 @@ export const ASSET_AUDIO_PROFILES: Readonly<Record<AssetSymbol, AssetAudioProfil
   PUMP: { frequency: 587.33, accent: 5 },
   ANSEM: { frequency: 261.63, accent: -9 },
   SHFL: { frequency: 415.3, accent: 7 },
+  SKHYNIX: { frequency: 311.13, accent: -6 },
+  HYPE: { frequency: 554.37, accent: 10 },
+  XYZ100: { frequency: 349.23, accent: 1 },
+  SP500: { frequency: 392, accent: -1 },
+  MU: { frequency: 466.16, accent: -6 },
+  SPACEX: { frequency: 568, accent: 12 },
+  NVDA: { frequency: 269.29, accent: 8 },
+  GOLD: { frequency: 427.47, accent: 2 },
+  AAPL: { frequency: 301.99, accent: 5 },
+  META: { frequency: 339.29, accent: -3 },
+  GOOGL: { frequency: 452.89, accent: 7 },
 };
 
 /**

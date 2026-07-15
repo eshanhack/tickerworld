@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { AssetSymbol } from '../src/types';
+import { ASSET_SYMBOLS, type AssetSymbol } from '../src/types';
 import {
   MARKET_TRADE_CONFIG,
   MultiExchangeTradeStream,
@@ -180,7 +180,7 @@ describe('trade exchange normalizers', () => {
 
 describe('trade configuration', () => {
   it('provides complete, ordered thresholds for every Tickerworld market', () => {
-    expect(Object.keys(MARKET_TRADE_CONFIG)).toHaveLength(13);
+    expect(Object.keys(MARKET_TRADE_CONFIG)).toHaveLength(ASSET_SYMBOLS.length);
     for (const config of Object.values(MARKET_TRADE_CONFIG)) {
       expect(config.tiers.minor).toBeGreaterThan(0);
       expect(config.tiers.notable).toBeGreaterThan(config.tiers.minor);
@@ -191,6 +191,9 @@ describe('trade configuration', () => {
       expect(config.surge.cooldownSeconds).toBeGreaterThanOrEqual(10);
     }
     expect(exchangesForMarket('BTC')).toEqual(['hyperliquid', 'binance', 'coinbase', 'okx']);
+    expect(exchangesForMarket('HYPE')).toEqual(['hyperliquid', 'binance', 'okx']);
+    expect(exchangesForMarket('SKHYNIX')).toEqual(['hyperliquid']);
+    expect(exchangesForMarket('SPACEX')).toEqual(['hyperliquid']);
     expect(exchangesForMarket('PUMP')).toEqual(['geckoterminal']);
   });
 

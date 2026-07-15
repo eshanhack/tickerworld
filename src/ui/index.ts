@@ -8,6 +8,7 @@ export {
   entryFeedStatusLabel,
   entryRoomStatusLabel,
   entryShellForMarket,
+  marketWorldDocumentTitle,
   type EntryRoomStatus,
   type EntryShellModel,
 } from './EntryShellModel';

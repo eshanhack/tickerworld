@@ -1111,7 +1111,7 @@ html.is-launch-capture body::before {
 html.is-launch-capture body::after {
   right: 2.8rem;
   bottom: 2.3rem;
-  content: "tickerworld.io  ·  Walk inside live crypto markets with friends.";
+  content: "tickerworld.io  ·  Walk inside live markets with friends.";
   font: 800 clamp(.8rem, 1.5vw, 1.15rem)/1.2 Nunito, system-ui, sans-serif;
   letter-spacing: .025em;
 }

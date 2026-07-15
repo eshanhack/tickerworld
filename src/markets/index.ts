@@ -7,6 +7,7 @@ export {
   buildHyperliquidSubscriptions,
   computeReconnectDelay,
   isSocketActivityStale,
+  mergeCandleHistories,
   parseHyperliquidCandles,
   parseHyperliquidCandleHistory,
   parseHyperliquidMids,

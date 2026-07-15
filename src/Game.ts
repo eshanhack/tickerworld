@@ -63,6 +63,7 @@ import {
 import { TelemetrySystem } from './telemetry';
 import {
   allocateSpawnAssignment,
+  ASSET_SYMBOLS,
   MARKET_ROOM_MAX_CLIENTS,
   type CompactMarketMid,
   type CorrectionMessage,
@@ -91,6 +92,7 @@ import {
   createParkourRunResult,
   parseStoredQualityTier,
   qualityProfile,
+  marketWorldDocumentTitle,
   UiInteractionLock,
   type QualityTier,
   type UiInteractionOwner,
@@ -100,6 +102,7 @@ import {
   DesertOilDistrict,
   OilWorldEffects,
   ParkourParkSystem,
+  SignatureMarketDistrict,
   WorldGuard,
   WorldSystem,
   worldEnvironmentTheme,
@@ -169,6 +172,7 @@ export class Game {
   private readonly oilEffects: OilWorldEffects;
   private readonly dexDistrict: CyberpunkDexDistrict;
   private readonly desertDistrict: DesertOilDistrict;
+  private readonly signatureDistrict: SignatureMarketDistrict;
   private readonly parkour: ParkourParkSystem;
   private parkourHud?: ParkourHudView;
   private tradeDebugPanel?: TradeDebugPanel;
@@ -246,7 +250,7 @@ export class Game {
       seed: `${WORLD_SEED}:trade-tape`,
     });
     this.routeHistory = options.routeHistory;
-    document.title = `${this.activeMarket} World · Tickerworld`;
+    document.title = marketWorldDocumentTitle(this.activeMarket);
     const partyToken = parsePartyToken(location.hash);
     void this.market.setActiveMarket(this.activeMarket);
     this.news.setActiveMarket(this.activeMarket);
@@ -327,6 +331,13 @@ export class Game {
       reducedMotion: this.reducedMotion,
     });
     this.desertDistrict = new DesertOilDistrict({
+      parent: this.scene,
+      seed: WORLD_SEED,
+      heightAt: (x, z) => this.world.heightAt(x, z),
+      activeMarket: this.activeMarket,
+      reducedMotion: this.reducedMotion,
+    });
+    this.signatureDistrict = new SignatureMarketDistrict({
       parent: this.scene,
       seed: WORLD_SEED,
       heightAt: (x, z) => this.world.heightAt(x, z),
@@ -518,6 +529,7 @@ export class Game {
         this.oilEffects.setReducedMotion(enabled);
         this.dexDistrict.setReducedMotion(enabled);
         this.desertDistrict.setReducedMotion(enabled);
+        this.signatureDistrict.setReducedMotion(enabled);
         this.parkour.setReducedMotion(enabled);
         this.emotes?.setReducedMotion(enabled);
         this.portalSystem?.setReducedMotion(enabled);
@@ -793,6 +805,7 @@ export class Game {
           roomClient: this.roomClient,
           fireworks: this.fireworks,
           oilEffects: this.oilEffects,
+          signatureDistrict: this.signatureDistrict,
           triggerLargeUp: () => this.triggerDebugMarketEvent('up', 'large'),
           triggerExceptionalUp: () => this.triggerDebugMarketEvent('up', 'exceptional'),
           triggerLargeDown: () => this.triggerDebugMarketEvent('down', 'large'),
@@ -916,13 +929,14 @@ export class Game {
       this.world.setActiveMarket(destination);
       this.dexDistrict.setActiveMarket(destination);
       this.desertDistrict.setActiveMarket(destination);
+      this.signatureDistrict.setActiveMarket(destination);
       this.parkour.setVisualTheme(worldEnvironmentTheme(destination));
       this.monuments.clearBigOrders();
       this.world.clearTradeSurge();
       this.monuments.remove(this.activeMonument, true);
       this.monumentIds.delete(this.activeMonument);
       this.activeMarket = destination;
-      document.title = `${destination} World · Tickerworld`;
+      document.title = marketWorldDocumentTitle(destination);
       this.activeMonument = this.monuments.add({
         symbol: destination,
         kind: 'grand',
@@ -1209,7 +1223,7 @@ export class Game {
         ? 'connecting'
         : 'offline';
     const populations: WorldPopulationSnapshot[] = [];
-    for (const symbol of GRAND_MONUMENTS.map(({ symbol }) => symbol)) {
+    for (const symbol of ASSET_SYMBOLS) {
       const population = state.populations.get(marketSlugForSymbol(symbol));
       const channels: WorldChannelSnapshot[] = (population?.channels ?? []).map((channel) => {
         const fill = channel.capacity > 0 ? channel.online / channel.capacity : 1;
@@ -1322,7 +1336,7 @@ export class Game {
       this.market.getState(this.activeMarket).mode,
       connectionMode === 'online' ? 'online' : connectionMode === 'connecting' ? 'connecting' : 'offline',
     );
-    for (const definition of GRAND_MONUMENTS) this.refreshPortalLiveData(definition.symbol);
+    for (const symbol of ASSET_SYMBOLS) this.refreshPortalLiveData(symbol);
   }
 
   private refreshPortalLiveData(symbol: AssetSymbol): void {
@@ -1389,6 +1403,10 @@ export class Game {
       playerPosition: this.player.position,
     });
     this.desertDistrict.update(delta, worldTimelineElapsed, {
+      nightFactor: this.world.nightFactor,
+      playerPosition: this.player.position,
+    });
+    this.signatureDistrict.update(delta, worldTimelineElapsed, {
       nightFactor: this.world.nightFactor,
       playerPosition: this.player.position,
     });
@@ -1840,6 +1858,7 @@ export class Game {
       || this.monuments.collidesCamera(x, y, z)
       || this.dexDistrict.collidesCamera(x, y, z)
       || this.desertDistrict.collidesCamera(x, y, z)
+      || this.signatureDistrict.collidesCamera(x, y, z)
       || this.parkour.collidesCamera(x, y, z);
   }
 
@@ -1864,11 +1883,18 @@ export class Game {
       previousX,
       previousZ,
     );
+    const signature = this.signatureDistrict.resolveHorizontal(
+      desert.x,
+      desert.z,
+      0.7,
+      previousX,
+      previousZ,
+    );
     return this.parkour.resolveHorizontal(
       previousX,
       previousZ,
-      desert.x,
-      desert.z,
+      signature.x,
+      signature.z,
       this.player.position.y,
     );
   };
@@ -1877,10 +1903,12 @@ export class Game {
     const terrainHeight = this.world.heightAt(x, z);
     const monumentGround = this.monuments.sampleGround(x, z);
     const parkourGround = this.parkour.sampleGround(x, z);
+    const signatureGround = this.signatureDistrict.sampleGround(x, z);
     return Math.max(
       terrainHeight,
       monumentGround?.height ?? Number.NEGATIVE_INFINITY,
       parkourGround?.height ?? Number.NEGATIVE_INFINITY,
+      signatureGround?.height ?? Number.NEGATIVE_INFINITY,
     );
   }
 
@@ -1888,10 +1916,17 @@ export class Game {
     const terrainHeight = this.world.heightAt(x, z);
     const monumentGround = this.monuments.sampleGround(x, z);
     const parkourGround = this.parkour.sampleGround(x, z);
+    const signatureGround = this.signatureDistrict.sampleGround(x, z);
     if (parkourGround
       && parkourGround.height >= terrainHeight - 0.03
-      && parkourGround.height >= (monumentGround?.height ?? Number.NEGATIVE_INFINITY)) {
+      && parkourGround.height >= (monumentGround?.height ?? Number.NEGATIVE_INFINITY)
+      && parkourGround.height >= (signatureGround?.height ?? Number.NEGATIVE_INFINITY)) {
       return parkourGround.surface;
+    }
+    if (signatureGround
+      && signatureGround.height >= terrainHeight - 0.03
+      && signatureGround.height >= (monumentGround?.height ?? Number.NEGATIVE_INFINITY)) {
+      return signatureGround.surface;
     }
     if (monumentGround && monumentGround.height >= terrainHeight - 0.03) {
       return monumentGround.surface;
@@ -2096,6 +2131,7 @@ export class Game {
     this.oilEffects.dispose();
     this.dexDistrict.dispose();
     this.desertDistrict.dispose();
+    this.signatureDistrict.dispose();
     this.parkour.dispose();
     this.portalSystem.dispose();
     this.player.dispose();

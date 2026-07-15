@@ -12,6 +12,7 @@ import {
   createSimulatedHistory,
   getCandleCountdown,
   isSocketActivityStale,
+  mergeCandleHistories,
   mulberry32,
   parseHyperliquidCandles,
   parseHyperliquidMids,
@@ -59,6 +60,27 @@ describe('market candle helpers', () => {
     const next = reconcileCandle(original, { ...original[0]!, close: 1.8 });
     expect(next).toHaveLength(1);
     expect(next[0]?.close).toBe(1.8);
+  });
+
+  it('prepends REST history without rolling a newer live candle backwards', () => {
+    const history = Array.from({ length: 66 }, (_, index): Candle => ({
+      openTime: index * 60_000,
+      open: 100 + index,
+      high: 102 + index,
+      low: 99 + index,
+      close: 101 + index,
+      closed: index < 65,
+    }));
+    const live: Candle = {
+      ...history.at(-1)!,
+      high: 999,
+      close: 999,
+      closed: false,
+    };
+    const merged = mergeCandleHistories(history, [live], 66);
+    expect(merged).toHaveLength(66);
+    expect(merged.at(-1)).toEqual(live);
+    expect(merged.slice(0, -1).every((candle) => candle.closed)).toBe(true);
   });
 
   it('updates live OHLC, ignores stale trades, and rolls exactly once', () => {
@@ -160,11 +182,14 @@ describe('market candle helpers', () => {
 
   it('builds both dex mid streams and every real asset subscription', () => {
     const subscriptions = buildHyperliquidSubscriptions();
-    expect(subscriptions).toHaveLength(20);
+    expect(subscriptions).toHaveLength(42);
     expect(subscriptions[0]).toEqual({ type: 'allMids' });
     expect(subscriptions[1]).toEqual({ type: 'allMids', dex: 'xyz' });
     expect(subscriptions).toContainEqual({ type: 'trades', coin: 'AVAX' });
     expect(subscriptions).toContainEqual({ type: 'trades', coin: 'xyz:CL' });
+    expect(subscriptions).toContainEqual({ type: 'trades', coin: 'xyz:SKHX' });
+    expect(subscriptions).toContainEqual({ type: 'trades', coin: 'HYPE' });
+    expect(subscriptions).toContainEqual({ type: 'trades', coin: 'xyz:SPCX' });
     expect(subscriptions).not.toContainEqual({ type: 'trades', coin: 'TEST' });
     expect(subscriptions).toContainEqual({ type: 'candle', coin: 'BTC', interval: '1m' });
   });
@@ -187,8 +212,16 @@ describe('market candle helpers', () => {
       { type: 'allMids', dex: 'xyz' },
     ]);
     expect(parseHyperliquidMids({ mids: {
-      BTC: '64123.5', ETH: 3120, 'xyz:CL': '73.42', BAD: 1, SOL: 'nope',
-    } })).toEqual({ BTC: 64123.5, ETH: 3120, WTI: 73.42 });
+      BTC: '64123.5', ETH: 3120, 'xyz:CL': '73.42', 'xyz:SKHX': '350.5',
+      'xyz:SPCX': '481', HYPE: '38.2', BAD: 1, SOL: 'nope',
+    } })).toEqual({
+      BTC: 64123.5,
+      ETH: 3120,
+      WTI: 73.42,
+      SKHYNIX: 350.5,
+      SPACEX: 481,
+      HYPE: 38.2,
+    });
   });
 
   it('keeps a DEX chart live when the passive portal-mids socket reconnects', () => {
@@ -209,29 +242,163 @@ describe('market candle helpers', () => {
     feed.dispose();
   });
 
-  it('accepts server-coalesced active charts and silent portal mids', () => {
+  it('accepts only newly sequenced server trades and keeps repeated relay publications silent', () => {
     const feed = new HyperliquidMarketFeed();
-    const relay = (price: number, publishedAt: number) => feed.acceptRelayState({
+    const relay = (price: number, publishedAt: number, tradeSequence: number, tradeAt: number | null) => feed.acceptRelayState({
       instrument: 'BTC',
       candles: [{ openTime: 60_000, open: 100, high: Math.max(100, price), low: 99, close: price }],
       candle: { openTime: 60_000, open: 100, high: Math.max(100, price), low: 99, close: price },
       price,
+      tradeSequence,
+      tradeAt,
       upstreamAt: publishedAt - 50,
       publishedAt,
       ageMs: 50,
       stale: false,
     }, [{ instrument: 'ETH', price: 3_200, upstreamAt: publishedAt - 25 }]);
 
-    relay(101, 70_000);
+    relay(101, 70_000, 12, 69_950);
     expect(feed.getState('BTC')).toMatchObject({ price: 101, mode: 'live', updateKind: 'snapshot' });
     expect(feed.getState('ETH')).toMatchObject({ price: 3_200, updateKind: 'snapshot' });
-    relay(102, 70_400);
+    relay(101, 70_400, 12, 69_950);
+    expect(feed.getState('BTC')).toMatchObject({
+      price: 101,
+      updateKind: 'snapshot',
+      presentationTick: 0,
+    });
+    relay(102, 70_800, 13, 70_750);
     expect(feed.getState('BTC')).toMatchObject({
       price: 102,
       previousPrice: 101,
       updateKind: 'trade',
       presentationTick: 1,
       ageMs: 50,
+    });
+    relay(102, 71_200, 13, 70_750);
+    expect(feed.getState('BTC')).toMatchObject({ updateKind: 'snapshot', presentationTick: 1 });
+    relay(103, 71_600, 14, 70_750);
+    expect(feed.getState('BTC')).toMatchObject({
+      price: 103,
+      updateKind: 'trade',
+      presentationTick: 2,
+    });
+    feed.dispose();
+  });
+
+  it('treats legacy relay packets without trade identity as silent snapshots', () => {
+    const feed = new HyperliquidMarketFeed();
+    const state = {
+      instrument: 'BTC' as const,
+      candles: [{ openTime: 60_000, open: 100, high: 102, low: 99, close: 101 }],
+      candle: { openTime: 60_000, open: 100, high: 102, low: 99, close: 101 },
+      price: 101,
+      upstreamAt: 69_950,
+      publishedAt: 70_000,
+      ageMs: 50,
+      stale: false,
+    };
+    feed.acceptRelayState(state);
+    feed.acceptRelayState({ ...state, price: 102, publishedAt: 70_400 });
+    expect(feed.getState('BTC')).toMatchObject({
+      price: 102,
+      updateKind: 'snapshot',
+      presentationTick: 0,
+    });
+    feed.dispose();
+  });
+
+  it('keeps relay candles through a relay-before-REST race and silently enriches full horizons', async () => {
+    let resolveSnapshot!: (value: {
+      chartCandles: Candle[];
+      minuteHistory: Candle[];
+      dailyHistory: Candle[];
+    }) => void;
+    const snapshot = new Promise<{
+      chartCandles: Candle[];
+      minuteHistory: Candle[];
+      dailyHistory: Candle[];
+    }>((resolve) => { resolveSnapshot = resolve; });
+    const feed = new HyperliquidMarketFeed();
+    const internals = feed as unknown as {
+      started: boolean;
+      fetchSnapshot(symbol: 'BTC'): typeof snapshot;
+      requestDexQuoteRefresh(): void;
+      minuteHistories: Map<string, Candle[]>;
+      dailyHistories: Map<string, Candle[]>;
+    };
+    internals.started = true;
+    internals.fetchSnapshot = vi.fn(() => snapshot);
+    internals.requestDexQuoteRefresh = vi.fn();
+    feed.setRelayAvailable(true, true);
+
+    const live = {
+      openTime: 65 * 60_000,
+      open: 165,
+      high: 999,
+      low: 164,
+      close: 999,
+    };
+    feed.acceptRelayState({
+      instrument: 'BTC',
+      candles: [live],
+      candle: live,
+      price: 999,
+      tradeSequence: 4,
+      tradeAt: live.openTime + 20_000,
+      upstreamAt: live.openTime + 20_000,
+      publishedAt: live.openTime + 20_050,
+      ageMs: 50,
+      stale: false,
+    });
+    // An empty startup publication must never erase the chart that just won
+    // the race from the socket.
+    feed.acceptRelayState({
+      instrument: 'BTC',
+      candles: [],
+      candle: null,
+      price: 999,
+      tradeSequence: 4,
+      tradeAt: live.openTime + 20_000,
+      upstreamAt: live.openTime + 20_000,
+      publishedAt: live.openTime + 20_450,
+      ageMs: 450,
+      stale: false,
+    });
+    expect(feed.getState('BTC').candles).toHaveLength(1);
+
+    const minuteHistory = Array.from({ length: 66 }, (_, index): Candle => ({
+      openTime: index * 60_000,
+      open: 100 + index,
+      high: 102 + index,
+      low: 99 + index,
+      close: 101 + index,
+      closed: index < 65,
+    }));
+    const dailyHistory = Array.from({ length: 370 }, (_, index): Candle => ({
+      openTime: index * 86_400_000,
+      open: 50 + index,
+      high: 52 + index,
+      low: 49 + index,
+      close: 51 + index,
+      closed: index < 369,
+    }));
+    resolveSnapshot({
+      chartCandles: minuteHistory.slice(-30),
+      minuteHistory,
+      dailyHistory,
+    });
+    await snapshot;
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(internals.minuteHistories.get('BTC')).toHaveLength(66);
+    expect(internals.dailyHistories.get('BTC')).toHaveLength(370);
+    expect(feed.getState('BTC').candles).toHaveLength(30);
+    expect(feed.getState('BTC').candles.at(-1)).toMatchObject({ close: 999, high: 999 });
+    expect(feed.getState('BTC')).toMatchObject({
+      price: 999,
+      updateKind: 'snapshot',
+      presentationTick: 0,
     });
     feed.dispose();
   });

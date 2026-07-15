@@ -57,6 +57,32 @@ export type {
   DesertPumpjackDescriptor,
 } from './DesertOilDistrict';
 export {
+  SignatureMarketDistrict,
+  createSignatureWorldLayout,
+  isSignatureWorldProtectedPoint,
+} from './SignatureMarketDistrict';
+export type {
+  SignatureCollider,
+  SignatureFeatureSite,
+  SignatureGroundPatch,
+  SignatureMarketDistrictEnvironment,
+  SignatureMarketDistrictOptions,
+  SignatureMarketDistrictStats,
+  SignaturePrimitiveDescriptor,
+  SignatureWorldLayout,
+} from './SignatureMarketDistrict';
+export {
+  SIGNATURE_WORLD_SYMBOLS,
+  SIGNATURE_WORLD_THEMES,
+  isSignatureMarketSymbol,
+} from './signatureWorldThemes';
+export type {
+  SignatureMarketSymbol,
+  SignatureParticleStyle,
+  SignatureWorldMotif,
+  SignatureWorldThemeDefinition,
+} from './signatureWorldThemes';
+export {
   DEX_CYBERPUNK_SYMBOLS,
   DEX_CYBERPUNK_THEMES,
   dexCyberpunkGlowAt,

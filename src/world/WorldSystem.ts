@@ -34,6 +34,11 @@ import {
   worldEnvironmentTheme,
   type WorldEnvironmentTheme,
 } from './oilDesertTheme';
+import {
+  SIGNATURE_WORLD_THEMES,
+  isSignatureMarketSymbol,
+  type SignatureWorldThemeDefinition,
+} from './signatureWorldThemes';
 
 export interface WorldPosition {
   x: number;
@@ -207,6 +212,7 @@ function colorForSurface(
   surface: SurfaceKind,
   cyberTheme: DexCyberpunkTheme | null,
   environmentTheme: WorldEnvironmentTheme,
+  signatureTheme: SignatureWorldThemeDefinition | null,
 ): THREE.Color {
   if (cyberTheme) {
     switch (surface) {
@@ -220,6 +226,13 @@ function colorForSurface(
       case 'sand': return new THREE.Color(OIL_DESERT_PALETTE.road);
       case 'stone': return new THREE.Color(OIL_DESERT_PALETTE.sandLight);
       case 'grass': return new THREE.Color(OIL_DESERT_PALETTE.sand);
+    }
+  }
+  if (signatureTheme) {
+    switch (surface) {
+      case 'sand': return new THREE.Color(signatureTheme.secondary).lerp(new THREE.Color(PALETTE.sand), 0.34);
+      case 'stone': return new THREE.Color(signatureTheme.primary).offsetHSL(0, -0.08, 0.12);
+      case 'grass': return new THREE.Color(signatureTheme.ground).lerp(new THREE.Color(PALETTE.grass), 0.28);
     }
   }
   switch (surface) {
@@ -244,6 +257,7 @@ export class WorldSystem {
   private activeMarket: AssetSymbol;
   private environmentTheme: WorldEnvironmentTheme;
   private cyberpunkTheme: DexCyberpunkTheme | null;
+  private signatureTheme: SignatureWorldThemeDefinition | null;
   private readonly seed: string;
   private readonly chunkSize: number;
   private readonly chunkSegments: number;
@@ -296,6 +310,10 @@ export class WorldSystem {
   private readonly desertSkyTarget = new THREE.Color();
   private readonly desertFogTarget = new THREE.Color();
   private readonly desertGroundTarget = new THREE.Color();
+  private readonly signatureSkyTarget = new THREE.Color();
+  private readonly signatureFogTarget = new THREE.Color();
+  private readonly signatureGroundTarget = new THREE.Color();
+  private readonly signatureSunTarget = new THREE.Color();
   private readonly desertDaySky = new THREE.Color(OIL_DESERT_PALETTE.skyDay);
   private readonly desertNightSky = new THREE.Color(OIL_DESERT_PALETTE.skyNight);
   private readonly desertHorizon = new THREE.Color(OIL_DESERT_PALETTE.horizon);
@@ -375,6 +393,9 @@ export class WorldSystem {
     this.activeMarket = options.activeMarket ?? 'BTC';
     this.environmentTheme = worldEnvironmentTheme(this.activeMarket);
     this.cyberpunkTheme = getDexCyberpunkTheme(this.activeMarket);
+    this.signatureTheme = isSignatureMarketSymbol(this.activeMarket)
+      ? SIGNATURE_WORLD_THEMES[this.activeMarket]
+      : null;
     this.seed = options.seed ?? WORLD_SEED;
     this.chunkSize = options.chunkSize ?? CHUNK_SIZE;
     this.chunkSegments = options.chunkSegments ?? CHUNK_SEGMENTS;
@@ -553,6 +574,9 @@ export class WorldSystem {
     this.activeMarket = symbol;
     this.environmentTheme = worldEnvironmentTheme(symbol);
     this.cyberpunkTheme = getDexCyberpunkTheme(symbol);
+    this.signatureTheme = isSignatureMarketSymbol(symbol)
+      ? SIGNATURE_WORLD_THEMES[symbol]
+      : null;
     this.ambientDetails.root.visible = this.environmentTheme === 'park';
     this.terrainMaterial.roughness = this.environmentTheme === 'cyberpunk' ? 0.62 : this.environmentTheme === 'desert' ? 0.98 : 0.92;
     this.terrainMaterial.metalness = this.environmentTheme === 'cyberpunk' ? 0.08 : 0;
@@ -892,6 +916,11 @@ export class WorldSystem {
         this.desertSkyTarget.setHex(OIL_DESERT_PALETTE.cloud),
         0.34,
       );
+    } else if (this.signatureTheme) {
+      this.cloudMaterial.color.lerp(
+        this.signatureSkyTarget.setHex(this.signatureTheme.secondary),
+        0.1,
+      );
     }
     if (this.rainIntensity > 0) {
       this.cloudMaterial.color.lerp(this.cloudStorm, this.rainIntensity * 0.72);
@@ -1153,6 +1182,7 @@ export class WorldSystem {
           this.terrain.surfaceAt(worldX, worldZ),
           this.cyberpunkTheme,
           this.environmentTheme,
+          this.signatureTheme,
         );
         const variation = hashCoordinates(
           this.terrain.seed,
@@ -1660,6 +1690,19 @@ export class WorldSystem {
       this.hemisphereLight.intensity *= 0.94;
       this.sunLight.color.lerp(this.desertSun, 0.42);
       this.sunLight.intensity *= 1.04;
+    } else if (this.signatureTheme) {
+      const theme = this.signatureTheme;
+      this.signatureSkyTarget
+        .setHex(theme.secondary)
+        .lerp(this.skyColor, this.daylight > 0.5 ? 0.64 : 0.78);
+      this.skyColor.lerp(this.signatureSkyTarget, 0.28);
+      this.signatureFogTarget.setHex(theme.ground).lerp(this.skyColor, 0.72);
+      this.fog.color.lerp(this.signatureFogTarget, 0.24);
+      this.hemisphereLight.color.lerp(this.signatureSkyTarget, 0.2);
+      this.signatureGroundTarget.setHex(theme.ground);
+      this.hemisphereLight.groundColor.lerp(this.signatureGroundTarget, 0.42);
+      this.signatureSunTarget.setHex(theme.accent).lerp(this.daySun, 0.62);
+      this.sunLight.color.lerp(this.signatureSunTarget, 0.24);
     }
 
     // Capture the exact dynamic day/night baseline before any market layer.

@@ -1,5 +1,6 @@
 import { ASSET_SYMBOLS } from '../types';
 import type { AssetSymbol, ChunkDescriptor } from '../types';
+import { createPortalRoutes } from '../../shared/src/portals.js';
 import { createRandom, hashSeed } from './random';
 import { createRoadSignExclusionPoints } from './RoadSignLayout';
 import type { MonumentCoordinate, PondDescriptor } from './terrain';
@@ -9,6 +10,8 @@ import { isInsideParkourPropExclusion } from './ParkourParkSystem';
 export const ECHO_MACROCELL_CHUNKS = 6;
 export const ECHO_SCALE = 0.6;
 export const ECHO_GRAND_SUPPRESSION_RADIUS = 132;
+const PORTAL_PROP_EXCLUSIONS = createPortalRoutes('btc').map(({ x, z }) => ({ x, z }));
+const PORTAL_PROP_CLEAR_RADIUS = 6.4;
 
 export interface GrandMonumentCoordinate extends MonumentCoordinate {
   symbol: AssetSymbol;
@@ -181,6 +184,9 @@ export function generateChunkLayout(options: ChunkLayoutOptions): ChunkLayout {
 
   const candidateIsClear = (x: number, z: number, spacing: number): boolean => {
     if (isInsideParkourPropExclusion(x, z)) return false;
+    if (PORTAL_PROP_EXCLUSIONS.some((portal) => (
+      Math.hypot(x - portal.x, z - portal.z) < PORTAL_PROP_CLEAR_RADIUS + spacing * 0.25
+    ))) return false;
     if (echo && Math.hypot(x - echo.x, z - echo.z) < 22) {
       return false;
     }

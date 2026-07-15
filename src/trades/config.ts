@@ -180,6 +180,19 @@ export const MARKET_TRADE_CONFIG: Readonly<Record<AssetSymbol, MarketTradeConfig
   PUMP: market(0.0015, { geckoterminal: 'PUMP' }, 0.025, 0.02, 2_500),
   ANSEM: market(0.24, { geckoterminal: 'ANSEM' }, 0.025, 0.025, 2_500),
   SHFL: market(0.26, { geckoterminal: 'SHFL' }, 0.025, 0.018, 2_500),
+  SKHYNIX: market(350, { hyperliquid: 'xyz:SKHX' }, 0.3, 0.007, 100_000),
+  HYPE: market(38, {
+    hyperliquid: 'HYPE', binance: 'HYPEUSDT', okx: 'HYPE-USDT',
+  }, 0.25, 0.009, 100_000),
+  XYZ100: market(25_000, { hyperliquid: 'xyz:XYZ100' }, 0.75, 0.0035, 250_000),
+  SP500: market(6_500, { hyperliquid: 'xyz:SP500' }, 0.75, 0.003, 300_000),
+  MU: market(320, { hyperliquid: 'xyz:MU' }, 0.35, 0.006, 120_000),
+  SPACEX: market(480, { hyperliquid: 'xyz:SPCX' }, 0.25, 0.0075, 100_000),
+  NVDA: market(170, { hyperliquid: 'xyz:NVDA' }, 0.35, 0.005, 150_000),
+  GOLD: market(3_350, { hyperliquid: 'xyz:GOLD' }, 0.6, 0.0035, 250_000),
+  AAPL: market(230, { hyperliquid: 'xyz:AAPL' }, 0.35, 0.0045, 150_000),
+  META: market(700, { hyperliquid: 'xyz:META' }, 0.35, 0.005, 140_000),
+  GOOGL: market(200, { hyperliquid: 'xyz:GOOGL' }, 0.35, 0.0045, 150_000),
 });
 
 export function classifyTradeTier(symbol: AssetSymbol, notionalUsd: number): TradeTier {

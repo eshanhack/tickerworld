@@ -1,23 +1,15 @@
 import { ASSET_SYMBOLS } from '../types';
 import type { AssetSymbol } from '../types';
+import {
+  MARKET_SLUGS,
+  assetSymbolForMarket,
+  marketDefinitionForSlug,
+  marketSlugForAsset,
+  type MarketSlug,
+} from '../../shared/src/index.js';
 
-export const MARKET_SLUGS = [
-  'btc',
-  'eth',
-  'sol',
-  'xrp',
-  'doge',
-  'bnb',
-  'link',
-  'avax',
-  'wti',
-  'test',
-  'pump',
-  'ansem',
-  'shfl',
-] as const;
-
-export type MarketSlug = (typeof MARKET_SLUGS)[number];
+export { MARKET_SLUGS };
+export type { MarketSlug };
 export type MarketRouteReason = 'route' | 'remembered' | 'default' | 'unknown';
 
 export interface MarketChoice {
@@ -50,29 +42,13 @@ export interface MarketChooserRoute {
 
 export type MarketRouteModel = ResolvedMarketRoute | MarketChooserRoute;
 
-const SYMBOL_BY_SLUG: Readonly<Record<MarketSlug, AssetSymbol>> = {
-  btc: 'BTC',
-  eth: 'ETH',
-  sol: 'SOL',
-  xrp: 'XRP',
-  doge: 'DOGE',
-  bnb: 'BNB',
-  link: 'LINK',
-  avax: 'AVAX',
-  wti: 'WTI',
-  test: 'TEST',
-  pump: 'PUMP',
-  ansem: 'ANSEM',
-  shfl: 'SHFL',
-};
-
 const MARKET_CHOICES: readonly MarketChoice[] = MARKET_SLUGS.map((slug) => {
-  const symbol = SYMBOL_BY_SLUG[slug];
+  const definition = marketDefinitionForSlug(slug);
   return {
-    symbol,
+    symbol: definition.symbol,
     slug,
     path: `/${slug}`,
-    label: `${symbol} world`,
+    label: `${definition.displayName} world`,
   };
 });
 
@@ -96,7 +72,7 @@ function normalizedRequestedPath(input: string): string {
 }
 
 export function marketSlugForSymbol(symbol: AssetSymbol): MarketSlug {
-  return symbol.toLowerCase() as MarketSlug;
+  return marketSlugForAsset(symbol);
 }
 
 export function marketPath(symbol: AssetSymbol): `/${MarketSlug}` {
@@ -113,7 +89,7 @@ export function parseMarketSlug(value: string | null | undefined): MarketSlug | 
 }
 
 export function symbolForMarketSlug(slug: MarketSlug): AssetSymbol {
-  return SYMBOL_BY_SLUG[slug];
+  return assetSymbolForMarket(slug);
 }
 
 /**

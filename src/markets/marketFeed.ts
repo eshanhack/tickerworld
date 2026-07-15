@@ -1,5 +1,10 @@
 import { ASSET_SYMBOLS, type AssetState, type AssetSymbol, type Candle, type FeedMode, type MarketFeed } from '../types';
-import type { CompactMarketMid, RelayedMarketState } from '../../shared/src/index.js';
+import {
+  assetSymbolForHyperliquidCoin,
+  hyperliquidCoinForAsset,
+  type CompactMarketMid,
+  type RelayedMarketState,
+} from '../../shared/src/index.js';
 import { FORCE_SIMULATION, WORLD_SEED } from '../config';
 import {
   BASE_PRICES,
@@ -39,6 +44,7 @@ const SOCKET_STALE_MS = 45_000;
 const DEX_POLL_INTERVAL_MS = 2_500;
 const DEX_PASSIVE_POLL_INTERVAL_MS = 15_000;
 const DEX_EXACT_TRADE_FRESH_MS = 7_500;
+const RELAY_HISTORY_REFRESH_MS = 5 * 60_000;
 
 export const HEARTBEAT_INTERVAL_MS = 25_000;
 
@@ -47,6 +53,11 @@ type Listener = (state: AssetState) => void;
 interface PendingTrade {
   price: number;
   time: number;
+}
+
+interface RelayTradeCursor {
+  sequence: number;
+  tradeAt: number;
 }
 
 export interface TradeCandleUpdate {
@@ -85,17 +96,12 @@ function finiteNumber(value: unknown): number | undefined {
 
 function toAssetSymbol(value: unknown): AssetSymbol | undefined {
   if (typeof value !== 'string') return undefined;
-  if (value.toLowerCase() === 'xyz:cl') return 'WTI';
-  const symbol = value.toUpperCase() as AssetSymbol;
-  return ASSET_SYMBOLS.includes(symbol) && symbol !== 'TEST' && !isDexAssetSymbol(symbol)
-    ? symbol
-    : undefined;
+  return assetSymbolForHyperliquidCoin(value) ?? undefined;
 }
 
 /** Maps Tickerworld's friendly symbol onto Hyperliquid's canonical coin id. */
 export function hyperliquidCoinForSymbol(symbol: AssetSymbol): string | null {
-  if (symbol === 'TEST' || isDexAssetSymbol(symbol)) return null;
-  return symbol === 'WTI' ? 'xyz:CL' : symbol;
+  return hyperliquidCoinForAsset(symbol);
 }
 
 function looksLikeCandleTuple(value: unknown[]): boolean {
@@ -213,6 +219,29 @@ export function reconcileCandle(
   }));
 }
 
+/**
+ * Adds missing history while keeping the most recently observed live candles
+ * authoritative at matching open times. This is deliberately order-agnostic:
+ * relay packets may arrive before or after the silent REST bootstrap.
+ */
+export function mergeCandleHistories(
+  history: readonly Candle[],
+  live: readonly Candle[],
+  maxCount = MINUTE_HISTORY_COUNT,
+): Candle[] {
+  const byOpenTime = new Map<number, Candle>();
+  for (const candle of history) byOpenTime.set(candle.openTime, { ...candle });
+  for (const candle of live) byOpenTime.set(candle.openTime, { ...candle });
+  const next = [...byOpenTime.values()]
+    .sort((left, right) => left.openTime - right.openTime)
+    .slice(-Math.max(1, Math.floor(maxCount)));
+  const latestOpenTime = next.at(-1)?.openTime;
+  return next.map((candle) => ({
+    ...candle,
+    closed: latestOpenTime !== undefined && candle.openTime < latestOpenTime ? true : candle.closed,
+  }));
+}
+
 /** Applies one coalesced trade to the current minute without accepting historical regressions. */
 export function applyTradeToCandles(
   candles: readonly Candle[],
@@ -320,9 +349,13 @@ export class HyperliquidMarketFeed implements MarketFeed {
   private readonly pendingTrades = new Map<AssetSymbol, PendingTrade>();
   private readonly lastPresented = new Map<AssetSymbol, number>();
   private readonly lastTradeTime = new Map<AssetSymbol, number>();
+  private readonly relayTradeCursors = new Map<AssetSymbol, RelayTradeCursor>();
   private readonly minuteHistories = new Map<AssetSymbol, Candle[]>();
   private readonly dailyHistories = new Map<AssetSymbol, Candle[]>();
   private readonly prefetchedSnapshots = new Map<AssetSymbol, { snapshot: SnapshotBundle; fetchedAt: number }>();
+  private readonly relayHistoryRequests = new Map<AssetSymbol, Promise<void>>();
+  private readonly relayHistoryLoadedAt = new Map<AssetSymbol, number>();
+  private readonly relayHistoryRetryAt = new Map<AssetSymbol, number>();
   private activeSymbol: AssetSymbol = 'BTC';
   private relayActive = false;
   private directFallbackAllowed = true;
@@ -433,6 +466,7 @@ export class HyperliquidMarketFeed implements MarketFeed {
     this.dexTradeQueues.delete(symbol);
     this.lastPresented.delete(symbol);
     this.lastTradeTime.set(symbol, 0);
+    this.relayTradeCursors.delete(symbol);
     if (FORCE_SIMULATION || !this.started || this.paused) return;
     // The DEX portal quotes are global, not part of the active chart's socket
     // generation. Refresh them immediately on a route switch so a late
@@ -440,7 +474,9 @@ export class HyperliquidMarketFeed implements MarketFeed {
     if (this.directFallbackAllowed) this.requestDexQuoteRefresh();
     if (symbol === 'TEST' || isDexAssetSymbol(symbol)) this.relayActive = false;
     if (this.relayActive) {
+      this.syncGeneration += 1;
       this.setAllModes('reconnecting');
+      void this.ensureRelayHistory(symbol);
       return;
     }
     this.syncGeneration += 1;
@@ -497,6 +533,7 @@ export class HyperliquidMarketFeed implements MarketFeed {
       if (this.started && !this.paused && this.directFallbackAllowed) {
         this.requestDexQuoteRefresh();
       }
+      void this.ensureRelayHistory(this.activeSymbol);
       return;
     }
     const wasRelayed = this.relayActive;
@@ -516,12 +553,18 @@ export class HyperliquidMarketFeed implements MarketFeed {
     if (!this.relayActive) this.setRelayAvailable(true, this.directFallbackAllowed);
     this.applyCompactMids(mids, state.publishedAt);
     const previous = this.getState(state.instrument);
-    const candles: Candle[] = state.candles.slice(-SNAPSHOT_CANDLE_COUNT).map((candle, index, rows) => ({
+    const relayCandles: Candle[] = state.candles.slice(-SNAPSHOT_CANDLE_COUNT).map((candle, index, rows) => ({
       ...candle,
       closed: index < rows.length - 1,
     }));
+    const minuteHistory = mergeCandleHistories(
+      this.minuteHistories.get(state.instrument) ?? previous.candles,
+      relayCandles,
+      MINUTE_HISTORY_COUNT,
+    );
+    const candles = minuteHistory.slice(-SNAPSHOT_CANDLE_COUNT);
     const previousPrice = previous.price;
-    const price = state.price;
+    const price = state.price ?? previousPrice;
     const direction = previousPrice === null || price === null
       ? 'flat'
       : price > previousPrice
@@ -529,7 +572,11 @@ export class HyperliquidMarketFeed implements MarketFeed {
         : price < previousPrice
           ? 'down'
           : 'flat';
-    const tradePresentation = !state.stale && price !== null && previousPrice !== null;
+    const relayTradeAdvanced = this.acceptRelayTradeCursor(state);
+    const tradePresentation = !state.stale
+      && price !== null
+      && previousPrice !== null
+      && relayTradeAdvanced;
     const next: AssetState = {
       ...previous,
       candles,
@@ -538,19 +585,115 @@ export class HyperliquidMarketFeed implements MarketFeed {
       direction,
       mode: state.stale ? 'reconnecting' : 'live',
       updateKind: tradePresentation ? 'trade' : 'snapshot',
-      updatedAt: state.upstreamAt ?? state.publishedAt,
+      updatedAt: tradePresentation && state.tradeAt !== null && state.tradeAt !== undefined
+        ? state.tradeAt
+        : state.upstreamAt ?? state.publishedAt,
       ageMs: state.ageMs,
       presentationTick: tradePresentation ? previous.presentationTick + 1 : previous.presentationTick,
       horizonChanges: computeHorizonChanges(
         price,
-        state.upstreamAt ?? state.publishedAt,
-        candles,
+        tradePresentation && state.tradeAt !== null && state.tradeAt !== undefined
+          ? state.tradeAt
+          : state.upstreamAt ?? state.publishedAt,
+        minuteHistory,
         this.dailyHistories.get(state.instrument) ?? [],
       ),
     };
-    this.minuteHistories.set(state.instrument, candles);
+    this.minuteHistories.set(state.instrument, minuteHistory);
     this.states.set(state.instrument, next);
     this.emit(next);
+    void this.ensureRelayHistory(state.instrument);
+  }
+
+  /**
+   * Advances only for a new genuine trade identity. Legacy relay packets omit
+   * these optional fields and therefore remain quiet snapshots rather than
+   * producing a synthetic pulse every 400 ms.
+   */
+  private acceptRelayTradeCursor(state: RelayedMarketState): boolean {
+    const sequence = state.tradeSequence;
+    const tradeAt = state.tradeAt;
+    if (sequence === undefined || !Number.isSafeInteger(sequence) || sequence < 0
+      || (tradeAt !== null && tradeAt !== undefined
+        && (!Number.isFinite(tradeAt) || tradeAt < 0))) return false;
+
+    const next: RelayTradeCursor = { sequence, tradeAt: tradeAt ?? -1 };
+    const previous = this.relayTradeCursors.get(state.instrument);
+    if (!previous) {
+      this.relayTradeCursors.set(state.instrument, next);
+      return false;
+    }
+    const advanced = next.tradeAt > previous.tradeAt
+      || (next.tradeAt === previous.tradeAt && next.sequence > previous.sequence);
+    if (advanced) this.relayTradeCursors.set(state.instrument, next);
+    return advanced;
+  }
+
+  /**
+   * A relay replaces the browser socket, not the long-range chart history.
+   * Fetch the active instrument's 66-minute/370-day context once in the
+   * background, then merge it under whatever live candles arrived meanwhile.
+   */
+  private ensureRelayHistory(symbol: AssetSymbol): Promise<void> {
+    if (!this.started || this.paused || this.disposed || !this.relayActive
+      || !this.directFallbackAllowed || symbol !== this.activeSymbol
+      || symbol === 'TEST' || isDexAssetSymbol(symbol)) return Promise.resolve();
+
+    const existing = this.relayHistoryRequests.get(symbol);
+    if (existing) return existing;
+    if (Date.now() < (this.relayHistoryRetryAt.get(symbol) ?? 0)) return Promise.resolve();
+    const loadedAt = this.relayHistoryLoadedAt.get(symbol) ?? Number.NEGATIVE_INFINITY;
+    const hasFullHistory = (this.minuteHistories.get(symbol)?.length ?? 0) >= MINUTE_HISTORY_COUNT
+      && (this.dailyHistories.get(symbol)?.length ?? 0) > 0;
+    if (hasFullHistory && Date.now() - loadedAt < RELAY_HISTORY_REFRESH_MS) return Promise.resolve();
+
+    const generation = this.syncGeneration;
+    const request = this.fetchSnapshot(symbol)
+      .then((snapshot) => {
+        if (this.disposed || this.paused || !this.relayActive
+          || generation !== this.syncGeneration || symbol !== this.activeSymbol) return;
+        const current = this.getState(symbol);
+        const minuteHistory = mergeCandleHistories(
+          snapshot.minuteHistory,
+          this.minuteHistories.get(symbol) ?? current.candles,
+          MINUTE_HISTORY_COUNT,
+        );
+        const dailyHistory = mergeCandleHistories(
+          this.dailyHistories.get(symbol) ?? [],
+          snapshot.dailyHistory,
+          DAILY_HISTORY_COUNT,
+        );
+        this.minuteHistories.set(symbol, minuteHistory);
+        this.dailyHistories.set(symbol, dailyHistory);
+        this.relayHistoryLoadedAt.set(symbol, Date.now());
+        this.relayHistoryRetryAt.delete(symbol);
+        const price = current.price;
+        const next: AssetState = {
+          ...current,
+          candles: minuteHistory.slice(-SNAPSHOT_CANDLE_COUNT),
+          updateKind: 'snapshot',
+          horizonChanges: computeHorizonChanges(
+            price,
+            current.updatedAt,
+            minuteHistory,
+            dailyHistory,
+          ),
+        };
+        this.states.set(symbol, next);
+        this.emit(next);
+      })
+      .catch(() => {
+        // The live relay remains authoritative; a later relay packet retries
+        // the optional history enrichment without interrupting the chart.
+        this.relayHistoryRetryAt.set(symbol, Date.now() + 15_000);
+      })
+      .finally(() => {
+        if (this.relayHistoryRequests.get(symbol) === request) {
+          this.relayHistoryRequests.delete(symbol);
+        }
+      });
+    this.relayHistoryRequests.set(symbol, request);
+    return request;
   }
 
   pause(): void {
@@ -568,7 +711,9 @@ export class HyperliquidMarketFeed implements MarketFeed {
   resume(): void {
     if (this.disposed || !this.started || !this.paused) return;
     this.paused = false;
-    if (!FORCE_SIMULATION && !this.relayActive && this.directFallbackAllowed) {
+    if (!FORCE_SIMULATION && this.relayActive) {
+      void this.ensureRelayHistory(this.activeSymbol);
+    } else if (!FORCE_SIMULATION && this.directFallbackAllowed) {
       void this.resyncAndConnect(false);
     }
   }

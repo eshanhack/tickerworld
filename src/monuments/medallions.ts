@@ -33,6 +33,17 @@ const COLORS = {
   pump: 0xe58eaf,
   ansem: 0x756b82,
   shfl: 0x78add4,
+  skhynix: 0x7598ba,
+  hype: 0x55bfa7,
+  xyz100: 0x758ad2,
+  sp500: 0xb68176,
+  mu: 0x5e91b0,
+  spacex: 0x93a5b5,
+  nvda: 0x78ad6b,
+  gold: 0xd9ad51,
+  aapl: 0xaab5b2,
+  meta: 0x779bd8,
+  googl: 0x79acd9,
 } as const;
 
 function material(color: number, emissiveIntensity = 0.04): MeshStandardMaterial {
@@ -290,6 +301,190 @@ function buildShfl(group: Group, simplified: boolean): void {
   }
 }
 
+/** Staggered memory dies and a wafer halo, not a copied corporate mark. */
+function buildSkHynix(group: Group, simplified: boolean): void {
+  const blue = material(COLORS.skhynix, 0.1);
+  const cream = material(COLORS.cream, 0.1);
+  const layers = simplified ? 3 : 4;
+  addCoin(group, material(0x9fc0d2, 0.05), simplified ? 2.72 : MEDALLION_RADIUS);
+  for (let layer = 0; layer < layers; layer += 1) {
+    addMesh(
+      group,
+      new RoundedBoxGeometry(3.35 - layer * 0.12, 0.54, 0.32, 2, 0.12),
+      layer % 2 === 0 ? blue : cream,
+      [0, 3.58 + layer * 0.62, MEDALLION_CENTER.z + MEDALLION_DEPTH * 0.5 + 0.2],
+      [0, 0, (layer - 1.5) * 0.035],
+    );
+  }
+  if (!simplified) {
+    addMesh(group, new TorusGeometry(2.32, 0.12, 6, 32), cream,
+      [0, MEDALLION_CENTER.y, MEDALLION_CENTER.z + 0.72]);
+  }
+}
+
+/** Two concentric settlement rings around an original faceted core. */
+function buildHype(group: Group, simplified: boolean): void {
+  const mint = material(COLORS.hype, 0.13);
+  const cream = material(COLORS.cream, 0.1);
+  addMesh(group, new OctahedronGeometry(simplified ? 1.25 : 1.5, 0), mint,
+    [0, MEDALLION_CENTER.y, MEDALLION_CENTER.z], [0, Math.PI * 0.25, 0], [1, 1, 0.5]);
+  addMesh(group, new TorusGeometry(simplified ? 1.75 : 2.05, 0.24, 7, 28), cream,
+    [0, MEDALLION_CENTER.y, MEDALLION_CENTER.z], [0, 0, Math.PI * 0.25], [1, 0.78, 1]);
+  if (!simplified) {
+    addMesh(group, new TorusGeometry(2.62, 0.11, 6, 32), mint,
+      [0, MEDALLION_CENTER.y, MEDALLION_CENTER.z], [0, 0, -Math.PI * 0.18], [1, 0.72, 1]);
+  }
+}
+
+/** A hundred-company index is represented by an ascending light skyline. */
+function buildXyz100(group: Group, simplified: boolean): void {
+  const indigo = material(COLORS.xyz100, 0.12);
+  const cream = material(COLORS.cream, 0.1);
+  addCoin(group, material(0xaeb9ed, 0.06), simplified ? 2.72 : MEDALLION_RADIUS);
+  const heights = simplified ? [2.0, 2.75, 2.35] : [1.65, 2.5, 3.45, 2.85, 2.05];
+  heights.forEach((height, index) => {
+    const center = (heights.length - 1) * 0.5;
+    addRaisedBar(
+      group,
+      index === Math.floor(heights.length / 2) ? cream : indigo,
+      simplified ? 0.62 : 0.5,
+      height,
+      (index - center) * (simplified ? 0.9 : 0.72),
+      3.1 + height * 0.5,
+    );
+  });
+}
+
+/** Sector tiles form a broad diversified market mosaic. */
+function buildSp500(group: Group, simplified: boolean): void {
+  const coral = material(COLORS.sp500, 0.1);
+  const cream = material(COLORS.cream, 0.09);
+  addCoin(group, material(0xd9b88b, 0.06), simplified ? 2.72 : MEDALLION_RADIUS);
+  const tiles = simplified ? 5 : 9;
+  for (let index = 0; index < tiles; index += 1) {
+    const column = index % 3;
+    const row = Math.floor(index / 3);
+    addMesh(
+      group,
+      new BoxGeometry(0.72, 0.72, 0.3),
+      (index + row) % 2 === 0 ? coral : cream,
+      [(column - 1) * 0.92, 5.35 - row * 0.92, MEDALLION_CENTER.z + 0.72],
+      [0, 0, Math.PI * 0.25],
+    );
+  }
+}
+
+/** A memory package with raised pins and a wafer core. */
+function buildMu(group: Group, simplified: boolean): void {
+  const blue = material(COLORS.mu, 0.11);
+  const cream = material(COLORS.cream, 0.1);
+  addMesh(group, new RoundedBoxGeometry(simplified ? 3.5 : 4.2, simplified ? 3.5 : 4.2, 0.62, 3, 0.22),
+    blue, [0, MEDALLION_CENTER.y, MEDALLION_CENTER.z]);
+  addMesh(group, new TorusGeometry(simplified ? 0.95 : 1.2, 0.22, 8, 28), cream,
+    [0, MEDALLION_CENTER.y, MEDALLION_CENTER.z + 0.45]);
+  const pinCount = simplified ? 3 : 4;
+  for (let index = 0; index < pinCount; index += 1) {
+    const y = 3.35 + index * (2.25 / Math.max(1, pinCount - 1));
+    addRaisedBar(group, cream, 0.52, 0.18, -2.28, y);
+    addRaisedBar(group, cream, 0.52, 0.18, 2.28, y);
+  }
+}
+
+/** Reusable launch vehicle and orbit, kept deliberately generic. */
+function buildSpacex(group: Group, simplified: boolean): void {
+  const steel = material(COLORS.spacex, 0.09);
+  const flame = material(0xe59675, 0.16);
+  const cream = material(COLORS.cream, 0.1);
+  addMesh(group, new TorusGeometry(simplified ? 2.1 : 2.52, 0.13, 6, 34), steel,
+    [0, MEDALLION_CENTER.y, MEDALLION_CENTER.z], [0, 0, -0.38], [1, 0.68, 1]);
+  addMesh(group, new CylinderGeometry(0.58, 0.72, simplified ? 3.5 : 4.15, 16), cream,
+    [0, 4.45, MEDALLION_CENTER.z]);
+  addMesh(group, new ConeGeometry(0.62, 1.3, 16), steel,
+    [0, simplified ? 6.5 : 7.15, MEDALLION_CENTER.z]);
+  addMesh(group, new ConeGeometry(0.48, simplified ? 0.8 : 1.15, 12), flame,
+    [0, simplified ? 2.3 : 1.82, MEDALLION_CENTER.z], [0, 0, Math.PI]);
+}
+
+/** Accelerator slab and interconnected compute nodes. */
+function buildNvda(group: Group, simplified: boolean): void {
+  const green = material(COLORS.nvda, 0.12);
+  const cream = material(COLORS.cream, 0.1);
+  addMesh(group, new RoundedBoxGeometry(simplified ? 3.65 : 4.35, simplified ? 3.65 : 4.35, 0.62, 3, 0.2),
+    green, [0, MEDALLION_CENTER.y, MEDALLION_CENTER.z]);
+  addMesh(group, new RoundedBoxGeometry(simplified ? 1.65 : 2.0, simplified ? 1.65 : 2.0, 0.72, 3, 0.18),
+    cream, [0, MEDALLION_CENTER.y, MEDALLION_CENTER.z + 0.28], [0, 0, Math.PI * 0.25]);
+  if (!simplified) {
+    for (const [x, y] of [[-1.55, 5.82], [1.55, 5.82], [-1.55, 3.15], [1.55, 3.15]] as const) {
+      addMesh(group, new CylinderGeometry(0.25, 0.25, 0.52, 10), cream,
+        [x, y, MEDALLION_CENTER.z + 0.48], [Math.PI * 0.5, 0, 0]);
+    }
+  }
+}
+
+/** Faceted nugget and stacked ingots for the commodity world. */
+function buildGold(group: Group, simplified: boolean): void {
+  const gold = material(COLORS.gold, 0.14);
+  const cream = material(COLORS.cream, 0.09);
+  addCoin(group, material(0xc7943e, 0.1), simplified ? 2.72 : MEDALLION_RADIUS);
+  addMesh(group, new OctahedronGeometry(simplified ? 1.05 : 1.28, 1), gold,
+    [0, simplified ? 5.12 : 5.42, MEDALLION_CENTER.z + 0.55], [0.25, 0.55, 0.12], [1.3, 0.9, 0.42]);
+  const bars = simplified ? 1 : 2;
+  for (let index = 0; index < bars; index += 1) {
+    addMesh(group, new RoundedBoxGeometry(2.5, 0.58, 0.5, 2, 0.14), index === 0 ? cream : gold,
+      [0, 3.7 - index * 0.68, MEDALLION_CENTER.z + 0.62], [0, 0, index === 0 ? -0.08 : 0.08]);
+  }
+}
+
+/** An original aluminum seed beneath orchard rings, avoiding a logo copy. */
+function buildAapl(group: Group, simplified: boolean): void {
+  const silver = material(COLORS.aapl, 0.08);
+  const coral = material(0xe5a38f, 0.1);
+  const cream = material(COLORS.cream, 0.09);
+  addMesh(group, new TorusGeometry(simplified ? 1.8 : 2.25, 0.2, 8, 30), silver,
+    [0, MEDALLION_CENTER.y, MEDALLION_CENTER.z], [0, 0, 0.12], [1, 0.82, 1]);
+  addMesh(group, new OctahedronGeometry(simplified ? 1.05 : 1.28, 1), cream,
+    [0, 4.15, MEDALLION_CENTER.z + 0.2], [0, 0.35, 0.05], [0.82, 1.2, 0.42]);
+  addMesh(group, new ConeGeometry(0.58, simplified ? 1.0 : 1.3, 12), coral,
+    [0.72, 5.85, MEDALLION_CENTER.z + 0.2], [0, 0, -0.72], [1, 0.72, 0.4]);
+  if (!simplified) {
+    addMesh(group, new TorusGeometry(2.62, 0.08, 5, 30), coral,
+      [0, MEDALLION_CENTER.y, MEDALLION_CENTER.z + 0.15], [0, 0, -0.18], [1, 0.68, 1]);
+  }
+}
+
+/** Two offset weaving loops and a central connection node. */
+function buildMeta(group: Group, simplified: boolean): void {
+  const blue = material(COLORS.meta, 0.12);
+  const lavender = material(0xd39edb, 0.11);
+  const cream = material(COLORS.cream, 0.09);
+  const radius = simplified ? 1.28 : 1.55;
+  addMesh(group, new TorusGeometry(radius, 0.25, 8, 28), blue,
+    [-1.05, MEDALLION_CENTER.y, MEDALLION_CENTER.z], [0, 0, 0.48], [1.1, 0.72, 1]);
+  addMesh(group, new TorusGeometry(radius, 0.25, 8, 28), lavender,
+    [1.05, MEDALLION_CENTER.y, MEDALLION_CENTER.z + 0.05], [0, 0, -0.48], [1.1, 0.72, 1]);
+  addMesh(group, new OctahedronGeometry(simplified ? 0.45 : 0.58, 0), cream,
+    [0, MEDALLION_CENTER.y, MEDALLION_CENTER.z + 0.42]);
+}
+
+/** A faceted information atlas with independent latitude and orbit rings. */
+function buildGoogl(group: Group, simplified: boolean): void {
+  const blue = material(COLORS.googl, 0.11);
+  const amber = material(0xe9b76f, 0.1);
+  const coral = material(0xd88987, 0.1);
+  addMesh(group, new OctahedronGeometry(simplified ? 1.65 : 1.95, 2), blue,
+    [0, MEDALLION_CENTER.y, MEDALLION_CENTER.z], [0, Math.PI * 0.25, 0], [1, 1, 0.55]);
+  addMesh(group, new TorusGeometry(simplified ? 1.9 : 2.28, 0.13, 6, 32), amber,
+    [0, MEDALLION_CENTER.y, MEDALLION_CENTER.z + 0.08], [0, 0, Math.PI * 0.16], [1, 0.46, 1]);
+  if (!simplified) {
+    addMesh(group, new TorusGeometry(2.48, 0.09, 6, 32), coral,
+      [0, MEDALLION_CENTER.y, MEDALLION_CENTER.z + 0.12], [0, 0, -Math.PI * 0.34], [1, 0.72, 1]);
+  }
+}
+
+function assertNever(value: never): never {
+  throw new Error(`No medallion builder for ${String(value)}`);
+}
+
 export function buildMedallion(symbol: AssetSymbol, kind: MonumentKind): Group {
   const group = new Group();
   group.name = `${symbol.toLowerCase()}-${kind}-medallion`;
@@ -323,6 +518,18 @@ export function buildMedallion(symbol: AssetSymbol, kind: MonumentKind): Group {
     case 'PUMP': buildPump(group, simplified); break;
     case 'ANSEM': buildAnsem(group, simplified); break;
     case 'SHFL': buildShfl(group, simplified); break;
+    case 'SKHYNIX': buildSkHynix(group, simplified); break;
+    case 'HYPE': buildHype(group, simplified); break;
+    case 'XYZ100': buildXyz100(group, simplified); break;
+    case 'SP500': buildSp500(group, simplified); break;
+    case 'MU': buildMu(group, simplified); break;
+    case 'SPACEX': buildSpacex(group, simplified); break;
+    case 'NVDA': buildNvda(group, simplified); break;
+    case 'GOLD': buildGold(group, simplified); break;
+    case 'AAPL': buildAapl(group, simplified); break;
+    case 'META': buildMeta(group, simplified); break;
+    case 'GOOGL': buildGoogl(group, simplified); break;
+    default: assertNever(symbol);
   }
 
   return group;

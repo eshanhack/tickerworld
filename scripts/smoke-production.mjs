@@ -1,22 +1,11 @@
 import { createHash } from 'node:crypto';
 import { imageDimensions } from './smoke-helpers.mjs';
-import { socialCardExtension } from './generate-route-shells.mjs';
-
-const MARKETS = [
-  ['btc', 'BTC'],
-  ['eth', 'ETH'],
-  ['sol', 'SOL'],
-  ['xrp', 'XRP'],
-  ['doge', 'DOGE'],
-  ['bnb', 'BNB'],
-  ['link', 'LINK'],
-  ['avax', 'AVAX'],
-  ['wti', 'WTI'],
-  ['test', 'TEST'],
-  ['pump', 'PUMP'],
-  ['ansem', 'ANSEM'],
-  ['shfl', 'SHFL'],
-];
+import {
+  MARKET_SHELLS as MARKETS,
+  marketDisplayName,
+  routeDescription,
+  socialCardPath,
+} from './generate-route-shells.mjs';
 const MARKET_SYMBOLS = new Set(MARKETS.map(([, symbol]) => symbol));
 const TRUST_ROUTES = [
   ['/privacy', 'Privacy policy · Tickerworld', ['Privacy, without surprises.', 'privacy@tickerworld.io', 'Report evidence: up to 90 days']],
@@ -87,7 +76,7 @@ async function smokeRootAndUnknownRoutes() {
     check(root.headers.get('content-type')?.includes('text/html') === true, '/ did not return HTML');
     const html = await root.text();
     checkHtmlBasics(html, '/', 'Tickerworld', 'https://tickerworld.io/');
-    check(html.includes('Walk inside live crypto markets with friends.'), '/ is missing launch positioning');
+    check(html.includes('Walk inside live markets with friends.'), '/ is missing launch positioning');
     check(html.includes('https://tickerworld.io/og.jpg'), '/ is missing its social card');
   }
   const unknown = await request(clientOrigin, '/not-a-market', '/not-a-market');
@@ -101,27 +90,20 @@ async function smokeRootAndUnknownRoutes() {
 async function smokeMarketRoutes() {
   const cardHashes = new Map();
   await Promise.all(MARKETS.map(async ([slug, symbol]) => {
-    const extension = socialCardExtension(symbol);
+    const cardRelativePath = socialCardPath(slug, symbol);
     const path = `/${slug}`;
     const response = await request(clientOrigin, path, path);
     if (response) {
       check(response.ok, `${path} returned ${response.status}`);
       check(response.headers.get('content-type')?.includes('text/html') === true, `${path} did not return HTML`);
       const html = await response.text();
-      const title = `${symbol} World · Tickerworld`;
+      const displayName = marketDisplayName(symbol);
+      const title = `${displayName} World · Tickerworld`;
       const canonical = `https://tickerworld.io/${slug}`;
-      const image = `https://tickerworld.io/social/${slug}.${extension}`;
-      const description = symbol === 'TEST'
-        ? 'A deliberately wild simulated market for testing sounds, fireworks, and live-chart events.'
-        : symbol === 'WTI'
-          ? 'Walk inside the live CL crude-oil perpetual chart with other tiny characters.'
-          : symbol === 'PUMP' || symbol === 'ANSEM'
-            ? `Walk inside ${symbol}'s live Solana DEX chart with other tiny characters.`
-            : symbol === 'SHFL'
-              ? "Walk inside SHFL's live Ethereum DEX chart with other tiny characters."
-          : `Walk inside ${symbol}’s live one-minute chart with other tiny characters.`;
+      const image = `https://tickerworld.io/${cardRelativePath}`;
+      const description = routeDescription(symbol);
       const status = symbol === 'TEST' ? 'SIMULATED' : 'LIVE';
-      const enterLabel = symbol === 'TEST' ? 'Enter TEST lab' : `Enter ${symbol} world`;
+      const enterLabel = symbol === 'TEST' ? 'Enter TEST lab' : `Enter ${displayName} world`;
       checkHtmlBasics(html, path, title, canonical);
       for (const expected of [
         description,
@@ -137,11 +119,11 @@ async function smokeMarketRoutes() {
       check(!/\$[\d,.]+/.test(html), `${path} embeds a cache-prone price`);
     }
 
-    const cardPath = `/social/${slug}.${extension}`;
+    const cardPath = `/${cardRelativePath}`;
     const card = await request(clientOrigin, cardPath, cardPath);
     if (!card) return;
     check(card.ok, `${cardPath} returned ${card.status}`);
-    const expectedMime = extension === 'png' ? 'image/png' : 'image/jpeg';
+    const expectedMime = cardRelativePath.endsWith('.png') ? 'image/png' : 'image/jpeg';
     check(card.headers.get('content-type')?.includes(expectedMime) === true, `${cardPath} has the wrong image type`);
     const bytes = await card.arrayBuffer();
     const dimensions = imageDimensions(bytes);
@@ -150,7 +132,13 @@ async function smokeMarketRoutes() {
     cardHashes.set(slug, createHash('sha256').update(Buffer.from(bytes)).digest('hex'));
   }));
   check(cardHashes.size === MARKETS.length, 'not every market social card was fetched');
-  check(new Set(cardHashes.values()).size === MARKETS.length, 'market social cards are not route-specific');
+  const finishedCaptureSlugs = MARKETS
+    .filter(([slug, symbol]) => socialCardPath(slug, symbol) !== 'og.jpg')
+    .map(([slug]) => slug);
+  check(
+    new Set(finishedCaptureSlugs.map((slug) => cardHashes.get(slug))).size === finishedCaptureSlugs.length,
+    'finished market social captures are not route-specific',
+  );
 }
 
 async function smokeTrustRoutes() {
@@ -197,7 +185,7 @@ async function smokePublicAssets() {
     try {
       const payload = await manifest.json();
       check(payload?.start_url === '/btc', 'manifest start_url is not /btc');
-      check(payload?.description === 'Walk inside live crypto markets with friends.', 'manifest positioning is stale');
+      check(payload?.description === 'Walk inside live markets with friends.', 'manifest positioning is stale');
     } catch {
       failures.push('/site.webmanifest did not return JSON');
     }

@@ -7,6 +7,7 @@ import {
   entryFeedStatusLabel,
   entryRoomStatusLabel,
   entryShellForMarket,
+  marketWorldDocumentTitle,
   freeWardrobeEntries,
   normalizeWardrobeUsername,
   OnboardingJourney,
@@ -33,12 +34,24 @@ describe('route-specific entry shell', () => {
         expect(model.kicker).toBe(`${model.symbol} WORLD · LIVE DEX`);
         expect(model.description).toContain('DEX chart');
         expect(model.enterLabel).toBe(`Enter ${model.symbol} world`);
+      } else if (['SKHYNIX', 'HYPE', 'XYZ100', 'SP500', 'MU', 'SPACEX', 'NVDA', 'GOLD', 'AAPL', 'META', 'GOOGL'].includes(model.symbol)) {
+        expect(model.kicker).toBe(`${model.symbol} WORLD · LIVE`);
+        expect(model.description).toContain('live 24/7');
+        expect(model.description).toContain('perpetual chart');
+        expect(model.enterLabel).toMatch(/^Enter .+ world$/);
       } else {
         expect(model.kicker).toBe(`${model.symbol} WORLD · LIVE`);
         expect(model.description).toBe(`Walk inside ${model.symbol}’s live one-minute chart with other tiny characters.`);
         expect(model.enterLabel).toBe(`Enter ${model.symbol} world`);
       }
     }
+  });
+
+  it('uses friendly registry names in document titles', () => {
+    expect(marketWorldDocumentTitle('SKHYNIX')).toBe('SK hynix World · Tickerworld');
+    expect(marketWorldDocumentTitle('MU')).toBe('Micron World · Tickerworld');
+    expect(marketWorldDocumentTitle('SPACEX')).toBe('SpaceX World · Tickerworld');
+    expect(marketWorldDocumentTitle('BTC')).toBe('BTC World · Tickerworld');
   });
 
   it('keeps connection copy explicit rather than implying live data', () => {

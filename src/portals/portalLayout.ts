@@ -1,4 +1,3 @@
-import { GRAND_MONUMENTS } from '../config';
 import { formatPrice } from '../monuments/chartMath';
 import { marketPath } from '../routing';
 import type { AssetSymbol, FeedMode } from '../types';
@@ -6,15 +5,22 @@ import {
   DEX_FIELD_PORTAL_RADIUS,
   PORTAL_ARRIVAL_OFFSET,
   PORTAL_RADIUS,
+  SIGNATURE_WORLD_PORTAL_RADIUS,
+  createPortalRoutes as createSharedPortalRoutes,
 } from '../../shared/src/portals.js';
+import { marketForSymbol, symbolForMarket } from '../../shared/src/validation.js';
 import { MARKET_ROOM_MAX_CLIENTS } from '../../shared/src/constants.js';
 import {
-  createCanonicalRoadDescriptors,
   type CanonicalRoadDescriptor,
   type RoadVector,
 } from '../world/RoadSignLayout';
 
-export { DEX_FIELD_PORTAL_RADIUS, PORTAL_ARRIVAL_OFFSET, PORTAL_RADIUS };
+export {
+  DEX_FIELD_PORTAL_RADIUS,
+  PORTAL_ARRIVAL_OFFSET,
+  PORTAL_RADIUS,
+  SIGNATURE_WORLD_PORTAL_RADIUS,
+};
 
 const DEX_FIELD_PORTALS = new Set<AssetSymbol>(['PUMP', 'ANSEM', 'SHFL']);
 
@@ -108,8 +114,36 @@ function asSlotMarket(symbol: AssetSymbol): Exclude<AssetSymbol, 'BTC'> {
  */
 export function createPortalRoutes(
   activeMarket: AssetSymbol,
-  roads: readonly CanonicalRoadDescriptor[] = createCanonicalRoadDescriptors(GRAND_MONUMENTS),
+  roads?: readonly CanonicalRoadDescriptor[],
 ): readonly PortalRoute[] {
+  if (!roads) {
+    const activeSlug = marketForSymbol(activeMarket);
+    const routes = createSharedPortalRoutes(activeSlug);
+    const btcSlots = createSharedPortalRoutes('btc');
+    return routes.map((route, index) => {
+      const btcSlot = btcSlots[index];
+      if (!btcSlot) throw new Error(`Missing canonical portal slot ${index}.`);
+      const destination = symbolForMarket(route.to);
+      const slotMarket = asSlotMarket(symbolForMarket(btcSlot.to));
+      const radius = Math.hypot(route.x, route.z);
+      const direction = radius > 0
+        ? { x: route.x / radius, z: route.z / radius }
+        : { x: 0, z: -1 };
+      return {
+        id: `portal-${activeMarket}-to-${destination}`,
+        activeMarket,
+        destination,
+        slotMarket,
+        destinationPath: marketPath(destination),
+        bearing: Math.atan2(direction.x, -direction.z),
+        direction,
+        x: route.x,
+        z: route.z,
+        radius,
+        isReturnPortal: destination === 'BTC',
+      };
+    });
+  }
   return roads.map((road) => {
     const slotMarket = asSlotMarket(road.market.symbol);
     const destination = activeMarket !== 'BTC' && slotMarket === activeMarket

@@ -6,6 +6,7 @@ import {
   MAX_SPRINT_SPEED,
   PODIUM_EXCLUSION_RADIUS,
   PORTAL_RADIUS,
+  SIGNATURE_WORLD_PORTAL_RADIUS,
   SPAWN_SLOT_COUNT,
   SPAWN_SLOT_SPACING,
   SERVER_MESSAGES,
@@ -67,16 +68,27 @@ describe('shared multiplayer contracts', () => {
   });
 
   it('maps each market to every other unique portal destination', () => {
+    const canonicalSlots = createPortalRoutes('btc');
+    const dexSlots = new Set(['pump', 'ansem', 'shfl']);
+    const signatureSlots = new Set([
+      'skhynix', 'hype', 'xyz100', 'sp500', 'micron', 'spacex',
+      'nvidia', 'gold', 'apple', 'meta', 'google',
+    ]);
     for (const market of MARKET_SLUGS) {
       const routes = createPortalRoutes(market);
       expect(routes).toHaveLength(MARKET_SLUGS.length - 1);
       expect(new Set(routes.map((route) => route.to)).size).toBe(MARKET_SLUGS.length - 1);
       expect(routes.every((route) => {
-        const expectedRadius = route.to === 'pump' || route.to === 'ansem' || route.to === 'shfl'
-          || (market !== 'btc' && (market === 'pump' || market === 'ansem' || market === 'shfl') && route.to === 'btc')
-          ? DEX_FIELD_PORTAL_RADIUS
-          : PORTAL_RADIUS;
-        return Math.abs(Math.hypot(route.x, route.z) - expectedRadius) < 0.000001;
+        const canonical = canonicalSlots[route.slot];
+        if (!canonical) return false;
+        const expectedRadius = signatureSlots.has(canonical.to)
+          ? SIGNATURE_WORLD_PORTAL_RADIUS
+          : dexSlots.has(canonical.to)
+            ? DEX_FIELD_PORTAL_RADIUS
+            : PORTAL_RADIUS;
+        return Math.abs(route.x - canonical.x) < 0.000001
+          && Math.abs(route.z - canonical.z) < 0.000001
+          && Math.abs(Math.hypot(route.x, route.z) - expectedRadius) < 0.000001;
       })).toBe(true);
     }
   });

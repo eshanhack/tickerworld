@@ -1,12 +1,14 @@
 import * as THREE from 'three';
+import type { AssetSymbol, MarketProvider } from '../types';
+import { marketShareAttribution } from './marketAttribution';
 
 export const POSTCARD_WIDTH = 1_200;
 export const POSTCARD_HEIGHT = 675;
 
 export interface PostcardMetadata {
-  readonly market: string;
+  readonly market: AssetSymbol;
   readonly price: number | null;
-  readonly provider: string;
+  readonly provider: MarketProvider;
   readonly capturedAt: number;
   readonly partyUrl?: string | null;
 }
@@ -139,9 +141,15 @@ function drawMetadata(context: CanvasRenderingContext2D, metadata: PostcardMetad
   context.fillText(`${metadata.market.toUpperCase()}  ${formatPostcardPrice(metadata.price)}`, 54, POSTCARD_HEIGHT - 76);
   context.font = '700 19px Nunito, system-ui, sans-serif';
   context.fillStyle = 'rgba(255, 241, 207, 0.88)';
-  const provider = metadata.provider.toUpperCase();
+  const attribution = marketShareAttribution(metadata.market, metadata.provider);
   const timestamp = new Date(metadata.capturedAt).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' });
-  context.fillText(`${provider} · ${timestamp}`, 56, POSTCARD_HEIGHT - 42);
+  const disclosure = attribution.disclosureLabel ? ` · ${attribution.disclosureLabel}` : '';
+  context.fillText(
+    `${attribution.providerLabel}${disclosure} · ${timestamp}`,
+    56,
+    POSTCARD_HEIGHT - 42,
+    POSTCARD_WIDTH - 390,
+  );
   context.textAlign = 'right';
   context.font = '700 24px Nunito, system-ui, sans-serif';
   context.fillStyle = '#fff1cf';

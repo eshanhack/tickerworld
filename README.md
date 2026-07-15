@@ -1,7 +1,7 @@
 # Tickerworld
 
-Tickerworld is a calm multiplayer browser world built around live crypto chart monuments. Each
-shareable market route (`/btc`, `/eth`, and the other supported tickers) loads one bounded central
+Tickerworld is a calm multiplayer browser world built around live market chart monuments. Each
+shareable market route (`/btc`, `/gold`, `/nvidia`, and the other supported tickers) loads one bounded central
 district; the game continues in solo mode whenever the room service is unavailable.
 
 ## Development

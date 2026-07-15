@@ -10,6 +10,7 @@ import {
   type NewsItem,
   type NewsLink,
 } from '../src/news/types.js';
+import { isAssetSymbol } from '../shared/src/index.js';
 
 declare const process: {
   readonly env: Record<string, string | undefined>;
@@ -349,7 +350,7 @@ export async function handleNewsRequest(
   if (
     [...requestUrl.searchParams.keys()].some((key) => key !== 'scope')
     || scopeValues.length > 1
-    || (scope !== null && !/^(?:BTC|ETH|SOL|XRP|DOGE|BNB|LINK|AVAX|WTI|TEST|PUMP|ANSEM|SHFL)$/.test(scope))
+    || (scope !== null && !isAssetSymbol(scope))
     || request.headers.has('authorization')
     || request.headers.has('range')
   ) return rejectedRequest(400);

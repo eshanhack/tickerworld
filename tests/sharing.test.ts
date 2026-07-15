@@ -6,6 +6,8 @@ import {
   calculatePostcardCamera,
   flipRgbaRows,
   formatPostcardPrice,
+  marketShareAttribution,
+  marketShareDescription,
   isPartyShareCurrent,
   parsePartyInvite,
   parsePartyToken,
@@ -96,6 +98,26 @@ describe('share actions', () => {
 });
 
 describe('postcard formatting', () => {
+  it('labels live XYZ perpetuals and their reference-asset disclosure explicitly', () => {
+    expect(marketShareAttribution('SPACEX', 'hyperliquid')).toEqual({
+      displayName: 'SpaceX',
+      providerLabel: 'HYPERLIQUID XYZ PERP',
+      disclosureLabel: 'DERIVATIVE · NOT SHARES',
+    });
+    expect(marketShareAttribution('SP500', 'hyperliquid').disclosureLabel)
+      .toBe('DERIVATIVE · NOT INDEX OWNERSHIP');
+    expect(marketShareAttribution('GOLD', 'hyperliquid').disclosureLabel)
+      .toBe('DERIVATIVE · NOT SPOT');
+    expect(marketShareAttribution('HYPE', 'hyperliquid')).toEqual({
+      displayName: 'HYPE',
+      providerLabel: 'HYPERLIQUID PERP',
+      disclosureLabel: null,
+    });
+    expect(marketShareDescription('NVDA', 'hyperliquid'))
+      .toContain('hyperliquid xyz perp (derivative · not shares)');
+    expect(marketShareAttribution('TEST', 'simulation').providerLabel).toBe('SIMULATED DATA');
+  });
+
   it('keeps the social-card dimensions and flips WebGL rows', () => {
     expect([POSTCARD_WIDTH, POSTCARD_HEIGHT]).toEqual([1_200, 675]);
     const source = new Uint8Array([

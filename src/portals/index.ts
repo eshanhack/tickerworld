@@ -14,6 +14,7 @@ export {
   PORTAL_ARRIVAL_OFFSET,
   PORTAL_RADIUS,
   DEX_FIELD_PORTAL_RADIUS,
+  SIGNATURE_WORLD_PORTAL_RADIUS,
   createPortalLabelModel,
   createPortalRoutes,
   formatPortalPopulation,
