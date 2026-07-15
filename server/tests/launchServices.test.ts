@@ -55,6 +55,19 @@ describe('viral launch services', () => {
     });
   });
 
+  it('lets the tracked process flag override a stale managed Cloud flag', () => {
+    const config = loadConfig({
+      NODE_ENV: 'production',
+      DATABASE_URL: 'postgres://user:pass@db.example/tickerworld',
+      DATABASE_SSL: 'verify-full',
+      X_BEARER_TOKEN: 'paid-production-token',
+      ENABLE_NEWS_INGEST: 'false',
+      TICKERWORLD_LIVE_NEWS: 'true',
+    });
+
+    expect(config.launchSwitches.newsIngest).toBe(true);
+  });
+
   it('keeps production wallet and purchases fail-closed without credentials', () => {
     const config = loadConfig({
       NODE_ENV: 'production',

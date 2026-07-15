@@ -14,11 +14,11 @@ module.exports = {
       max_memory_restart: '768M',
       env: {
         NODE_ENV: 'production',
-        ENABLE_NEWS_INGEST: 'true',
+        TICKERWORLD_LIVE_NEWS: 'true',
       },
       env_production: {
         NODE_ENV: 'production',
-        ENABLE_NEWS_INGEST: 'true',
+        TICKERWORLD_LIVE_NEWS: 'true',
       },
     },
   ],
