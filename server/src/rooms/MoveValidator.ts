@@ -51,6 +51,12 @@ export function validateMove(
   tracker: MoveTracker,
   now = Date.now(),
 ): MoveValidation {
+  const unitFields = [
+    snapshot.gaitPhase,
+    snapshot.movementBlend,
+    snapshot.runBlend,
+    snapshot.airProgress,
+  ];
   if (!isProtocolVersionAccepted(snapshot.protocolVersion)
     || !Number.isSafeInteger(snapshot.sequence)
     || snapshot.sequence <= tracker.lastSequence
@@ -60,7 +66,13 @@ export function validateMove(
     || !Number.isFinite(snapshot.z)
     || !Number.isFinite(snapshot.yaw)
     || !Number.isFinite(snapshot.speed)
-    || !Number.isFinite(snapshot.verticalSpeed)) {
+    || !Number.isFinite(snapshot.verticalSpeed)
+    || unitFields.some((value) => value !== undefined
+      && (!Number.isFinite(value) || value < 0 || value > 1))
+    || (snapshot.simulationTick !== undefined
+      && (!Number.isSafeInteger(snapshot.simulationTick)
+        || snapshot.simulationTick < 0
+        || snapshot.simulationTick > 0xffff_ffff))) {
     return correction(snapshot, authoritative, 'invalid', true);
   }
 

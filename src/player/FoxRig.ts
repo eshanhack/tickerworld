@@ -29,6 +29,8 @@ export interface FoxRigPoseInput {
   readonly airProgress?: number;
   readonly turnLean?: number;
   readonly accelerationLean?: number;
+  readonly appendageSpring?: number;
+  readonly appendageDamping?: number;
   readonly groundPitch?: number;
   readonly groundRoll?: number;
   /** Per-paw floor height relative to the rig root's parent origin. */
@@ -108,6 +110,17 @@ interface MutableRenderedPawState {
 interface TailRig {
   readonly pivot: THREE.Group;
   readonly restPitch: number;
+  yawVelocity: number;
+  pitchVelocity: number;
+}
+
+interface EarRig {
+  readonly pivot: THREE.Group;
+  readonly side: -1 | 1;
+  readonly restPitch: number;
+  readonly restRoll: number;
+  pitchVelocity: number;
+  rollVelocity: number;
 }
 
 interface RigMaterials {
@@ -252,6 +265,7 @@ export class FoxRig {
   private readonly legs: Readonly<Record<FoxLegKey, LegRig>>;
   private readonly renderedPaws: Record<FoxLegKey, MutableRenderedPawState>;
   private readonly tail: TailRig[] = [];
+  private readonly ears: EarRig[] = [];
   private readonly materials: RigMaterials;
   private readonly appearanceRoots: THREE.Group[] = [];
   private readonly appearanceOwnedMaterials = new Set<THREE.Material>();
@@ -262,7 +276,8 @@ export class FoxRig {
   private readonly plantScale = new THREE.Vector3();
   private lastPose: Required<Omit<
     FoxRigPoseInput,
-    'turnLean' | 'accelerationLean' | 'groundPitch' | 'groundRoll' | 'pawGroundOffsets' | 'reducedMotion'
+    'turnLean' | 'accelerationLean' | 'appendageSpring' | 'appendageDamping'
+    | 'groundPitch' | 'groundRoll' | 'pawGroundOffsets' | 'reducedMotion'
   >> & {
     turnLean: number;
     accelerationLean: number;
@@ -350,6 +365,21 @@ export class FoxRig {
     }
   }
 
+  public resetSecondaryMotion(): void {
+    for (const joint of this.tail) {
+      joint.yawVelocity = 0;
+      joint.pitchVelocity = 0;
+      joint.pivot.rotation.y = 0;
+      joint.pivot.rotation.x = joint.restPitch;
+    }
+    for (const ear of this.ears) {
+      ear.pitchVelocity = 0;
+      ear.rollVelocity = 0;
+      ear.pivot.rotation.x = ear.restPitch;
+      ear.pivot.rotation.z = ear.restRoll;
+    }
+  }
+
   public updatePose(input: FoxRigPoseInput): void {
     const delta = THREE.MathUtils.clamp(finiteOr(input.deltaSeconds), 0, 0.05);
     const elapsed = finiteOr(input.elapsedSeconds);
@@ -361,6 +391,8 @@ export class FoxRig {
     const airProgress = clamp01(input.airProgress ?? (airPose === 'land' ? 0 : 1));
     const turnLean = finiteOr(input.turnLean);
     const accelerationLean = finiteOr(input.accelerationLean);
+    const appendageSpring = Math.max(1, finiteOr(input.appendageSpring, 72));
+    const appendageDamping = Math.max(0.1, finiteOr(input.appendageDamping, 12.5));
     const groundPitch = finiteOr(input.groundPitch);
     const groundRoll = finiteOr(input.groundRoll);
     const reducedMotion = input.reducedMotion ?? false;
@@ -472,7 +504,31 @@ export class FoxRig {
       poseDelta,
     );
 
-    this.animateTail(elapsed, gaitPhase, movementBlend, runBlend, airPose, airBlend, turnLean, motionScale, poseDelta);
+    this.animateEars(
+      elapsed,
+      movementBlend,
+      airPose,
+      airBlend,
+      turnLean,
+      accelerationLean,
+      motionScale,
+      appendageSpring,
+      appendageDamping,
+      delta,
+    );
+    this.animateTail(
+      elapsed,
+      gaitPhase,
+      movementBlend,
+      runBlend,
+      airPose,
+      airBlend,
+      turnLean,
+      motionScale,
+      appendageSpring,
+      appendageDamping,
+      delta,
+    );
     this.animateSpeciesVisual(elapsed, gaitPhase, movementBlend, runBlend, airPose, airBlend, airProgress, motionScale);
     this.plantGroundedPaws(
       gaitPhase,
@@ -1271,6 +1327,14 @@ export class FoxRig {
       inner.position.set(0, 0.18, -0.065);
       ear.add(outer, inner);
       this.head.add(ear);
+      this.ears.push({
+        pivot: ear,
+        side,
+        restPitch: ear.rotation.x,
+        restRoll: ear.rotation.z,
+        pitchVelocity: 0,
+        rollVelocity: 0,
+      });
     }
   }
 
@@ -1461,13 +1525,62 @@ export class FoxRig {
       segment.scale.z = 0.9;
       pivot.add(segment);
       parent.add(pivot);
-      this.tail.push({ pivot, restPitch });
+      this.tail.push({ pivot, restPitch, yawVelocity: 0, pitchVelocity: 0 });
       parent = pivot;
     });
 
     const tip = makeEllipsoid('FoxTailTip', materials.cream, new THREE.Vector3(0.09, 0.08, 0.16), 7);
     tip.position.z = (lengths.at(-1) ?? 0.25) + 0.035;
     parent.add(tip);
+  }
+
+  private animateEars(
+    elapsed: number,
+    movementBlend: number,
+    airPose: FoxAirPose,
+    airBlend: number,
+    turnLean: number,
+    accelerationLean: number,
+    motionScale: number,
+    spring: number,
+    damping: number,
+    delta: number,
+  ): void {
+    if (delta <= 0) return;
+    // A deterministic, rare ear-flick window replaces constant twitching and
+    // gives local and remote rigs the same small moments of awareness.
+    const flickWave = Math.sin(elapsed * 0.47 + 1.9);
+    const flick = THREE.MathUtils.smoothstep(flickWave, 0.955, 1) * (1 - movementBlend);
+    const airFold = airPose === 'glide'
+      ? 0.16
+      : airPose === 'rise'
+        ? -0.065
+        : airPose === 'fall'
+          ? 0.045
+          : 0;
+    for (const ear of this.ears) {
+      const targetPitch = ear.restPitch + (
+        -accelerationLean * 1.4
+        + airFold * airBlend
+        + flick * 0.075 * (ear.side < 0 ? 1 : 0.38)
+      ) * motionScale;
+      const targetRoll = ear.restRoll + (
+        ear.side * turnLean * 0.72
+        + ear.side * flick * 0.045
+      ) * motionScale;
+      const pitchError = Math.atan2(
+        Math.sin(targetPitch - ear.pivot.rotation.x),
+        Math.cos(targetPitch - ear.pivot.rotation.x),
+      );
+      const rollError = Math.atan2(
+        Math.sin(targetRoll - ear.pivot.rotation.z),
+        Math.cos(targetRoll - ear.pivot.rotation.z),
+      );
+      ear.pitchVelocity += (pitchError * spring - ear.pitchVelocity * damping) * delta;
+      ear.rollVelocity += (rollError * spring - ear.rollVelocity * damping) * delta;
+      ear.pivot.rotation.x += ear.pitchVelocity * delta;
+      ear.pivot.rotation.z += ear.rollVelocity * delta;
+    }
   }
 
   private animateTail(
@@ -1479,6 +1592,8 @@ export class FoxRig {
     airBlend: number,
     turnLean: number,
     motionScale: number,
+    spring: number,
+    damping: number,
     delta: number,
   ): void {
     const airPitch = airPose === 'glide'
@@ -1496,8 +1611,21 @@ export class FoxRig {
       const targetYaw = (idleYaw + gaitYaw + counterTurn) * motionScale;
       const runPitch = Math.cos(gaitPhase - follow * 0.45) * runBlend * movementBlend * 0.06;
       const targetPitch = joint.restPitch + (runPitch + airPitch * airBlend * (1 - index * 0.08)) * motionScale;
-      joint.pivot.rotation.y = dampAngle(joint.pivot.rotation.y, targetYaw, 8.4 - index * 0.42, delta);
-      joint.pivot.rotation.x = dampAngle(joint.pivot.rotation.x, targetPitch, 8.9 - index * 0.44, delta);
+      if (delta <= 0) return;
+      const jointSpring = spring * (1 - index * 0.065);
+      const jointDamping = damping * (1 - index * 0.025);
+      const yawError = Math.atan2(
+        Math.sin(targetYaw - joint.pivot.rotation.y),
+        Math.cos(targetYaw - joint.pivot.rotation.y),
+      );
+      const pitchError = Math.atan2(
+        Math.sin(targetPitch - joint.pivot.rotation.x),
+        Math.cos(targetPitch - joint.pivot.rotation.x),
+      );
+      joint.yawVelocity += (yawError * jointSpring - joint.yawVelocity * jointDamping) * delta;
+      joint.pitchVelocity += (pitchError * jointSpring - joint.pitchVelocity * jointDamping) * delta;
+      joint.pivot.rotation.y += joint.yawVelocity * delta;
+      joint.pivot.rotation.x += joint.pitchVelocity * delta;
     });
   }
 }

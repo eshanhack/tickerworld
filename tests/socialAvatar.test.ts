@@ -118,7 +118,39 @@ describe('remote avatar interpolation', () => {
     expect(pose.x).toBe(5);
     expect(pose.y).toBe(2);
     expect(Math.abs(Math.abs(pose.yaw) - Math.PI)).toBeLessThan(0.001);
+    expect(pose.grounded).toBe(true);
+    expect(pose.gait).toBe('idle');
     expect(interpolateAngle(0, Math.PI, -3)).toBe(0);
+  });
+
+  it('interpolates replicated gait phase across wrap and delays discrete state until its sample', () => {
+    const pose = interpolateRemotePose(
+      {
+        x: 0, y: 0, z: 0, yaw: 0, speed: 6, verticalSpeed: 1, grounded: false, gait: 'air',
+        movementState: 'jump-rise', gaitPhase: 0.98, movementBlend: 0.8, runBlend: 0.7, airProgress: 0.4,
+      },
+      {
+        x: 1, y: 1, z: 0, yaw: 0, speed: 6, verticalSpeed: -1, grounded: false, gait: 'air',
+        movementState: 'apex', gaitPhase: 0.02, movementBlend: 1, runBlend: 0.9, airProgress: 0.8,
+      },
+      0.5,
+    );
+    expect(pose.gaitPhase === undefined ? 1 : Math.min(pose.gaitPhase, 1 - pose.gaitPhase)).toBeLessThan(0.001);
+    expect(pose.movementState).toBe('jump-rise');
+    expect(pose.airProgress).toBe(0.4);
+
+    const flip = interpolateRemotePose(
+      {
+        x: 0, y: 1, z: 0, yaw: 0, speed: 5, verticalSpeed: 6, grounded: false, gait: 'air',
+        movementState: 'double-jump', airProgress: 0.2,
+      },
+      {
+        x: 1, y: 2, z: 0, yaw: 0.3, speed: 5, verticalSpeed: 2, grounded: false, gait: 'air',
+        movementState: 'double-jump', airProgress: 0.8,
+      },
+      0.5,
+    );
+    expect(flip.airProgress).toBeCloseTo(0.5, 6);
   });
 
   it('clips bubbles without clipping the full room message', () => {
@@ -266,6 +298,40 @@ describe('canonical remote avatar renderer', () => {
     const aerial = root.getObjectByName('RemoteAerialPivot')!;
     expect(Math.abs(aerial.rotation.x)).toBeGreaterThan(0);
     expect(aerial.matrixWorld.elements.every(Number.isFinite)).toBe(true);
+    system.dispose();
+  });
+
+  it('uses explicit replicated double-jump and landing poses without velocity inference', () => {
+    let now = 1_000;
+    const { system } = createSystem({ maxPlayers: 1, now: () => now });
+    system.setPlayers([remote('exact', 3, 1, 'base', 'rabbit', null, {
+      y: 2,
+      grounded: false,
+      gait: 'air',
+      verticalSpeed: 0.2,
+      movementState: 'double-jump',
+      airProgress: 0.48,
+      gaitPhase: 0.37,
+      movementBlend: 1,
+      runBlend: 1,
+      simulationTick: 120,
+    })], now);
+    now += 200;
+    system.update(1 / 60);
+    const root = system.getActorRenderRoot('exact')!;
+    const aerial = root.getObjectByName('RemoteAerialPivot')!;
+    expect(Math.abs(aerial.rotation.x)).toBeGreaterThan(Math.PI * 1.5);
+
+    system.setPlayers([remote('exact', 3, 2, 'base', 'rabbit', null, {
+      grounded: true,
+      gait: 'idle',
+      movementState: 'land-heavy',
+      airProgress: 0.15,
+      simulationTick: 126,
+    })], now);
+    now += 200;
+    system.update(1 / 60);
+    expect(root.getObjectByName('FoxModel')!.position.y).toBeLessThan(0.02);
     system.dispose();
   });
 

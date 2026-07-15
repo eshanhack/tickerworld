@@ -31,8 +31,8 @@ const LABEL_RENDER_ORDER = 38;
 const BUBBLE_RENDER_ORDER = 39;
 const SPEECH_LIFETIME_MS = 5_000;
 const SAMPLE_LIMIT = 6;
-const DOUBLE_POSE_SECONDS = 0.46;
-const LAND_RECOVERY_SECONDS = 0.22;
+const DOUBLE_POSE_SECONDS = 0.44;
+const LAND_RECOVERY_SECONDS = 0.08;
 
 /** Existing label placement is retained while the rendered model is upgraded. */
 const ANIMAL_LABEL_HEIGHTS: Readonly<Record<AnimalKind, number>> = {
@@ -130,6 +130,12 @@ function copyPose(state: NetPlayerState): RemotePose {
     verticalSpeed: state.verticalSpeed,
     grounded: state.grounded,
     gait: state.gait,
+    ...(state.movementState ? { movementState: state.movementState } : {}),
+    ...(state.gaitPhase !== undefined ? { gaitPhase: state.gaitPhase } : {}),
+    ...(state.movementBlend !== undefined ? { movementBlend: state.movementBlend } : {}),
+    ...(state.runBlend !== undefined ? { runBlend: state.runBlend } : {}),
+    ...(state.airProgress !== undefined ? { airProgress: state.airProgress } : {}),
+    ...(state.simulationTick !== undefined ? { simulationTick: state.simulationTick } : {}),
   };
 }
 
@@ -182,6 +188,10 @@ function damp(current: number, target: number, response: number, deltaSeconds: n
   return THREE.MathUtils.lerp(current, target, 1 - Math.exp(-response * deltaSeconds));
 }
 
+function shortestAngle(from: number, to: number): number {
+  return Math.atan2(Math.sin(to - from), Math.cos(to - from));
+}
+
 function materialColor(material: THREE.Material | THREE.Material[]): THREE.Color {
   const first = Array.isArray(material) ? material[0] : material;
   if (first && 'color' in first && first.color instanceof THREE.Color) return first.color;
@@ -224,6 +234,7 @@ class CanonicalRemoteVisual {
   private elapsed = 0;
   private previousGrounded = true;
   private previousVerticalSpeed = 0;
+  private previousYaw = 0;
   private doubleRemaining = 0;
   private landingRemaining = 0;
   private disposed = false;
@@ -242,6 +253,21 @@ class CanonicalRemoteVisual {
     this.rig.setAnimal(animal, skin);
     this.rig.root.scale.setScalar(animalMotionProfile(animal).modelScale);
     this.group.updateMatrixWorld(true);
+  }
+
+  resetMotion(): void {
+    this.movementBlend = 0;
+    this.runBlend = 0;
+    this.gaitPhase = 0;
+    this.elapsed = 0;
+    this.previousGrounded = true;
+    this.previousVerticalSpeed = 0;
+    this.previousYaw = 0;
+    this.doubleRemaining = 0;
+    this.landingRemaining = 0;
+    this.aerialPivot.rotation.set(0, 0, 0);
+    this.aerialPivot.scale.set(1, 1, 1);
+    this.rig.resetSecondaryMotion();
   }
 
   meshes(): THREE.Mesh[] {
@@ -270,10 +296,16 @@ class CanonicalRemoteVisual {
       profile.walkSpeed * 0.9,
       profile.sprintSpeed * 0.9,
     );
-    this.movementBlend = damp(this.movementBlend, movementTarget, 7.2, delta);
-    this.runBlend = damp(this.runBlend, runTarget, pose.gait === 'run' ? 3.8 : 5, delta);
+    this.movementBlend = pose.movementBlend === undefined
+      ? damp(this.movementBlend, movementTarget, 7.2, delta)
+      : THREE.MathUtils.clamp(pose.movementBlend, 0, 1);
+    this.runBlend = pose.runBlend === undefined
+      ? damp(this.runBlend, runTarget, pose.gait === 'run' ? 3.8 : 5, delta)
+      : THREE.MathUtils.clamp(pose.runBlend, 0, 1);
     const gaitRadiansPerMetre = THREE.MathUtils.lerp(1.82, 2.08, this.runBlend) * profile.gaitScale;
-    this.gaitPhase = (this.gaitPhase + Math.max(0, pose.speed) * delta * gaitRadiansPerMetre) % (Math.PI * 2);
+    this.gaitPhase = pose.gaitPhase === undefined
+      ? (this.gaitPhase + Math.max(0, pose.speed) * delta * gaitRadiansPerMetre) % (Math.PI * 2)
+      : pose.gaitPhase * Math.PI * 2;
 
     if (!pose.grounded
       && !this.previousGrounded
@@ -284,13 +316,40 @@ class CanonicalRemoteVisual {
       // requiring a breaking protocol change during server/client skew.
       this.doubleRemaining = DOUBLE_POSE_SECONDS;
     }
-    if (pose.grounded && !this.previousGrounded) this.landingRemaining = LAND_RECOVERY_SECONDS;
+    if (pose.grounded && !this.previousGrounded) {
+      this.landingRemaining = LAND_RECOVERY_SECONDS;
+    }
     this.doubleRemaining = Math.max(0, this.doubleRemaining - delta);
     this.landingRemaining = Math.max(0, this.landingRemaining - delta);
 
     let airPose: FoxAirPose = 'grounded';
     let airProgress = 1;
-    if (pose.grounded) {
+    if (pose.movementState) {
+      airProgress = THREE.MathUtils.clamp(pose.airProgress ?? 1, 0, 1);
+      switch (pose.movementState) {
+        case 'jump-anticipate': airPose = 'anticipate'; break;
+        case 'jump-rise': airPose = 'rise'; break;
+        case 'apex': airPose = 'apex'; break;
+        case 'fall': airPose = 'fall'; break;
+        case 'double-jump': airPose = 'double'; break;
+        case 'glide': airPose = 'glide'; break;
+        case 'land-soft':
+        case 'land-heavy': airPose = 'land'; break;
+        default: airPose = 'grounded'; break;
+      }
+      if (airPose === 'grounded' && this.landingRemaining > 0) {
+        airPose = 'land';
+        airProgress = 1 - this.landingRemaining / LAND_RECOVERY_SECONDS;
+      } else if (
+        airPose !== 'double'
+        && airPose !== 'glide'
+        && !pose.grounded
+        && this.doubleRemaining > 0
+      ) {
+        airPose = 'double';
+        airProgress = 1 - this.doubleRemaining / DOUBLE_POSE_SECONDS;
+      }
+    } else if (pose.grounded) {
       if (this.landingRemaining > 0) {
         airPose = 'land';
         airProgress = 1 - this.landingRemaining / LAND_RECOVERY_SECONDS;
@@ -321,9 +380,49 @@ class CanonicalRemoteVisual {
       this.aerialPivot.rotation.set(turnX * angle, turnY * angle, turnZ * angle);
       const squash = Math.sin(airProgress * Math.PI) * 0.075;
       this.aerialPivot.scale.set(1 + squash, 1 - squash * 0.7, 1 + squash);
+      this.aerialPivot.position.y = Math.sin(airProgress * Math.PI) * 0.035;
     } else {
-      this.aerialPivot.rotation.set(0, 0, 0);
-      this.aerialPivot.scale.set(1, 1, 1);
+      let targetY = 1;
+      let targetXZ = 1;
+      if (airPose === 'anticipate') {
+        const compression = 0.15 * airProgress;
+        targetY = 1 - compression;
+        targetXZ = 1 + compression * 0.52;
+      } else if (airPose === 'rise') {
+        targetY = 1 + 0.09 * (1 - airProgress * 0.45);
+        targetXZ = 1 / Math.sqrt(targetY);
+      } else if (airPose === 'fall') {
+        targetY = 1 + 0.055 * airProgress;
+        targetXZ = 1 / Math.sqrt(targetY);
+      } else if (airPose === 'land') {
+        const heavy = pose.movementState === 'land-heavy';
+        const compression = (heavy ? 0.14 : 0.075) * (1 - airProgress) ** 2;
+        targetY = 1 - compression;
+        targetXZ = 1 + compression * 0.55;
+      } else if (airPose === 'glide') {
+        targetY = 0.975;
+        targetXZ = 1.013;
+      } else if (pose.movementState === 'skid') {
+        targetY = 0.95;
+        targetXZ = 1.026;
+      }
+      const scaleResponse = airPose === 'land' ? 20 : 13;
+      this.aerialPivot.scale.x = damp(this.aerialPivot.scale.x, targetXZ, scaleResponse, delta);
+      this.aerialPivot.scale.y = damp(this.aerialPivot.scale.y, targetY, scaleResponse, delta);
+      this.aerialPivot.scale.z = damp(this.aerialPivot.scale.z, targetXZ, scaleResponse, delta);
+      const yawRate = delta > 0 ? shortestAngle(this.previousYaw, pose.yaw) / delta : 0;
+      const bank = airPose === 'glide'
+        ? THREE.MathUtils.clamp(-yawRate * 0.018, -0.23, 0.23)
+        : 0;
+      const glidePitch = airPose === 'glide'
+        ? THREE.MathUtils.clamp(-pose.verticalSpeed / 10, -0.12, 0.12)
+        : 0;
+      this.aerialPivot.rotation.x = damp(this.aerialPivot.rotation.x, glidePitch, 10, delta);
+      this.aerialPivot.rotation.y = damp(this.aerialPivot.rotation.y, 0, 14, delta);
+      this.aerialPivot.rotation.z = damp(this.aerialPivot.rotation.z, bank, 9, delta);
+      this.aerialPivot.position.y = airPose === 'glide'
+        ? Math.sin(this.elapsed * 3.1) * 0.035
+        : damp(this.aerialPivot.position.y, 0, 12, delta);
     }
 
     // The same terrain samples used for the local character keep remote paws
@@ -362,6 +461,7 @@ class CanonicalRemoteVisual {
     this.group.updateMatrixWorld(true);
     this.previousGrounded = pose.grounded;
     this.previousVerticalSpeed = pose.verticalSpeed;
+    this.previousYaw = pose.yaw;
   }
 
   dispose(): void {
@@ -727,6 +827,7 @@ export class RemoteAvatarSystem implements GameSystem {
     slot.lastPose = null;
     slot.samples.length = 0;
     if (!slot.visual) slot.visual = new CanonicalRemoteVisual(slot.animal, slot.skin);
+    slot.visual.resetMotion();
     this.slotByActor.set(actorId, slot);
     const pending = this.pendingSpeech.get(actorId);
     if (pending && pending.expiresAt > this.now()) this.setSlotSpeech(slot, pending.text, pending.expiresAt);

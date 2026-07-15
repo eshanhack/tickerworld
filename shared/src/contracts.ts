@@ -69,7 +69,29 @@ export interface MoveSnapshot {
   verticalSpeed: number;
   grounded: boolean;
   gait: 'idle' | 'walk' | 'run' | 'air' | 'glide';
+  /** Optional v2 capability. Legacy servers strip it and new clients infer. */
+  movementState?: ReplicatedMovementState;
+  /** Normalized 0..1 procedural gait phase. */
+  gaitPhase?: number;
+  movementBlend?: number;
+  runBlend?: number;
+  airProgress?: number;
+  simulationTick?: number;
 }
+
+export type ReplicatedMovementState =
+  | 'idle'
+  | 'walk'
+  | 'run'
+  | 'jump-anticipate'
+  | 'jump-rise'
+  | 'apex'
+  | 'fall'
+  | 'double-jump'
+  | 'glide'
+  | 'land-soft'
+  | 'land-heavy'
+  | 'skid';
 
 export interface ParkourRespawnMessage {
   protocolVersion: number;
@@ -86,6 +108,12 @@ export interface NetPlayerState {
   verticalSpeed: number;
   grounded: boolean;
   gait: MoveSnapshot['gait'];
+  movementState?: ReplicatedMovementState;
+  gaitPhase?: number;
+  movementBlend?: number;
+  runBlend?: number;
+  airProgress?: number;
+  simulationTick?: number;
   animal: AnimalKind;
   skin: SkinId;
   username: string | null;

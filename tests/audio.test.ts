@@ -850,6 +850,40 @@ describe('AudioEngine lifecycle', () => {
     vi.useRealTimers();
   });
 
+  it('keeps one filtered glide-wind graph across cancel and redeploy', async () => {
+    vi.useFakeTimers();
+    const fake = makeFakeContext();
+    const engine = new AudioEngine({ contextFactory: () => fake.context, storage: null, random: () => 0.5 });
+    await engine.unlock();
+    const baseline = fake.bufferSources.length;
+    const nodeBaseline = fake.nodes.length;
+    engine.setGlideWind({ active: true, speed: 0.8, bank: -0.6 });
+    expect(fake.bufferSources).toHaveLength(baseline + 1);
+    const wind = fake.bufferSources.at(-1)!;
+    expect(wind.loop).toBe(true);
+    engine.setGlideWind({ active: false });
+    engine.setGlideWind({ active: true, speed: 1, bank: 0.4 });
+    expect(fake.bufferSources).toHaveLength(baseline + 1);
+    expect(wind.start).toHaveBeenCalledTimes(1);
+    const windNodes = fake.nodes.slice(nodeBaseline);
+    const automationCount = (): number => windNodes.reduce((total, node) => (
+      total
+      + ((node.gain?.setTargetAtTime as unknown as ReturnType<typeof vi.fn> | undefined)?.mock.calls.length ?? 0)
+      + ((node.frequency?.setTargetAtTime as unknown as ReturnType<typeof vi.fn> | undefined)?.mock.calls.length ?? 0)
+    ), 0);
+    const beforeRafBurst = automationCount();
+    for (let frame = 0; frame < 240; frame += 1) {
+      engine.setGlideWind({ active: true, speed: 0.7 + (frame % 10) * 0.01, bank: 0.4 });
+    }
+    expect(automationCount()).toBe(beforeRafBurst);
+    (fake.context as unknown as { currentTime: number }).currentTime = 0.1;
+    engine.setGlideWind({ active: true, speed: 0.82, bank: 0.2 });
+    expect(automationCount() - beforeRafBurst).toBe(3);
+    engine.dispose();
+    expect(wind.stop).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+
   it('starts every sprint-footstep layer on the rendered contact time', async () => {
     vi.useFakeTimers();
     const fake = makeFakeContext();

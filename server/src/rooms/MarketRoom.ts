@@ -82,6 +82,15 @@ const moveSchema = z.object({
   verticalSpeed: z.number().finite(),
   grounded: z.boolean(),
   gait: z.enum(['idle', 'walk', 'run', 'air', 'glide']),
+  movementState: z.enum([
+    'idle', 'walk', 'run', 'jump-anticipate', 'jump-rise', 'apex', 'fall',
+    'double-jump', 'glide', 'land-soft', 'land-heavy', 'skid',
+  ]).optional(),
+  gaitPhase: z.number().finite().min(0).max(1).optional(),
+  movementBlend: z.number().finite().min(0).max(1).optional(),
+  runBlend: z.number().finite().min(0).max(1).optional(),
+  airProgress: z.number().finite().min(0).max(1).optional(),
+  simulationTick: z.number().int().nonnegative().max(0xffff_ffff).optional(),
 });
 
 const chatSchema = z.object({
@@ -373,6 +382,7 @@ export class MarketRoom extends Room<{ state: MarketRoomState; client: MarketCli
     player.z = spawn.z;
     player.y = spawn.y;
     player.yaw = spawn.yaw;
+    player.movementState = 'idle';
     player.animal = identity.animal;
     player.skin = identity.skin;
     player.username = identity.username ?? '';
@@ -453,6 +463,12 @@ export class MarketRoom extends Room<{ state: MarketRoomState; client: MarketCli
     player.verticalSpeed = snapshot.verticalSpeed;
     player.grounded = snapshot.grounded;
     player.gait = snapshot.gait;
+    player.movementState = snapshot.movementState ?? '';
+    player.gaitPhase = snapshot.gaitPhase ?? 0;
+    player.movementBlend = snapshot.movementBlend ?? 0;
+    player.runBlend = snapshot.runBlend ?? 0;
+    player.airProgress = snapshot.airProgress ?? 1;
+    player.simulationTick = snapshot.simulationTick ?? 0;
     player.updatedAt = now;
     getRoomServices().admissions.updatePosition(`${this.roomId}:${client.sessionId}`, player.x, player.z);
   }
@@ -483,6 +499,11 @@ export class MarketRoom extends Room<{ state: MarketRoomState; client: MarketCli
     player.verticalSpeed = 0;
     player.grounded = true;
     player.gait = 'idle';
+    player.movementState = 'idle';
+    player.gaitPhase = 0;
+    player.movementBlend = 0;
+    player.runBlend = 0;
+    player.airProgress = 1;
     player.updatedAt = now;
     data.move.lastAcceptedAt = now;
     data.move.lastReceivedAt = now;

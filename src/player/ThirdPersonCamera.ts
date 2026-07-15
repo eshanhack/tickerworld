@@ -1,5 +1,7 @@
 import * as THREE from 'three';
 import type { HeightSampler } from './FoxPlayer';
+import type { FoxLocomotionState } from './FoxPlayer';
+import { loadMovementTuning, type MovementTuning } from './MovementConfig';
 
 export type CameraObstacleSampler = (x: number, y: number, z: number) => boolean;
 
@@ -17,12 +19,11 @@ export interface ThirdPersonCameraOptions {
   readonly collisionClearance?: number;
   readonly reducedMotion?: boolean;
   readonly autoRecenter?: boolean;
+  readonly tuning?: MovementTuning;
 }
 
 const CHASE_RECENTER_DELAY = 1.1;
 const CHASE_RECENTER_RESPONSE = 1.65;
-const MAX_CHASE_BOOM_EXTENSION = 0.7;
-const MAX_CHASE_LOOK_AHEAD = 0.55;
 const CHASE_MOVEMENT_THRESHOLD = 0.08;
 /** Normal orbiting keeps the camera above the fox; sky aim pivots the lens below this value. */
 export const CAMERA_MIN_BOOM_PITCH = 0.12;
@@ -63,6 +64,8 @@ export class ThirdPersonCamera {
   private readonly chaseLookAhead = new THREE.Vector3();
   private readonly desiredChaseLookAhead = new THREE.Vector3();
   private readonly autoRecenter: boolean;
+  private readonly tuning: MovementTuning;
+  private readonly baseFov: number;
   private distance: number;
   private resolvedDistance: number;
   private chaseHeadingYaw = 0;
@@ -70,6 +73,10 @@ export class ThirdPersonCamera {
   private chaseRecenterWeight = 1;
   private chaseBoomExtension = 0;
   private chaseMoveSeconds = 0;
+  private movementState: FoxLocomotionState = 'idle';
+  private movementBank = 0;
+  private landingDip = 0;
+  private cameraRoll = 0;
   private activePointer: number | null = null;
   private pointerX = 0;
   private pointerY = 0;
@@ -79,6 +86,8 @@ export class ThirdPersonCamera {
 
   public constructor(options: ThirdPersonCameraOptions = {}) {
     this.camera = options.camera ?? new THREE.PerspectiveCamera(43, 1, 0.08, 360);
+    this.baseFov = this.camera.fov;
+    this.tuning = options.tuning ?? loadMovementTuning(false);
     this.domElement = options.domElement ?? null;
     this.yaw = options.yaw ?? 0;
     this.pitch = THREE.MathUtils.clamp(
@@ -149,6 +158,28 @@ export class ThirdPersonCamera {
     );
   }
 
+  /** Rich movement presentation layered over the preserved orbit/collision rig. */
+  public setMovementPresentation(
+    state: FoxLocomotionState,
+    headingYaw: number,
+    normalizedSpeed: number,
+    bank = 0,
+    recenterWeight = 1,
+  ): void {
+    this.movementState = state;
+    this.movementBank = THREE.MathUtils.clamp(Number.isFinite(bank) ? bank : 0, -1, 1);
+    this.setChaseMotion(headingYaw, normalizedSpeed, recenterWeight);
+  }
+
+  public triggerLanding(intensity: number, heavy: boolean): void {
+    if (this.reducedMotion) return;
+    const amount = THREE.MathUtils.clamp(Number.isFinite(intensity) ? intensity : 0, 0, 1);
+    this.landingDip = Math.max(
+      this.landingDip,
+      this.tuning.camera.heavyLandDip * amount * (heavy ? 1 : 0.42),
+    );
+  }
+
   public resize(width: number, height: number): void {
     this.camera.aspect = Math.max(1, width) / Math.max(1, height);
     this.camera.updateProjectionMatrix();
@@ -166,9 +197,10 @@ export class ThirdPersonCamera {
   ): void {
     const delta = Math.min(Math.max(deltaSeconds, 0), 0.1);
     this.updateChaseMotion(delta);
+    this.landingDip = damp(this.landingDip, 0, 9.5, delta);
     this.desiredFocus.set(
       target.x + this.chaseLookAhead.x,
-      target.y + this.lookHeight,
+      target.y + this.lookHeight - this.landingDip,
       target.z + this.chaseLookAhead.z,
     );
 
@@ -180,7 +212,16 @@ export class ThirdPersonCamera {
       this.focus.lerp(this.desiredFocus, 1 - Math.exp(-focusResponse * delta));
     }
 
-    const requestedDistance = Math.min(this.maxDistance, this.distance + this.chaseBoomExtension);
+    // User zoom remains bounded by maxDistance; movement presentation receives
+    // a small additional boom so the default fully-zoomed-out camera can still
+    // breathe during a run or glide.
+    const presentationHeadroom = this.reducedMotion
+      ? this.tuning.camera.glideBoomExtension * 0.2
+      : this.tuning.camera.glideBoomExtension;
+    const requestedDistance = Math.min(
+      this.maxDistance + presentationHeadroom,
+      this.distance + this.chaseBoomExtension,
+    );
     // Looking into the sky changes lens aim, not the boom path. Keeping a low,
     // positive boom elevation preserves terrain/obstacle safety and leaves the
     // fox framed at the bottom of the shot instead of forcing the camera underground.
@@ -227,6 +268,20 @@ export class ThirdPersonCamera {
     } else {
       this.camera.lookAt(this.focus);
     }
+    const glideRoll = this.movementState === 'glide' && !this.reducedMotion
+      ? -this.movementBank * 0.035
+      : 0;
+    this.cameraRoll = damp(this.cameraRoll, glideRoll, 7, delta);
+    this.camera.rotateZ(this.cameraRoll);
+    const fovBoost = this.movementState === 'glide'
+      ? this.tuning.camera.glideFovDegrees
+      : this.chaseSpeed * this.tuning.camera.runFovDegrees;
+    const targetFov = this.baseFov + fovBoost * (this.reducedMotion ? 0.2 : 1);
+    const nextFov = damp(this.camera.fov, targetFov, 5.5, delta);
+    if (Math.abs(nextFov - this.camera.fov) > 0.001) {
+      this.camera.fov = nextFov;
+      this.camera.updateProjectionMatrix();
+    }
     this.camera.updateMatrixWorld();
   }
 
@@ -259,7 +314,10 @@ export class ThirdPersonCamera {
     }
 
     const motionScale = this.reducedMotion ? 0.2 : 1;
-    const targetExtension = this.chaseSpeed * MAX_CHASE_BOOM_EXTENSION * motionScale;
+    const glide = this.movementState === 'glide';
+    const targetExtension = (glide
+      ? this.tuning.camera.glideBoomExtension
+      : this.chaseSpeed * this.tuning.camera.runBoomExtension) * motionScale;
     this.chaseBoomExtension = damp(
       this.chaseBoomExtension,
       targetExtension,
@@ -267,7 +325,9 @@ export class ThirdPersonCamera {
       delta,
     );
 
-    const lookAheadDistance = this.chaseSpeed * MAX_CHASE_LOOK_AHEAD * motionScale;
+    const lookAheadDistance = (glide
+      ? this.tuning.camera.glideLookAhead
+      : this.chaseSpeed * this.tuning.camera.runLookAhead) * motionScale;
     this.desiredChaseLookAhead.set(
       -Math.sin(this.chaseHeadingYaw) * lookAheadDistance,
       0,

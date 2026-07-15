@@ -365,4 +365,42 @@ describe('FoxRig motion topology', () => {
     expect(Math.abs(landing.pose.legs.hindLeft.knee)).toBeGreaterThan(Math.abs(recovered.pose.legs.hindLeft.knee));
     disposeRig(rig);
   });
+
+  it('gives tail and ears underdamped spring follow-through instead of exponential tracking', () => {
+    const rig = new FoxRig();
+    const tail = rig.root.getObjectByName('FoxTailJoint1')!;
+    const ear = rig.root.getObjectByName('FoxEarLeft')!;
+    for (let frame = 0; frame < 12; frame += 1) {
+      rig.updatePose({
+        deltaSeconds: 1 / 60,
+        elapsedSeconds: frame / 60,
+        gaitPhase: 0,
+        movementBlend: 1,
+        runBlend: 0,
+        turnLean: 0.2,
+        accelerationLean: -0.08,
+        appendageSpring: 72,
+        appendageDamping: 12.5,
+      });
+    }
+    expect(tail.rotation.y).toBeLessThan(-0.02);
+    expect(Math.abs(ear.rotation.x)).toBeGreaterThan(0.02);
+    let tailOvershot = false;
+    for (let frame = 0; frame < 90; frame += 1) {
+      rig.updatePose({
+        deltaSeconds: 1 / 60,
+        elapsedSeconds: 1 + frame / 60,
+        gaitPhase: 0,
+        movementBlend: 1,
+        runBlend: 0,
+        turnLean: 0,
+        accelerationLean: 0,
+        appendageSpring: 72,
+        appendageDamping: 12.5,
+      });
+      tailOvershot ||= tail.rotation.y > 0.001;
+    }
+    expect(tailOvershot).toBe(true);
+    disposeRig(rig);
+  });
 });

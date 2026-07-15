@@ -34,6 +34,7 @@ import type {
   AudioSubmixKind,
   AggregatedTradeSoundOptions,
   FootstepSoundOptions,
+  GlideWindOptions,
   HologramShimmerSoundOptions,
   JumpSoundKind,
   MarketAccentSoundOptions,
@@ -94,6 +95,14 @@ interface AmbientPadVoice {
 interface RainAmbienceGraph {
   readonly source: AudioBufferSourceNode;
   readonly highpass: BiquadFilterNode;
+  readonly lowpass: BiquadFilterNode;
+  readonly gain: GainNode;
+  readonly nodes: readonly AudioNode[];
+}
+
+interface GlideWindGraph {
+  readonly source: AudioBufferSourceNode;
+  readonly bandpass: BiquadFilterNode;
   readonly lowpass: BiquadFilterNode;
   readonly gain: GainNode;
   readonly nodes: readonly AudioNode[];
@@ -249,6 +258,14 @@ export class AudioEngine {
   private currentPadVoice: AmbientPadVoice | null = null;
   private ambientStarted = false;
   private activeRainGraph: RainAmbienceGraph | null = null;
+  private glideWindGraph: GlideWindGraph | null = null;
+  private glideWindActive = false;
+  private glideWindSpeed = 0;
+  private glideWindBank = 0;
+  private glideWindAppliedActive = false;
+  private glideWindAppliedSpeed = Number.NaN;
+  private glideWindAppliedBank = Number.NaN;
+  private glideWindAppliedAt = Number.NEGATIVE_INFINITY;
   private rainIntensity = 0;
   private keyTimer: ReturnType<typeof setTimeout> | null = null;
   private padTimer: ReturnType<typeof setTimeout> | null = null;
@@ -832,6 +849,7 @@ export class AudioEngine {
     const now = this.context.currentTime;
     const settings = this.footstepSettings(surface);
     const sideVariation = side === 'left' ? -0.035 : side === 'right' ? 0.035 : 0;
+    const naturalPitch = 0.975 + this.random() * 0.05;
     const intensityGain = 0.58 + intensity * 0.62;
     const legPitch = leg?.startsWith('front') ? 1.025 : leg?.startsWith('hind') ? 0.975 : 1;
     this.playNoiseBurst(
@@ -839,13 +857,13 @@ export class AudioEngine {
       now,
       settings.duration,
       settings.filter,
-      settings.frequency * (1 + sideVariation) * legPitch,
+      settings.frequency * (1 + sideVariation) * legPitch * naturalPitch,
       settings.gain * (sprinting ? 1.18 : 1) * intensityGain,
     );
     this.playFootThump(
       this.movementBus,
       now,
-      settings.thumpFrequency * legPitch,
+      settings.thumpFrequency * legPitch * naturalPitch,
       (sprinting ? 0.03 : 0.022) * intensityGain,
     );
     if (sprinting) {
@@ -890,6 +908,35 @@ export class AudioEngine {
     );
     this.playFootThump(this.movementBus, now, settings.thumpFrequency * 1.12, 0.009 + amount * 0.018);
     this.playGentleNote(this.movementBus, now + 0.035, 587.33, 0.3, 0.005 + amount * 0.006, -1.5);
+  }
+
+  /** A rounded scuff for a high-speed direction change. */
+  public playSkid(surface: SurfaceKind, intensity = 0.7): void {
+    if (!this.canPlaySfx(false, 'movement') || !this.context || !this.movementBus) return;
+    const amount = clampUnit(intensity);
+    const now = this.context.currentTime;
+    const settings = this.footstepSettings(surface);
+    this.playNoiseBurst(
+      this.movementBus,
+      now,
+      0.16 + amount * 0.08,
+      'bandpass',
+      settings.frequency * 0.78,
+      0.009 + amount * 0.014,
+    );
+    this.playDampedResonator(this.movementBus, now, settings.thumpFrequency * 0.82, 0.18, 0.008 + amount * 0.01);
+  }
+
+  /** Modulates one persistent filtered wind graph; deploy/cancel never allocates. */
+  public setGlideWind(options: GlideWindOptions): void {
+    if (this.disposed) return;
+    this.glideWindActive = options.active;
+    this.glideWindSpeed = clampUnit(options.speed ?? 0);
+    this.glideWindBank = Math.max(-1, Math.min(1, Number.isFinite(options.bank) ? options.bank ?? 0 : 0));
+    if (this.glideWindActive && !this.glideWindGraph && this.context && this.movementBus) {
+      this.buildGlideWindGraph(this.context, this.movementBus);
+    }
+    this.syncGlideWind();
   }
 
   /**
@@ -1219,6 +1266,7 @@ export class AudioEngine {
     if (!visible) {
       this.clearAmbientTimers();
       this.stopRainAmbience(0.08);
+      this.syncGlideWind();
       if (this.context) {
         this.setStatus('suspended');
         void this.suspendContext();
@@ -1238,6 +1286,7 @@ export class AudioEngine {
         if (this.disposed || !this.visible) return;
         this.startAmbient();
         this.syncRainAmbience();
+        this.syncGlideWind();
         this.scheduleNextKey();
         this.scheduleNextPad();
         this.setStatus('ready');
@@ -1255,6 +1304,11 @@ export class AudioEngine {
     this.clearAmbientTimers();
     this.stopAmbient();
     this.stopRainAmbience(0);
+    if (this.glideWindGraph) {
+      safeStop(this.glideWindGraph.source);
+      for (const node of this.glideWindGraph.nodes) safeDisconnect(node);
+      this.glideWindGraph = null;
+    }
     for (const graph of this.rainGraphs) this.cleanupRainGraph(graph);
     this.rainGraphs.clear();
     for (const source of this.scheduledSources) safeStop(source);
@@ -1395,6 +1449,58 @@ export class AudioEngine {
       now,
       0.025,
     );
+    this.syncGlideWind();
+  }
+
+  private buildGlideWindGraph(context: AudioContext, destination: AudioNode): void {
+    if (this.glideWindGraph) return;
+    const source = context.createBufferSource();
+    const bandpass = context.createBiquadFilter();
+    const lowpass = context.createBiquadFilter();
+    const gain = context.createGain();
+    source.buffer = this.getAtmosphereNoiseBuffer();
+    source.loop = true;
+    bandpass.type = 'bandpass';
+    bandpass.frequency.value = 430;
+    bandpass.Q.value = 0.55;
+    lowpass.type = 'lowpass';
+    lowpass.frequency.value = 1_100;
+    lowpass.Q.value = 0.25;
+    gain.gain.value = 0.0001;
+    source.connect(bandpass);
+    bandpass.connect(lowpass);
+    lowpass.connect(gain);
+    gain.connect(destination);
+    source.start(context.currentTime, this.random() * 4);
+    this.glideWindGraph = { source, bandpass, lowpass, gain, nodes: [source, bandpass, lowpass, gain] };
+    this.syncGlideWind();
+  }
+
+  private syncGlideWind(): void {
+    if (!this.context || !this.glideWindGraph) return;
+    const now = this.context.currentTime;
+    const active = this.visible && this.glideWindActive;
+    const activeChanged = active !== this.glideWindAppliedActive;
+    const valueChanged = !Number.isFinite(this.glideWindAppliedSpeed)
+      || Math.abs(this.glideWindSpeed - this.glideWindAppliedSpeed) >= 0.015
+      || Math.abs(this.glideWindBank - this.glideWindAppliedBank) >= 0.025;
+    if (!activeChanged && !valueChanged) return;
+    if (!activeChanged && now - this.glideWindAppliedAt < 1 / 15) return;
+    const target = active ? 0.0025 + this.glideWindSpeed * 0.007 : 0.0001;
+    this.glideWindGraph.gain.gain.cancelScheduledValues(now);
+    this.glideWindGraph.bandpass.frequency.cancelScheduledValues(now);
+    this.glideWindGraph.lowpass.frequency.cancelScheduledValues(now);
+    this.glideWindGraph.gain.gain.setTargetAtTime(target, now, active ? 0.08 : 0.12);
+    this.glideWindGraph.bandpass.frequency.setTargetAtTime(
+      360 + this.glideWindSpeed * 360 + Math.abs(this.glideWindBank) * 80,
+      now,
+      0.09,
+    );
+    this.glideWindGraph.lowpass.frequency.setTargetAtTime(900 + this.glideWindSpeed * 750, now, 0.12);
+    this.glideWindAppliedActive = active;
+    this.glideWindAppliedSpeed = this.glideWindSpeed;
+    this.glideWindAppliedBank = this.glideWindBank;
+    this.glideWindAppliedAt = now;
   }
 
   private createPositionalEffectBus(

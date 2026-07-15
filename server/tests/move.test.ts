@@ -35,6 +35,19 @@ describe('authoritative movement validation', () => {
     expect(validateMove(snapshot({ x: 0.4 }), { x: 0, y: 0, z: 14 }, tracker(), 1_000)).toEqual({ accepted: true });
   });
 
+  it('accepts bounded explicit motion state while retaining legacy snapshots', () => {
+    expect(validateMove(snapshot({
+      movementState: 'double-jump',
+      gaitPhase: 0.98,
+      movementBlend: 1,
+      runBlend: 0.72,
+      airProgress: 0.4,
+      simulationTick: 4_294_967_295,
+    }), { x: 0, y: 0, z: 14 }, tracker(), 1_000)).toEqual({ accepted: true });
+    const invalid = validateMove(snapshot({ gaitPhase: Number.NaN }), { x: 0, y: 0, z: 14 }, tracker(), 1_000);
+    expect(invalid.accepted).toBe(false);
+  });
+
   it('accepts the fastest lightweight species and rejects speed above the shared ceiling tolerance', () => {
     expect(validateMove(
       snapshot({ x: 0.8, speed: MAX_SPRINT_SPEED }),

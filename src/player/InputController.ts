@@ -13,6 +13,8 @@ export interface PlayerInputControllerOptions {
   readonly target?: Window | null;
   /** Pass null alongside target to keep visibility listeners detached. */
   readonly document?: Document | null;
+  /** Override browser gamepad discovery in deterministic tests. */
+  readonly gamepads?: (() => readonly (Gamepad | null)[]) | null;
 }
 
 const MOVEMENT_KEYS = new Set([
@@ -50,11 +52,17 @@ export class PlayerInputController {
   private readonly pressed = new Set<string>();
   private readonly target: Window | null;
   private readonly ownerDocument: Document | null;
+  private readonly readGamepads: (() => readonly (Gamepad | null)[]) | null;
   private virtualX = 0;
   private virtualForward = 0;
   private virtualSprint = false;
   private virtualGlide = false;
   private jumpQueued = false;
+  private gamepadX = 0;
+  private gamepadForward = 0;
+  private gamepadSprint = false;
+  private gamepadJumpHeld = false;
+  private gamepadJumpWasHeld = false;
   private enabled = true;
 
   public constructor(options: PlayerInputControllerOptions = {}) {
@@ -64,6 +72,11 @@ export class PlayerInputController {
     this.ownerDocument = options.document === undefined
       ? (typeof document === 'undefined' ? null : document)
       : options.document;
+    this.readGamepads = options.gamepads === undefined
+      ? (typeof navigator !== 'undefined' && typeof navigator.getGamepads === 'function'
+          ? () => navigator.getGamepads()
+          : null)
+      : options.gamepads;
 
     this.target?.addEventListener('keydown', this.onKeyDown);
     this.target?.addEventListener('keyup', this.onKeyUp);
@@ -78,8 +91,8 @@ export class PlayerInputController {
 
     const keyboardX = Number(this.isDown('KeyD', 'ArrowRight')) - Number(this.isDown('KeyA', 'ArrowLeft'));
     const keyboardForward = Number(this.isDown('KeyW', 'ArrowUp')) - Number(this.isDown('KeyS', 'ArrowDown'));
-    let moveX = clampAxis(keyboardX + this.virtualX);
-    let moveForward = clampAxis(keyboardForward + this.virtualForward);
+    let moveX = clampAxis(keyboardX + this.virtualX + this.gamepadX);
+    let moveForward = clampAxis(keyboardForward + this.virtualForward + this.gamepadForward);
     const magnitude = Math.hypot(moveX, moveForward);
 
     if (magnitude > 1) {
@@ -90,9 +103,54 @@ export class PlayerInputController {
     return {
       moveX,
       moveForward,
-      sprint: this.virtualSprint || this.pressed.has('ShiftLeft') || this.pressed.has('ShiftRight'),
-      jumpHeld: this.virtualGlide || this.pressed.has('Space'),
+      sprint: this.virtualSprint
+        || this.gamepadSprint
+        || this.pressed.has('ShiftLeft')
+        || this.pressed.has('ShiftRight'),
+      jumpHeld: this.virtualGlide || this.gamepadJumpHeld || this.pressed.has('Space'),
     };
+  }
+
+  /** Poll once per rendered frame so gamepad edges share the keyboard buffer. */
+  public pollGamepad(): void {
+    if (!this.enabled || !this.readGamepads) return;
+    let pad: Gamepad | null = null;
+    try {
+      const pads = this.readGamepads();
+      for (let index = 0; index < pads.length; index += 1) {
+        const candidate = pads[index];
+        if (candidate?.connected) {
+          pad = candidate;
+          break;
+        }
+      }
+    } catch {
+      pad = null;
+    }
+    if (!pad) {
+      this.gamepadX = 0;
+      this.gamepadForward = 0;
+      this.gamepadSprint = false;
+      this.gamepadJumpHeld = false;
+      this.gamepadJumpWasHeld = false;
+      return;
+    }
+    const deadzone = 0.14;
+    const axis = (value: number | undefined): number => {
+      const safe = clampAxis(value ?? 0);
+      if (Math.abs(safe) <= deadzone) return 0;
+      return Math.sign(safe) * (Math.abs(safe) - deadzone) / (1 - deadzone);
+    };
+    this.gamepadX = axis(pad.axes[0]);
+    this.gamepadForward = -axis(pad.axes[1]);
+    this.gamepadSprint = Boolean(
+      Math.hypot(this.gamepadX, this.gamepadForward) >= 0.82
+      || pad.buttons[1]?.pressed
+      || (pad.buttons[7]?.value ?? 0) > 0.45,
+    );
+    this.gamepadJumpHeld = Boolean(pad.buttons[0]?.pressed);
+    if (this.gamepadJumpHeld && !this.gamepadJumpWasHeld) this.requestJump();
+    this.gamepadJumpWasHeld = this.gamepadJumpHeld;
   }
 
   /** Feed a normalized virtual joystick into the same path as keyboard input. */
@@ -130,6 +188,11 @@ export class PlayerInputController {
     this.virtualForward = 0;
     this.virtualSprint = false;
     this.virtualGlide = false;
+    this.gamepadX = 0;
+    this.gamepadForward = 0;
+    this.gamepadSprint = false;
+    this.gamepadJumpHeld = false;
+    this.gamepadJumpWasHeld = false;
     this.jumpQueued = false;
   };
 

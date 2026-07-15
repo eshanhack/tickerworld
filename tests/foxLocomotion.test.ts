@@ -134,7 +134,7 @@ describe('fox locomotion acceptance', () => {
     disposeRig(rig);
   });
 
-  it('anticipates a grounded jump for 80-130ms before takeoff', () => {
+  it('anticipates a grounded jump for a responsive two-to-three-frame gather', () => {
     const { fox } = createPlayer();
     const deltaSeconds = 1 / 120;
     updatePlayer(fox, deltaSeconds);
@@ -160,8 +160,8 @@ describe('fox locomotion acceptance', () => {
     }
 
     expect(sawAnticipation).toBe(true);
-    expect(jumpAt).toBeGreaterThanOrEqual(0.08);
-    expect(jumpAt).toBeLessThanOrEqual(0.13 + deltaSeconds);
+    expect(jumpAt).toBeGreaterThanOrEqual(0.04);
+    expect(jumpAt).toBeLessThanOrEqual(0.08);
     expect(maximumPrelaunchVelocity).toBeLessThanOrEqual(0.001);
     expect(firstRiseAt).toBeGreaterThanOrEqual(jumpAt! - deltaSeconds);
   });

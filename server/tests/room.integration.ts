@@ -372,13 +372,26 @@ describe.sequential('Colyseus market rooms', () => {
       verticalSpeed: 0,
       grounded: true,
       gait: 'walk' as const,
+      movementState: 'run' as const,
+      gaitPhase: 0.37,
+      movementBlend: 1,
+      runBlend: 0.84,
+      airProgress: 1,
+      simulationTick: 240,
     };
     first.send('move', move);
     await new Promise((resolve) => setTimeout(resolve, 250));
     const remote = [...(second.state as any).players.values()].find(
       (player: any) => player.actorId === firstIdentity.actorId,
     );
-    expect(remote).toMatchObject({ x: move.x, z: move.z, gait: 'walk' });
+    expect(remote).toMatchObject({
+      x: move.x,
+      z: move.z,
+      gait: 'walk',
+      movementState: 'run',
+      simulationTick: 240,
+    });
+    expect(remote.gaitPhase).toBeCloseTo(0.37, 4);
 
     const authoritative = [...(testServer.getRoomById(first.roomId).state as any).players.values()]
       .find((player: any) => player.actorId === firstIdentity.actorId);

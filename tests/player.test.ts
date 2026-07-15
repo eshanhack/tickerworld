@@ -233,7 +233,7 @@ describe('FoxPlayer', () => {
     fox.dispose();
   });
 
-  it('accelerates gracefully and preserves a short, bounded coast before stopping', () => {
+  it('reaches top speed quickly and brakes faster than it accelerates', () => {
     const input = new PlayerInputController({ target: null, document: null });
     const fox = new FoxPlayer({ input });
     fox.update(1 / 60, 0);
@@ -255,9 +255,9 @@ describe('FoxPlayer', () => {
       coast.push(fox.update(1 / 60, 0).speed);
     }
 
-    expect(coast[5]).toBeGreaterThan(cruisingSpeed * 0.5);
-    expect(coast[20]).toBeGreaterThan(0.3);
-    expect(coast[20]).toBeLessThan(cruisingSpeed * 0.28);
+    expect(acceleration[12]).toBeGreaterThan(cruisingSpeed * 0.8);
+    expect(coast[5]).toBeLessThan(cruisingSpeed * 0.35);
+    expect(coast[20]).toBeLessThan(0.08);
     expect(coast.at(-1)).toBeLessThan(0.06);
     fox.dispose();
   });
@@ -322,7 +322,7 @@ describe('FoxPlayer', () => {
     const blendSteps = runBlends.slice(1).map((blend, index) => Math.abs(blend - runBlends[index]!));
     expect(runBlends[0]).toBeLessThan(runBlends.at(-1)!);
     expect(runBlends.at(-1)).toBeGreaterThan(0.82);
-    expect(Math.max(...blendSteps)).toBeLessThan(0.04);
+    expect(Math.max(...blendSteps)).toBeLessThan(0.07);
     expect(Math.max(...bodyHeights) - Math.min(...bodyHeights)).toBeGreaterThan(0.015);
     expect(Math.max(...bodyHeights) - Math.min(...bodyHeights)).toBeLessThan(0.18);
     expect(Math.max(...strideExtensions)).toBeGreaterThan(0.8);
@@ -535,7 +535,7 @@ describe('FoxPlayer', () => {
     expect(fox.position.y).toBeLessThan(releaseHeight);
     expect(fox.snapshot.grounded).toBe(true);
     expect(fox.position.y).toBeCloseTo(0, 3);
-    expect(actions).toEqual(['jump', 'land']);
+    expect(actions).toEqual(['jump', 'glide-start', 'glide-end', 'land']);
     fox.dispose();
   });
 

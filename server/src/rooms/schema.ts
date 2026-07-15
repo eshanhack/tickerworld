@@ -17,6 +17,12 @@ export class PlayerState extends Schema {
   @type('float32') verticalSpeed = 0;
   @type('boolean') grounded = true;
   @type('string') gait: MoveSnapshot['gait'] = 'idle';
+  @type('string') movementState = '';
+  @type('float32') gaitPhase = 0;
+  @type('float32') movementBlend = 0;
+  @type('float32') runBlend = 0;
+  @type('float32') airProgress = 1;
+  @type('uint32') simulationTick = 0;
   @type('string') animal = 'fox';
   @type('string') skin = 'base';
   @type('string') username = '';
@@ -40,6 +46,8 @@ export class MarketRoomState extends Schema {
   @type('uint16') protocolVersion = PROTOCOL_VERSION;
   /** Positive capability: absent on pre-scoped-chat protocol-v2 servers. */
   @type('boolean') scopedChat = true;
+  /** Positive capability; absent on earlier protocol-v2 room schemas. */
+  @type('boolean') motionStateV1 = true;
   @type(WorldEnvironmentState) environment = new WorldEnvironmentState();
   @type({ map: PlayerState }) players = new MapSchema<PlayerState>();
 }

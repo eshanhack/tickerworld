@@ -7,6 +7,7 @@ export type {
   FoxActionListener,
   FoxLocomotionState,
   FoxMotionDebugSnapshot,
+  FoxNetworkMotionSnapshot,
   FoxPlayerOptions,
   HeightSampler,
   HorizontalMovementResolver,

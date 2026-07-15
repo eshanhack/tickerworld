@@ -134,4 +134,12 @@ export interface VegetationSoundOptions {
   readonly intensity?: number;
 }
 
+export interface GlideWindOptions {
+  readonly active: boolean;
+  /** Normalized movement speed. */
+  readonly speed?: number;
+  /** Signed normalized banking amount, -1..1. */
+  readonly bank?: number;
+}
+
 export type JumpSoundKind = 'jump' | 'double-jump';

@@ -46,6 +46,7 @@ import {
   type WorldPopulationSnapshot,
 } from './portals';
 import { FoxPlayer, ThirdPersonCamera, type FootstepEvent, type FoxActionEvent } from './player';
+import { loadMovementTuning } from './player/MovementConfig';
 import {
   marketSlugForSymbol,
   type MarketRouteHistory,
@@ -87,6 +88,7 @@ import { SocialSystem, socialInteractionLocksMovement } from './social/SocialSys
 import {
   chooseQualityTier,
   Hud,
+  MovementDebugPanel,
   ParkourHudView,
   TradeDebugPanel,
   createParkourRunResult,
@@ -158,6 +160,7 @@ export class Game {
   private readonly scene = new THREE.Scene();
   private readonly renderer: THREE.WebGLRenderer;
   private readonly camera: THREE.PerspectiveCamera;
+  private readonly movementTuning = loadMovementTuning(DEBUG_MODE);
   private readonly world: WorldSystem;
   private readonly player: FoxPlayer;
   private readonly cameraRig: ThirdPersonCamera;
@@ -176,6 +179,7 @@ export class Game {
   private readonly parkour: ParkourParkSystem;
   private parkourHud?: ParkourHudView;
   private tradeDebugPanel?: TradeDebugPanel;
+  private movementDebugPanel?: MovementDebugPanel;
   private readonly celebrationGate = new MarketCelebrationGate();
   private readonly worldGuard = new WorldGuard();
   private readonly uiInteractionLock = new UiInteractionLock();
@@ -296,6 +300,7 @@ export class Game {
       pitch: 0.28,
       startAtMaxDistance: true,
       reducedMotion: this.reducedMotion,
+      tuning: this.movementTuning,
     });
 
     this.monuments = new MonumentSystem({
@@ -384,6 +389,7 @@ export class Game {
     this.player = new FoxPlayer({
       spawn: new THREE.Vector3(0, this.world.heightAt(0, spawnZ), spawnZ),
       reducedMotion: this.reducedMotion,
+      tuning: this.movementTuning,
     });
     this.player.input.setEnabled(false);
     this.scene.add(this.player.group);
@@ -413,6 +419,7 @@ export class Game {
                 : locomotion === 'walk'
                   ? 'walk'
                   : 'idle',
+          ...this.player.networkMotion,
         };
       },
       onCorrection: (correction) => this.applyRoomCorrection(correction),
@@ -578,6 +585,10 @@ export class Game {
           onOrder: (side, tier) => this.tradeTape.injectDebugOrder(side, tier),
           onSurge: (side) => this.triggerDebugTradeSurge(side),
         },
+      );
+      this.movementDebugPanel = new MovementDebugPanel(
+        this.hud.mountLayer('tickerworld-movement-debug-layer'),
+        this.movementTuning,
       );
     }
     this.portalSystem = new PortalSystem({
@@ -765,12 +776,14 @@ export class Game {
     this.refreshAudioSources();
     this.audio.updateProximityPosition(this.player.position);
     this.prewarmWorld();
-    this.cameraRig.setChaseMotion(
-      this.player.headingYaw,
+    this.cameraRig.setMovementPresentation(
+      this.player.movementState,
+      this.player.travelYaw,
       this.player.normalizedSpeed,
+      this.player.glideBankAmount,
       this.player.chaseRecenterWeight,
     );
-    this.cameraTarget.copy(this.player.position);
+    this.cameraTarget.copy(this.player.renderPosition);
     this.cameraRig.update(0, this.cameraTarget, (x, z) => this.world.heightAt(x, z));
     this.hud.setEnterReady(true);
     this.telemetry.emitOnce({ name: 'game_ready', market: this.activeMarket });
@@ -1105,16 +1118,14 @@ export class Game {
 
   private applyRoomCorrection(correction: CorrectionMessage): void {
     const distance = Math.hypot(
-      correction.x - this.player.position.x,
-      correction.z - this.player.position.z,
+      correction.x - this.player.authoritativePosition.x,
+      correction.z - this.player.authoritativePosition.z,
     );
     if (correction.hard || distance > 1.5) {
       this.player.setPosition(correction.x, correction.y, correction.z);
       return;
     }
-    this.player.position.x = THREE.MathUtils.lerp(this.player.position.x, correction.x, 0.2);
-    this.player.position.y = THREE.MathUtils.lerp(this.player.position.y, correction.y, 0.12);
-    this.player.position.z = THREE.MathUtils.lerp(this.player.position.z, correction.z, 0.2);
+    this.player.applyNetworkCorrection(correction.x, correction.y, correction.z, 0.2);
   }
 
   private updateGuestAppearance(appearance: GuestAppearance): true {
@@ -1420,12 +1431,14 @@ export class Game {
       enabled: this.entered && !this.uiInteractionLock.locked,
     });
     this.portalSystem.update(delta, this.elapsed);
-    this.cameraRig.setChaseMotion(
-      this.player.headingYaw,
+    this.cameraRig.setMovementPresentation(
+      this.player.movementState,
+      this.player.travelYaw,
       this.player.normalizedSpeed,
+      this.player.glideBankAmount,
       this.player.chaseRecenterWeight,
     );
-    this.cameraTarget.copy(this.player.position);
+    this.cameraTarget.copy(this.player.renderPosition);
     this.cameraRig.update(
       delta,
       this.cameraTarget,
@@ -1441,9 +1454,15 @@ export class Game {
     this.updateNewsOverlay();
     this.fireworks.update(delta);
     this.audio.setEnvironment({ nightFactor: this.world.nightFactor });
+    this.audio.setGlideWind({
+      active: this.player.isGliding,
+      speed: this.player.normalizedSpeed,
+      bank: this.player.glideBankAmount,
+    });
     this.audio.updateProximityPosition(this.player.position);
     this.audio.updateListener(this.camera);
     this.updateHud();
+    this.movementDebugPanel?.setSnapshot(this.player.getMotionDebugSnapshot());
     this.updatePerformance(delta);
     this.renderer.render(this.scene, this.camera);
     if (!this.contextLost) this.frameHandle = requestAnimationFrame(this.frame);
@@ -1471,8 +1490,14 @@ export class Game {
     if (!this.entered) return;
     if (event.type === 'land') {
       this.audio.playLanding(event.surface, event.intensity);
+      this.cameraRig.triggerLanding(event.intensity, event.landing === 'heavy');
       return;
     }
+    if (event.type === 'skid') {
+      this.audio.playSkid(event.surface, event.intensity);
+      return;
+    }
+    if (event.type === 'glide-start' || event.type === 'glide-end') return;
     this.hud.recordOnboardingAction('jump');
     this.audio.playJump(event.type);
   }
@@ -2125,6 +2150,7 @@ export class Game {
     this.audio.dispose();
     this.parkourHud?.dispose();
     this.tradeDebugPanel?.dispose();
+    this.movementDebugPanel?.dispose();
     this.hud.dispose();
     this.monuments.dispose();
     this.fireworks.points.removeFromParent();

@@ -9,6 +9,12 @@ export interface RemotePose {
   readonly verticalSpeed: number;
   readonly grounded: boolean;
   readonly gait: NetPlayerState['gait'];
+  readonly movementState?: NetPlayerState['movementState'];
+  readonly gaitPhase?: number;
+  readonly movementBlend?: number;
+  readonly runBlend?: number;
+  readonly airProgress?: number;
+  readonly simulationTick?: number;
 }
 
 export interface ScreenBounds {
@@ -39,8 +45,27 @@ export function interpolateRemotePose(
     yaw: interpolateAngle(from.yaw, to.yaw, amount),
     speed: Math.max(0, mix(from.speed, to.speed)),
     verticalSpeed: mix(from.verticalSpeed, to.verticalSpeed),
-    grounded: amount < 0.5 ? from.grounded : to.grounded,
-    gait: amount < 0.5 ? from.gait : to.gait,
+    grounded: amount < 1 ? from.grounded : to.grounded,
+    gait: amount < 1 ? from.gait : to.gait,
+    movementState: amount < 1 ? from.movementState : to.movementState,
+    gaitPhase: from.gaitPhase === undefined || to.gaitPhase === undefined
+      ? (amount < 1 ? from.gaitPhase : to.gaitPhase)
+      : ((from.gaitPhase + Math.atan2(
+          Math.sin((to.gaitPhase - from.gaitPhase) * Math.PI * 2),
+          Math.cos((to.gaitPhase - from.gaitPhase) * Math.PI * 2),
+        ) / (Math.PI * 2) * amount) % 1 + 1) % 1,
+    movementBlend: from.movementBlend === undefined || to.movementBlend === undefined
+      ? (amount < 1 ? from.movementBlend : to.movementBlend)
+      : mix(from.movementBlend, to.movementBlend),
+    runBlend: from.runBlend === undefined || to.runBlend === undefined
+      ? (amount < 1 ? from.runBlend : to.runBlend)
+      : mix(from.runBlend, to.runBlend),
+    airProgress: from.movementState === to.movementState
+      && from.airProgress !== undefined
+      && to.airProgress !== undefined
+        ? mix(from.airProgress, to.airProgress)
+        : (amount < 1 ? from.airProgress : to.airProgress),
+    simulationTick: amount < 1 ? from.simulationTick : to.simulationTick,
   };
 }
 

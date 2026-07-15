@@ -123,6 +123,12 @@ export interface LocalNetworkSnapshot {
   readonly verticalSpeed: number;
   readonly grounded: boolean;
   readonly gait: MoveSnapshot['gait'];
+  readonly movementState?: MoveSnapshot['movementState'];
+  readonly gaitPhase?: number;
+  readonly movementBlend?: number;
+  readonly runBlend?: number;
+  readonly airProgress?: number;
+  readonly simulationTick?: number;
 }
 
 export interface RoomClientSnapshot {
@@ -411,11 +417,27 @@ function stringValue(value: unknown, fallback = ''): string {
   return typeof value === 'string' ? value : fallback;
 }
 
-function parseRemote(value: unknown): NetPlayerState | null {
+export function parseRemote(value: unknown): NetPlayerState | null {
   if (!value || typeof value !== 'object') return null;
   const source = value as Record<string, unknown>;
   const actorId = stringValue(source.actorId);
   if (!actorId) return null;
+  const replicatedStates = [
+    'idle', 'walk', 'run', 'jump-anticipate', 'jump-rise', 'apex', 'fall',
+    'double-jump', 'glide', 'land-soft', 'land-heavy', 'skid',
+  ] as const;
+  const movementState = replicatedStates.includes(
+    stringValue(source.movementState) as (typeof replicatedStates)[number],
+  ) ? stringValue(source.movementState) as NetPlayerState['movementState'] : undefined;
+  const optionalUnit = (value: unknown): number | undefined => {
+    const parsed = finite(value, Number.NaN);
+    return Number.isFinite(parsed) ? Math.max(0, Math.min(1, parsed)) : undefined;
+  };
+  const simulationTick = typeof source.simulationTick === 'number'
+    && Number.isInteger(source.simulationTick)
+    && source.simulationTick >= 0
+      ? source.simulationTick >>> 0
+      : undefined;
   return {
     actorId,
     x: finite(source.x),
@@ -428,6 +450,20 @@ function parseRemote(value: unknown): NetPlayerState | null {
     gait: ['idle', 'walk', 'run', 'air', 'glide'].includes(stringValue(source.gait))
       ? source.gait as NetPlayerState['gait']
       : 'idle',
+    ...(movementState ? { movementState } : {}),
+    ...(movementState && optionalUnit(source.gaitPhase) !== undefined
+      ? { gaitPhase: optionalUnit(source.gaitPhase) }
+      : {}),
+    ...(movementState && optionalUnit(source.movementBlend) !== undefined
+      ? { movementBlend: optionalUnit(source.movementBlend) }
+      : {}),
+    ...(movementState && optionalUnit(source.runBlend) !== undefined
+      ? { runBlend: optionalUnit(source.runBlend) }
+      : {}),
+    ...(movementState && optionalUnit(source.airProgress) !== undefined
+      ? { airProgress: optionalUnit(source.airProgress) }
+      : {}),
+    ...(movementState && simulationTick !== undefined ? { simulationTick } : {}),
     animal: stringValue(source.animal, 'fox') as AnimalKind,
     skin: stringValue(source.skin, 'base') as SkinId,
     username: typeof source.username === 'string' && source.username ? source.username : null,

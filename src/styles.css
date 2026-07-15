@@ -1083,6 +1083,19 @@ canvas {
 .trade-debug-panel.is-collapsed .trade-debug-grid,
 .trade-debug-panel.is-collapsed .trade-debug-surges,
 .trade-debug-panel.is-collapsed pre { display: none; }
+.movement-debug-panel { position: absolute; z-index: 58; right: max(1rem, env(safe-area-inset-right)); top: max(9rem, env(safe-area-inset-top)); width: min(27rem, calc(100vw - 2rem)); max-height: min(72vh, 48rem); overflow: hidden; padding: .72rem; border: 1px solid rgba(217,200,255,.28); border-radius: 1rem; background: rgba(22,27,27,.86); color: #efe7ff; box-shadow: 0 .8rem 2rem rgba(22,27,27,.18); font: 700 10px/1.35 Consolas, monospace; pointer-events: auto; backdrop-filter: blur(10px); }
+.movement-debug-panel header { display: flex; align-items: center; justify-content: space-between; letter-spacing: .08em; }
+.movement-debug-panel button { min-height: 1.8rem; border: 1px solid rgba(239,231,255,.2); border-radius: .55rem; background: rgba(255,255,255,.08); color: inherit; font: inherit; cursor: pointer; }
+.movement-debug-panel pre { margin: .5rem 0; color: rgba(239,231,255,.82); white-space: pre-wrap; }
+.movement-debug-actions { display: grid; grid-template-columns: 1fr 1fr; gap: .35rem; margin-bottom: .45rem; }
+.movement-debug-controls { max-height: calc(min(72vh, 48rem) - 8.2rem); overflow: auto; padding-right: .25rem; }
+.movement-debug-panel fieldset { margin: 0 0 .5rem; padding: .35rem .45rem .45rem; border: 1px solid rgba(239,231,255,.13); border-radius: .55rem; }
+.movement-debug-panel legend { color: #bcebd8; text-transform: uppercase; letter-spacing: .08em; }
+.movement-debug-panel label { display: grid; grid-template-columns: minmax(8.5rem,1fr) 1.5fr 3.4rem; align-items: center; gap: .4rem; min-height: 1.6rem; }
+.movement-debug-panel input { width: 100%; accent-color: #d9c8ff; }
+.movement-debug-panel output { text-align: right; color: #ffe9a8; }
+.movement-debug-panel.is-collapsed { width: 3rem; max-height: 3rem; padding: .45rem; }
+.movement-debug-panel.is-collapsed header strong, .movement-debug-panel.is-collapsed pre, .movement-debug-panel.is-collapsed .movement-debug-actions, .movement-debug-panel.is-collapsed .movement-debug-controls { display: none; }
 
 @media (max-width: 700px) {
   .trade-debug-panel { top: auto; bottom: calc(9.25rem + env(safe-area-inset-bottom)); transform: none; transform-origin: bottom left; }

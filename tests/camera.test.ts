@@ -215,4 +215,31 @@ describe('ThirdPersonCamera chase motion', () => {
     expect(camera.position.distanceTo(gentleFocus)).toBeLessThan(8.17);
     controller.dispose();
   });
+
+  it('adds state-driven run/glide FOV, pullback, bank, and a decaying landing dip', () => {
+    const camera = new THREE.PerspectiveCamera(52, 1, 0.08, 360);
+    const controller = new ThirdPersonCamera({ camera, distance: 8, autoRecenter: false });
+    controller.setMovementPresentation('run', 0, 1, 0);
+    advance(controller, 180);
+    expect(camera.fov).toBeGreaterThan(55.5);
+    expect(camera.fov).toBeLessThan(56.1);
+    const runDistance = camera.position.distanceTo(TARGET.clone().setY(0.85).add(new THREE.Vector3(0, 0, -0.55)));
+
+    controller.setMovementPresentation('glide', 0, 1, 1);
+    advance(controller, 180);
+    expect(camera.fov).toBeGreaterThan(58.5);
+    expect(camera.rotation.z).toBeLessThan(-0.02);
+    const glideDistance = camera.position.distanceTo(TARGET.clone().setY(0.85).add(new THREE.Vector3(0, 0, -1.15)));
+    expect(glideDistance).toBeGreaterThan(runDistance + 0.4);
+
+    const beforeDip = camera.position.y;
+    controller.triggerLanding(1, true);
+    controller.setMovementPresentation('land-heavy', 0, 0, 0);
+    controller.update(1 / 60, TARGET, () => 0);
+    expect(camera.position.y).toBeLessThan(beforeDip);
+    advance(controller, 180);
+    expect(camera.fov).toBeCloseTo(52, 1);
+    expect(Math.abs(camera.rotation.z)).toBeLessThan(0.002);
+    controller.dispose();
+  });
 });

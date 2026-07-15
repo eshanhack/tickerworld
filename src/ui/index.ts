@@ -94,3 +94,4 @@ export {
   type TradeDebugSnapshot,
   type TradeDebugTier,
 } from './TradeDebugPanel';
+export { MovementDebugPanel } from './MovementDebugPanel';
