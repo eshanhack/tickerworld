@@ -1,12 +1,17 @@
 import * as THREE from 'three';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { FoxPlayer, type FoxActionEvent } from '../src/player/FoxPlayer';
 import { PlayerInputController } from '../src/player/InputController';
 import { parseRemote } from '../src/net/RoomClientSystem';
 import {
   DEFAULT_MOVEMENT_TUNING,
+  MOVEMENT_TUNING_BOUNDS,
+  clampMovementTuningValue,
   cloneMovementTuning,
+  getMovementTuningBounds,
+  loadMovementTuning,
   movementTuningCode,
+  persistMovementTuning,
   setMovementTuningValue,
 } from '../src/player/MovementConfig';
 import { ANIMAL_KINDS } from '../shared/src/index.js';
@@ -29,6 +34,7 @@ function step(fox: FoxPlayer, delta: number, actions?: FoxActionEvent[]): void {
 
 afterEach(() => {
   for (const fox of players.splice(0)) fox.dispose();
+  vi.unstubAllGlobals();
 });
 
 describe('movement overhaul', () => {
@@ -59,6 +65,17 @@ describe('movement overhaul', () => {
     input.pollGamepad();
     expect(input.consumeJump()).toBe(true);
     input.pollGamepad();
+    expect(input.consumeJump()).toBe(false);
+    input.dispose();
+  });
+
+  it('keeps ordinary disabled input gated while allowing a debug-only queued edge', () => {
+    const input = new PlayerInputController({ target: null, document: null, gamepads: null });
+    input.setEnabled(false);
+    input.requestJump();
+    expect(input.consumeJump()).toBe(false);
+    input.requestJump(true);
+    expect(input.consumeJump()).toBe(true);
     expect(input.consumeJump()).toBe(false);
     input.dispose();
   });
@@ -95,10 +112,84 @@ describe('movement overhaul', () => {
   it('keeps every runtime constant centralized, editable, and exportable', () => {
     const tuning = cloneMovementTuning();
     expect(setMovementTuningValue(tuning, 'jump.fallGravityScale', 2.05)).toBe(true);
+    expect(setMovementTuningValue(tuning, 'physics.jumpImpulseScale', 1.2)).toBe(true);
     expect(tuning.jump.fallGravityScale).toBe(2.05);
+    expect(tuning.physics.jumpImpulseScale).toBe(1.2);
     expect(setMovementTuningValue(tuning, 'jump.missing', 2)).toBe(false);
     expect(movementTuningCode(tuning)).toContain('"fallGravityScale": 2.05');
     expect(DEFAULT_MOVEMENT_TUNING.simulation.fixedStepSeconds).toBeCloseTo(1 / 60, 8);
+  });
+
+  it('applies live global speed and jump physics over each authored species profile', () => {
+    const tuning = cloneMovementTuning();
+    tuning.physics.sprintSpeedScale = 1.35;
+    tuning.physics.jumpImpulseScale = 1.3;
+    const input = new PlayerInputController({ target: null, document: null, gamepads: null });
+    const fox = new FoxPlayer({ input, tuning, animal: 'fox' });
+    players.push(fox);
+    fox.update(1 / 60, 0, flat, grass);
+    input.setVirtualInput(0, 1, true);
+    for (let frame = 0; frame < 90; frame += 1) step(fox, 1 / 60);
+    expect(fox.snapshot.speed).toBeGreaterThan(9.2);
+
+    input.setVirtualInput(0, 0, false);
+    for (let frame = 0; frame < 30; frame += 1) step(fox, 1 / 60);
+    fox.requestJump();
+    for (let frame = 0; frame < 4; frame += 1) step(fox, 1 / 60);
+    expect(fox.snapshot.verticalSpeed).toBeGreaterThan(10);
+  });
+
+  it('uses one exhaustive bounds source and clamps unsafe live values', () => {
+    for (const [section, entries] of Object.entries(DEFAULT_MOVEMENT_TUNING)) {
+      for (const [key, value] of Object.entries(entries)) {
+        const path = `${section}.${key}` as Parameters<typeof getMovementTuningBounds>[0];
+        const range = getMovementTuningBounds(path);
+        expect(range, path).toBeDefined();
+        expect(value, path).toBeGreaterThanOrEqual(range!.min);
+        expect(value, path).toBeLessThanOrEqual(range!.max);
+      }
+    }
+    expect(Object.keys(MOVEMENT_TUNING_BOUNDS.camera)).toEqual(
+      Object.keys(DEFAULT_MOVEMENT_TUNING.camera),
+    );
+
+    const tuning = cloneMovementTuning();
+    expect(setMovementTuningValue(tuning, 'simulation.fixedStepSeconds', 0)).toBe(true);
+    expect(tuning.simulation.fixedStepSeconds).toBe(1 / 120);
+    expect(setMovementTuningValue(tuning, 'simulation.maxSubSteps', 2.6)).toBe(true);
+    expect(tuning.simulation.maxSubSteps).toBe(3);
+    expect(setMovementTuningValue(tuning, 'jump.terminalSpeed', 100)).toBe(true);
+    expect(tuning.jump.terminalSpeed).toBe(-1);
+    expect(clampMovementTuningValue('camera.glideFocusResponse', -5)).toBe(0.1);
+    expect(setMovementTuningValue(tuning, 'camera.glideFocusResponse', Number.NaN)).toBe(false);
+  });
+
+  it('sanitizes persisted and loaded debug tuning without mutating the caller', () => {
+    const values = new Map<string, string>();
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+      removeItem: (key: string) => values.delete(key),
+    });
+    const unsafe = cloneMovementTuning();
+    unsafe.simulation.fixedStepSeconds = 0;
+    unsafe.simulation.maxSubSteps = 2.6;
+    unsafe.camera.glidePositionResponse = -50;
+    unsafe.jump.terminalSpeed = Number.POSITIVE_INFINITY;
+
+    persistMovementTuning(unsafe);
+    expect(unsafe.simulation.fixedStepSeconds).toBe(0);
+    const persisted = JSON.parse([...values.values()][0]!) as typeof unsafe;
+    expect(persisted.simulation.fixedStepSeconds).toBe(1 / 120);
+    expect(persisted.simulation.maxSubSteps).toBe(3);
+    expect(persisted.camera.glidePositionResponse).toBe(0.1);
+    expect(persisted.jump.terminalSpeed).toBe(DEFAULT_MOVEMENT_TUNING.jump.terminalSpeed);
+
+    const loaded = loadMovementTuning(true);
+    expect(loaded.simulation.fixedStepSeconds).toBe(1 / 120);
+    expect(loaded.simulation.maxSubSteps).toBe(3);
+    expect(loaded.camera.glidePositionResponse).toBe(0.1);
+    expect(loaded.jump.terminalSpeed).toBe(DEFAULT_MOVEMENT_TUNING.jump.terminalSpeed);
   });
 
   it('keeps legacy clients on inferred gait when a new server supplies zero defaults', () => {
@@ -215,6 +306,26 @@ describe('movement overhaul', () => {
     }
     expect(stoppedAt).toBeGreaterThan(0);
     expect(stoppedAt).toBeLessThan(reachedAt);
+  });
+
+  it('keeps every species responsive while preserving distinct top speeds', () => {
+    const topSpeeds: number[] = [];
+    for (const animal of ANIMAL_KINDS) {
+      const input = new PlayerInputController({ target: null, document: null, gamepads: null });
+      const fox = new FoxPlayer({ input, animal });
+      players.push(fox);
+      fox.update(1 / 60, 0, flat, grass);
+      input.setVirtualInput(0, 1, true);
+      let reachedAt = 0;
+      for (let frame = 1; frame <= 30; frame += 1) {
+        step(fox, 1 / 60);
+        if (reachedAt === 0 && fox.normalizedSpeed >= 0.9) reachedAt = frame / 60;
+      }
+      expect(reachedAt, animal).toBeGreaterThan(0);
+      expect(reachedAt, animal).toBeLessThanOrEqual(0.25);
+      topSpeeds.push(fox.snapshot.speed);
+    }
+    expect(Math.max(...topSpeeds) - Math.min(...topSpeeds)).toBeGreaterThan(3.5);
   });
 
   it('faces low-speed input within two rendered frames without a moonwalk', () => {
@@ -385,6 +496,24 @@ describe('movement overhaul', () => {
     expect(fox.snapshot.verticalSpeed).toBeGreaterThan(0);
   });
 
+  it('spaces two pre-takeoff edges into a full jump, double jump, and glide sentence', () => {
+    const { fox } = player();
+    const actions: Array<{ frame: number; event: FoxActionEvent }> = [];
+    fox.setGlideHeld(true);
+    fox.requestJump(true);
+    fox.requestJump(true);
+    for (let frame = 0; frame < 180; frame += 1) {
+      fox.update(1 / 60, 0, flat, grass, undefined, (event) => actions.push({ frame, event }));
+      if (actions.some(({ event }) => event.type === 'glide-start')) break;
+    }
+    const jump = actions.find(({ event }) => event.type === 'jump');
+    const doubleJump = actions.find(({ event }) => event.type === 'double-jump');
+    expect(jump).toBeDefined();
+    expect(doubleJump).toBeDefined();
+    expect(doubleJump!.frame - jump!.frame).toBeGreaterThanOrEqual(6);
+    expect(actions.some(({ event }) => event.type === 'glide-start')).toBe(true);
+  });
+
   it('emits one synchronized skid and preserves immediate steering control', () => {
     const { fox, input } = player();
     const actions: FoxActionEvent[] = [];
@@ -483,6 +612,38 @@ describe('movement overhaul', () => {
     fox.group.updateMatrixWorld(true);
     const ringEnd = ring!.getWorldPosition(new THREE.Vector3());
     expect(ringEnd.distanceTo(ringStart!)).toBeLessThan(0.12);
+  });
+
+  it('samples grounded support at the interpolated render position on slopes', () => {
+    const input = new PlayerInputController({ target: null, document: null, gamepads: null });
+    const fox = new FoxPlayer({ input });
+    players.push(fox);
+    const slope = (x: number, z: number): number => x * 0.08 + z * 0.16;
+    fox.update(1 / 60, 0, slope, grass);
+    input.setVirtualInput(0.35, 1, true);
+
+    const renderedY: number[] = [];
+    for (let frame = 0; frame < 48; frame += 1) {
+      fox.update(1 / 120, 0, slope, grass);
+      const render = fox.renderPosition;
+      renderedY.push(render.y);
+      expect(render.y).toBeCloseTo(slope(render.x, render.z), 5);
+    }
+
+    const movingPairs = renderedY.slice(1).filter(
+      (value, index) => Math.abs(value - renderedY[index]!) > 1e-5,
+    );
+    expect(movingPairs.length).toBeGreaterThan(renderedY.length * 0.75);
+  });
+
+  it('reuses the public player snapshot instead of allocating every frame', () => {
+    const { fox, input } = player();
+    const first = fox.snapshot;
+    input.setVirtualInput(0, 1, true);
+    step(fox, 1 / 60);
+    const second = fox.snapshot;
+    expect(second).toBe(first);
+    expect(second.speed).toBeGreaterThan(0);
   });
 
   it('supports jump, double jump, glide cancellation/redeployment, and a bounded landing', () => {

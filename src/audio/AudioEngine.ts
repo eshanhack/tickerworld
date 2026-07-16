@@ -69,6 +69,7 @@ const DEFAULT_VOLUME = 0.72;
 const DEFAULT_SFX_VOLUME = 1;
 const NEWS_ALERT_COOLDOWN_SECONDS = 1.4;
 const NEWS_ALERT_VOICE_COUNT = 3;
+const GLIDE_WIND_CANCEL_SECONDS = 0.055;
 
 interface MonumentGraph {
   readonly descriptor: MonumentAudioSource;
@@ -898,6 +899,11 @@ export class AudioEngine {
     const amount = clampUnit(intensity);
     const now = this.context.currentTime;
     const settings = this.footstepSettings(surface);
+    // Let impact weight read as mass instead of volume alone. A soft landing
+    // stays light and woody while a hard landing moves the resonant thump down
+    // by almost half an octave. The linear scale is deliberately monotonic so
+    // every increase in the controller's impact value produces a deeper hit.
+    const impactPitchScale = 1.18 - amount * 0.46;
     this.playNoiseBurst(
       this.movementBus,
       now,
@@ -906,7 +912,12 @@ export class AudioEngine {
       settings.frequency * 0.9,
       settings.gain * (0.36 + amount * 0.5),
     );
-    this.playFootThump(this.movementBus, now, settings.thumpFrequency * 1.12, 0.009 + amount * 0.018);
+    this.playFootThump(
+      this.movementBus,
+      now,
+      settings.thumpFrequency * impactPitchScale,
+      0.009 + amount * 0.018,
+    );
     this.playGentleNote(this.movementBus, now + 0.035, 587.33, 0.3, 0.005 + amount * 0.006, -1.5);
   }
 
@@ -1486,11 +1497,18 @@ export class AudioEngine {
       || Math.abs(this.glideWindBank - this.glideWindAppliedBank) >= 0.025;
     if (!activeChanged && !valueChanged) return;
     if (!activeChanged && now - this.glideWindAppliedAt < 1 / 15) return;
-    const target = active ? 0.0025 + this.glideWindSpeed * 0.007 : 0.0001;
-    this.glideWindGraph.gain.gain.cancelScheduledValues(now);
+    const target = 0.0025 + this.glideWindSpeed * 0.007;
+    const windGain = this.glideWindGraph.gain.gain;
+    // Anchor new automation at the currently applied value so deploy remains
+    // soft and an interrupted cancel cannot click. Unlike setTargetAtTime,
+    // the short cancellation ramp has an exact zero endpoint and therefore
+    // cannot leave an indefinitely audible noise floor behind.
+    windGain.cancelScheduledValues(now);
+    windGain.setValueAtTime(Math.max(0, windGain.value), now);
     this.glideWindGraph.bandpass.frequency.cancelScheduledValues(now);
     this.glideWindGraph.lowpass.frequency.cancelScheduledValues(now);
-    this.glideWindGraph.gain.gain.setTargetAtTime(target, now, active ? 0.08 : 0.12);
+    if (active) windGain.setTargetAtTime(target, now, 0.08);
+    else windGain.linearRampToValueAtTime(0, now + GLIDE_WIND_CANCEL_SECONDS);
     this.glideWindGraph.bandpass.frequency.setTargetAtTime(
       360 + this.glideWindSpeed * 360 + Math.abs(this.glideWindBank) * 80,
       now,

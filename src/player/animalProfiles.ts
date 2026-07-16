@@ -60,7 +60,8 @@ export const ANIMAL_MOTION_PROFILES: Readonly<Record<AnimalKind, AnimalMotionPro
     gravity: 25,
     glideGravity: 3.15,
     glideTerminalSpeed: -2.65,
-    accelerationScale: 0.72,
+    // Keeps the waddling top speed distinct without making the controls laggy.
+    accelerationScale: 0.88,
     turnScale: 1.22,
     gaitScale: 0.82,
     animationStyle: 'waddle',
@@ -105,7 +106,8 @@ export const ANIMAL_MOTION_PROFILES: Readonly<Record<AnimalKind, AnimalMotionPro
     gravity: 26.5,
     glideGravity: 5.1,
     glideTerminalSpeed: -3.7,
-    accelerationScale: 0.55,
+    // Weight comes from speed, stride, and stomp—not delayed input response.
+    accelerationScale: 0.86,
     turnScale: 0.78,
     gaitScale: 0.72,
     animationStyle: 'stomp',

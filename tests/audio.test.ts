@@ -83,6 +83,10 @@ function makeParam(initial = 0): AudioParam {
       param.value = value;
       return param;
     }),
+    linearRampToValueAtTime: vi.fn((value: number) => {
+      param.value = value;
+      return param;
+    }),
   };
   return param as unknown as AudioParam;
 }
@@ -850,6 +854,32 @@ describe('AudioEngine lifecycle', () => {
     vi.useRealTimers();
   });
 
+  it('deepens the landing resonator monotonically as impact intensity rises', async () => {
+    vi.useFakeTimers();
+    const landingFrequency = async (intensity: number): Promise<number> => {
+      const fake = makeFakeContext();
+      const engine = new AudioEngine({ contextFactory: () => fake.context, storage: null, random: () => 0.5 });
+      await engine.unlock();
+      const baseline = fake.oscillators.length;
+      engine.playLanding('stone', intensity);
+      const thump = fake.oscillators[baseline];
+      const setFrequency = thump?.frequency?.setValueAtTime as unknown as
+        | ReturnType<typeof vi.fn>
+        | undefined;
+      const frequency = Number(setFrequency?.mock.calls[0]?.[0]);
+      engine.dispose();
+      return frequency;
+    };
+
+    const soft = await landingFrequency(0.1);
+    const medium = await landingFrequency(0.5);
+    const hard = await landingFrequency(1);
+    expect([soft, medium, hard].every(Number.isFinite)).toBe(true);
+    expect(soft).toBeGreaterThan(medium);
+    expect(medium).toBeGreaterThan(hard);
+    vi.useRealTimers();
+  });
+
   it('keeps one filtered glide-wind graph across cancel and redeploy', async () => {
     vi.useFakeTimers();
     const fake = makeFakeContext();
@@ -861,11 +891,17 @@ describe('AudioEngine lifecycle', () => {
     expect(fake.bufferSources).toHaveLength(baseline + 1);
     const wind = fake.bufferSources.at(-1)!;
     expect(wind.loop).toBe(true);
+    const windNodes = fake.nodes.slice(nodeBaseline);
+    const windGain = windNodes.at(-1)?.gain;
     engine.setGlideWind({ active: false });
+    const cancelRamp = windGain?.linearRampToValueAtTime as unknown as
+      | ReturnType<typeof vi.fn>
+      | undefined;
+    expect(cancelRamp).toHaveBeenLastCalledWith(0, expect.any(Number));
+    expect(Number(cancelRamp?.mock.calls.at(-1)?.[1])).toBeLessThanOrEqual(0.08);
     engine.setGlideWind({ active: true, speed: 1, bank: 0.4 });
     expect(fake.bufferSources).toHaveLength(baseline + 1);
     expect(wind.start).toHaveBeenCalledTimes(1);
-    const windNodes = fake.nodes.slice(nodeBaseline);
     const automationCount = (): number => windNodes.reduce((total, node) => (
       total
       + ((node.gain?.setTargetAtTime as unknown as ReturnType<typeof vi.fn> | undefined)?.mock.calls.length ?? 0)

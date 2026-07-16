@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { describe, expect, it } from 'vitest';
 
 import { ThirdPersonCamera } from '../src/player/ThirdPersonCamera';
+import { cloneMovementTuning } from '../src/player/MovementConfig';
 
 const FLAT_GROUND = (): number => 0;
 const TARGET = new THREE.Vector3();
@@ -241,5 +242,39 @@ describe('ThirdPersonCamera chase motion', () => {
     expect(camera.fov).toBeCloseTo(52, 1);
     expect(Math.abs(camera.rotation.z)).toBeLessThan(0.002);
     controller.dispose();
+  });
+
+  it('uses independently tunable, softer focus and position follow while gliding', () => {
+    const tuning = cloneMovementTuning();
+    Object.assign(tuning.camera, {
+      runFovDegrees: 0,
+      glideFovDegrees: 0,
+      runLookAhead: 0,
+      glideLookAhead: 0,
+      runBoomExtension: 0,
+      glideBoomExtension: 0,
+      focusResponse: 30,
+      glideFocusResponse: 1,
+      positionResponse: 30,
+      glidePositionResponse: 1,
+    });
+    const runCamera = new THREE.PerspectiveCamera();
+    const glideCamera = new THREE.PerspectiveCamera();
+    const run = new ThirdPersonCamera({ camera: runCamera, distance: 8, tuning });
+    const glide = new ThirdPersonCamera({ camera: glideCamera, distance: 8, tuning });
+    run.setMovementPresentation('run', 0, 0);
+    glide.setMovementPresentation('glide', 0, 0);
+    run.update(1 / 60, TARGET, FLAT_GROUND);
+    glide.update(1 / 60, TARGET, FLAT_GROUND);
+
+    const movedTarget = new THREE.Vector3(0, 0, -6);
+    run.update(1 / 60, movedTarget, FLAT_GROUND);
+    glide.update(1 / 60, movedTarget, FLAT_GROUND);
+
+    expect(runCamera.position.z).toBeLessThan(glideCamera.position.z - 0.7);
+    expect(tuning.camera.glideFocusResponse).toBeLessThan(tuning.camera.focusResponse);
+    expect(tuning.camera.glidePositionResponse).toBeLessThan(tuning.camera.positionResponse);
+    run.dispose();
+    glide.dispose();
   });
 });

@@ -22,9 +22,6 @@ export interface ThirdPersonCameraOptions {
   readonly tuning?: MovementTuning;
 }
 
-const CHASE_RECENTER_DELAY = 1.1;
-const CHASE_RECENTER_RESPONSE = 1.65;
-const CHASE_MOVEMENT_THRESHOLD = 0.08;
 /** Normal orbiting keeps the camera above the fox; sky aim pivots the lens below this value. */
 export const CAMERA_MIN_BOOM_PITCH = 0.12;
 /** About 55 degrees of upward view, enough to frame fireworks without burying the boom. */
@@ -197,7 +194,8 @@ export class ThirdPersonCamera {
   ): void {
     const delta = Math.min(Math.max(deltaSeconds, 0), 0.1);
     this.updateChaseMotion(delta);
-    this.landingDip = damp(this.landingDip, 0, 9.5, delta);
+    const gliding = this.movementState === 'glide';
+    this.landingDip = damp(this.landingDip, 0, this.tuning.camera.landingDipResponse, delta);
     this.desiredFocus.set(
       target.x + this.chaseLookAhead.x,
       target.y + this.lookHeight - this.landingDip,
@@ -208,7 +206,11 @@ export class ThirdPersonCamera {
       this.focus.copy(this.desiredFocus);
       this.initialized = true;
     } else {
-      const focusResponse = this.reducedMotion ? 18 : 11;
+      const focusResponse = this.reducedMotion
+        ? this.tuning.camera.reducedMotionFocusResponse
+        : gliding
+          ? this.tuning.camera.glideFocusResponse
+          : this.tuning.camera.focusResponse;
       this.focus.lerp(this.desiredFocus, 1 - Math.exp(-focusResponse * delta));
     }
 
@@ -234,7 +236,9 @@ export class ThirdPersonCamera {
     );
 
     const safeDistance = this.findSafeDistance(requestedDistance, heightAt, obstacleAt);
-    const distanceResponse = safeDistance < this.resolvedDistance ? 24 : 5.5;
+    const distanceResponse = safeDistance < this.resolvedDistance
+      ? this.tuning.camera.collisionDistanceResponse
+      : this.tuning.camera.distanceRecoveryResponse;
     this.resolvedDistance = damp(this.resolvedDistance, safeDistance, distanceResponse, delta);
     const distanceScale = requestedDistance <= 0 ? 1 : this.resolvedDistance / requestedDistance;
     this.desiredPosition.copy(this.focus).addScaledVector(this.boomOffset, distanceScale);
@@ -244,7 +248,13 @@ export class ThirdPersonCamera {
     if (this.camera.position.lengthSq() === 0 || delta === 0) {
       this.camera.position.copy(this.desiredPosition);
     } else {
-      const positionResponse = safeDistance < this.resolvedDistance ? 20 : (this.reducedMotion ? 16 : 8.5);
+      const positionResponse = safeDistance < this.resolvedDistance
+        ? this.tuning.camera.collisionPositionResponse
+        : this.reducedMotion
+          ? this.tuning.camera.reducedMotionPositionResponse
+          : gliding
+            ? this.tuning.camera.glidePositionResponse
+            : this.tuning.camera.positionResponse;
       this.camera.position.lerp(this.desiredPosition, 1 - Math.exp(-positionResponse * delta));
     }
     // Position smoothing must never lag through a newly rising terrain sample.
@@ -268,16 +278,16 @@ export class ThirdPersonCamera {
     } else {
       this.camera.lookAt(this.focus);
     }
-    const glideRoll = this.movementState === 'glide' && !this.reducedMotion
+    const glideRoll = gliding && !this.reducedMotion
       ? -this.movementBank * 0.035
       : 0;
-    this.cameraRoll = damp(this.cameraRoll, glideRoll, 7, delta);
+    this.cameraRoll = damp(this.cameraRoll, glideRoll, this.tuning.camera.rollResponse, delta);
     this.camera.rotateZ(this.cameraRoll);
-    const fovBoost = this.movementState === 'glide'
+    const fovBoost = gliding
       ? this.tuning.camera.glideFovDegrees
       : this.chaseSpeed * this.tuning.camera.runFovDegrees;
     const targetFov = this.baseFov + fovBoost * (this.reducedMotion ? 0.2 : 1);
-    const nextFov = damp(this.camera.fov, targetFov, 5.5, delta);
+    const nextFov = damp(this.camera.fov, targetFov, this.tuning.camera.fovResponse, delta);
     if (Math.abs(nextFov - this.camera.fov) > 0.001) {
       this.camera.fov = nextFov;
       this.camera.updateProjectionMatrix();
@@ -295,7 +305,7 @@ export class ThirdPersonCamera {
   }
 
   private updateChaseMotion(delta: number): void {
-    const moving = this.chaseSpeed > CHASE_MOVEMENT_THRESHOLD;
+    const moving = this.chaseSpeed > this.tuning.camera.movementThreshold;
     const forwardChase = this.chaseRecenterWeight > 0.9;
     if (this.enabled && moving && forwardChase && this.activePointer === null) this.chaseMoveSeconds += delta;
     else this.chaseMoveSeconds = 0;
@@ -307,10 +317,10 @@ export class ThirdPersonCamera {
       && moving
       && forwardChase
       && this.activePointer === null
-      && this.chaseMoveSeconds >= CHASE_RECENTER_DELAY
+      && this.chaseMoveSeconds >= this.tuning.camera.recenterDelaySeconds
     ) {
       const yawError = shortestAngle(this.yaw, this.chaseHeadingYaw);
-      this.yaw += yawError * (1 - Math.exp(-CHASE_RECENTER_RESPONSE * delta));
+      this.yaw += yawError * (1 - Math.exp(-this.tuning.camera.recenterResponse * delta));
     }
 
     const motionScale = this.reducedMotion ? 0.2 : 1;
@@ -321,7 +331,9 @@ export class ThirdPersonCamera {
     this.chaseBoomExtension = damp(
       this.chaseBoomExtension,
       targetExtension,
-      targetExtension > this.chaseBoomExtension ? 3.2 : 4.6,
+      targetExtension > this.chaseBoomExtension
+        ? this.tuning.camera.boomExtendResponse
+        : this.tuning.camera.boomRetractResponse,
       delta,
     );
 
@@ -333,7 +345,9 @@ export class ThirdPersonCamera {
       0,
       -Math.cos(this.chaseHeadingYaw) * lookAheadDistance,
     );
-    const lookAheadResponse = lookAheadDistance > this.chaseLookAhead.length() ? 5.2 : 6.5;
+    const lookAheadResponse = lookAheadDistance > this.chaseLookAhead.length()
+      ? this.tuning.camera.lookAheadExtendResponse
+      : this.tuning.camera.lookAheadRetractResponse;
     this.chaseLookAhead.lerp(
       this.desiredChaseLookAhead,
       1 - Math.exp(-lookAheadResponse * delta),

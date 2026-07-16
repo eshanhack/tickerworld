@@ -9,6 +9,16 @@ export interface MovementTuning {
     maxSubSteps: number;
     maxFrameDeltaSeconds: number;
   };
+  /** Global live multipliers over each species' authored motion profile. */
+  readonly physics: {
+    walkSpeedScale: number;
+    sprintSpeedScale: number;
+    gravityScale: number;
+    jumpImpulseScale: number;
+    doubleJumpImpulseScale: number;
+    glideGravityScale: number;
+    glideTerminalSpeedScale: number;
+  };
   readonly input: {
     deadzone: number;
     gamepadDeadzone: number;
@@ -81,6 +91,25 @@ export interface MovementTuning {
     runBoomExtension: number;
     glideBoomExtension: number;
     heavyLandDip: number;
+    recenterDelaySeconds: number;
+    recenterResponse: number;
+    movementThreshold: number;
+    landingDipResponse: number;
+    focusResponse: number;
+    glideFocusResponse: number;
+    reducedMotionFocusResponse: number;
+    collisionDistanceResponse: number;
+    distanceRecoveryResponse: number;
+    positionResponse: number;
+    glidePositionResponse: number;
+    reducedMotionPositionResponse: number;
+    collisionPositionResponse: number;
+    boomExtendResponse: number;
+    boomRetractResponse: number;
+    lookAheadExtendResponse: number;
+    lookAheadRetractResponse: number;
+    rollResponse: number;
+    fovResponse: number;
   };
   readonly vfx: {
     runDustMinSpeedRatio: number;
@@ -98,6 +127,15 @@ export const DEFAULT_MOVEMENT_TUNING: Readonly<MovementTuning> = Object.freeze({
     fixedStepSeconds: 1 / 60,
     maxSubSteps: 5,
     maxFrameDeltaSeconds: 0.083,
+  },
+  physics: {
+    walkSpeedScale: 1,
+    sprintSpeedScale: 1,
+    gravityScale: 1,
+    jumpImpulseScale: 1,
+    doubleJumpImpulseScale: 1,
+    glideGravityScale: 1,
+    glideTerminalSpeedScale: 1,
   },
   input: {
     deadzone: 0.04,
@@ -170,6 +208,25 @@ export const DEFAULT_MOVEMENT_TUNING: Readonly<MovementTuning> = Object.freeze({
     runBoomExtension: 0.7,
     glideBoomExtension: 1.35,
     heavyLandDip: 0.17,
+    recenterDelaySeconds: 1.1,
+    recenterResponse: 1.65,
+    movementThreshold: 0.08,
+    landingDipResponse: 9.5,
+    focusResponse: 11,
+    glideFocusResponse: 6.5,
+    reducedMotionFocusResponse: 18,
+    collisionDistanceResponse: 24,
+    distanceRecoveryResponse: 5.5,
+    positionResponse: 8.5,
+    glidePositionResponse: 5.2,
+    reducedMotionPositionResponse: 16,
+    collisionPositionResponse: 20,
+    boomExtendResponse: 3.2,
+    boomRetractResponse: 4.6,
+    lookAheadExtendResponse: 5.2,
+    lookAheadRetractResponse: 6.5,
+    rollResponse: 7,
+    fovResponse: 5.5,
   },
   vfx: {
     runDustMinSpeedRatio: 0.6,
@@ -184,6 +241,160 @@ export const DEFAULT_MOVEMENT_TUNING: Readonly<MovementTuning> = Object.freeze({
 
 export type MovementTuningSection = keyof MovementTuning;
 export type MovementTuningPath = `${MovementTuningSection}.${string}`;
+
+export interface MovementTuningValueBounds {
+  readonly min: number;
+  readonly max: number;
+  readonly step: number;
+  readonly integer?: boolean;
+}
+
+export type MovementTuningBounds = {
+  readonly [Section in MovementTuningSection]: {
+    readonly [Key in keyof MovementTuning[Section]]: MovementTuningValueBounds;
+  };
+};
+
+function bounds(
+  min: number,
+  max: number,
+  step: number,
+  integer = false,
+): MovementTuningValueBounds {
+  return Object.freeze({ min, max, step, ...(integer ? { integer: true } : {}) });
+}
+
+/**
+ * Canonical safety and UI ranges for every live movement value. Keeping this
+ * exhaustive makes adding an unbounded runtime constant a type error.
+ */
+export const MOVEMENT_TUNING_BOUNDS = Object.freeze({
+  simulation: Object.freeze({
+    fixedStepSeconds: bounds(1 / 120, 1 / 30, 0.00001),
+    maxSubSteps: bounds(1, 16, 1, true),
+    maxFrameDeltaSeconds: bounds(0.02, 0.25, 0.001),
+  }),
+  physics: Object.freeze({
+    walkSpeedScale: bounds(0.35, 2, 0.001),
+    sprintSpeedScale: bounds(0.35, 2, 0.001),
+    gravityScale: bounds(0.25, 2.5, 0.001),
+    jumpImpulseScale: bounds(0.25, 2.5, 0.001),
+    doubleJumpImpulseScale: bounds(0.25, 2.5, 0.001),
+    glideGravityScale: bounds(0.15, 3, 0.001),
+    glideTerminalSpeedScale: bounds(0.2, 2.5, 0.001),
+  }),
+  input: Object.freeze({
+    deadzone: bounds(0, 0.3, 0.001),
+    gamepadDeadzone: bounds(0, 0.3, 0.001),
+    gamepadSprintThreshold: bounds(0, 1, 0.001),
+    gamepadTriggerThreshold: bounds(0, 1, 0.001),
+    coyoteSeconds: bounds(0, 0.6, 0.001),
+    jumpBufferSeconds: bounds(0, 0.6, 0.001),
+    jumpReleaseCut: bounds(0, 2, 0.001),
+  }),
+  ground: Object.freeze({
+    walkAccelerationResponse: bounds(0, 100, 0.1),
+    runAccelerationResponse: bounds(0, 100, 0.1),
+    brakingResponse: bounds(0, 100, 0.1),
+    coastResponse: bounds(0, 100, 0.1),
+    walkTurnResponse: bounds(0.01, 100, 0.1),
+    runTurnResponse: bounds(0, 100, 0.1),
+    facingSpring: bounds(0, 180, 0.1),
+    facingDamping: bounds(0, 100, 0.1),
+    lowSpeedFacingSnap: bounds(0, 2, 0.001),
+    skidMinSpeedRatio: bounds(0, 2, 0.001),
+    skidTurnRadians: bounds(0, Math.PI, 0.01),
+    skidSeconds: bounds(0, 0.6, 0.001),
+    skidBrake: bounds(0, 2, 0.001),
+    groundSnapHeight: bounds(0, 3, 0.01),
+    collisionSweepStep: bounds(0.005, 0.2, 0.001),
+    uphillSpeedLoss: bounds(0, 2, 0.001),
+    downhillSpeedGain: bounds(0, 2, 0.001),
+  }),
+  jump: Object.freeze({
+    anticipationSeconds: bounds(0.001, 0.6, 0.001),
+    riseGravityScale: bounds(0, 4, 0.001),
+    fallGravityScale: bounds(0, 4, 0.001),
+    apexGravityScale: bounds(0, 4, 0.001),
+    apexVelocity: bounds(0, 12, 0.001),
+    apexAirControlScale: bounds(0, 3, 0.001),
+    airAccelerationRatio: bounds(0, 2, 0.001),
+    airTurnResponse: bounds(0, 100, 0.1),
+    doubleControlBurst: bounds(0, 2, 0.001),
+    doublePoseSeconds: bounds(0, 2, 0.001),
+    softLandingSpeed: bounds(0, 30, 0.001),
+    heavyLandingSpeed: bounds(0, 30, 0.001),
+    softRecoverySeconds: bounds(0, 0.6, 0.001),
+    heavyRecoverySeconds: bounds(0, 0.6, 0.001),
+    terminalSpeed: bounds(-35, -1, 0.1),
+  }),
+  glide: Object.freeze({
+    entrySeconds: bounds(0, 0.6, 0.001),
+    entryVelocity: bounds(0, 12, 0.001),
+    speedScale: bounds(0, 2, 0.001),
+    turnResponse: bounds(0, 100, 0.1),
+    bankRadians: bounds(0, Math.PI, 0.01),
+    pitchRadians: bounds(0, Math.PI, 0.01),
+  }),
+  animation: Object.freeze({
+    movementBlendResponse: bounds(0, 100, 0.1),
+    runBlendResponse: bounds(0, 100, 0.1),
+    gaitWalkRadiansPerMetre: bounds(0, Math.PI * 4, 0.01),
+    gaitRunRadiansPerMetre: bounds(0, Math.PI * 4, 0.01),
+    turnLeanRadians: bounds(0, Math.PI, 0.01),
+    accelerationLeanScale: bounds(0, 2, 0.001),
+    appendageSpring: bounds(0, 180, 0.1),
+    appendageDamping: bounds(0, 100, 0.1),
+  }),
+  camera: Object.freeze({
+    runFovDegrees: bounds(0, 14, 0.1),
+    glideFovDegrees: bounds(0, 14, 0.1),
+    runLookAhead: bounds(0, 3, 0.01),
+    glideLookAhead: bounds(0, 3, 0.01),
+    runBoomExtension: bounds(0, 3, 0.01),
+    glideBoomExtension: bounds(0, 4.5, 0.01),
+    heavyLandDip: bounds(0, 3, 0.01),
+    recenterDelaySeconds: bounds(0, 5, 0.001),
+    recenterResponse: bounds(0.1, 60, 0.1),
+    movementThreshold: bounds(0, 1, 0.001),
+    landingDipResponse: bounds(0.1, 60, 0.1),
+    focusResponse: bounds(0.1, 60, 0.1),
+    glideFocusResponse: bounds(0.1, 60, 0.1),
+    reducedMotionFocusResponse: bounds(0.1, 60, 0.1),
+    collisionDistanceResponse: bounds(0.1, 60, 0.1),
+    distanceRecoveryResponse: bounds(0.1, 60, 0.1),
+    positionResponse: bounds(0.1, 60, 0.1),
+    glidePositionResponse: bounds(0.1, 60, 0.1),
+    reducedMotionPositionResponse: bounds(0.1, 60, 0.1),
+    collisionPositionResponse: bounds(0.1, 60, 0.1),
+    boomExtendResponse: bounds(0.1, 60, 0.1),
+    boomRetractResponse: bounds(0.1, 60, 0.1),
+    lookAheadExtendResponse: bounds(0.1, 60, 0.1),
+    lookAheadRetractResponse: bounds(0.1, 60, 0.1),
+    rollResponse: bounds(0.1, 60, 0.1),
+    fovResponse: bounds(0.1, 60, 0.1),
+  }),
+  vfx: Object.freeze({
+    runDustMinSpeedRatio: bounds(0, 2, 0.001),
+    runDustCount: bounds(1, 16, 1, true),
+    skidDustCount: bounds(1, 16, 1, true),
+    jumpRingScale: bounds(0, 3, 0.001),
+    doubleRingScale: bounds(0, 3, 0.001),
+    landRingScale: bounds(0, 3, 0.001),
+    glideRibbonOpacity: bounds(0, 2, 0.001),
+  }),
+}) satisfies MovementTuningBounds;
+
+export function getMovementTuningBounds(
+  path: MovementTuningPath,
+): MovementTuningValueBounds | undefined {
+  const [section, key] = path.split('.', 2);
+  if (!section || !key || !(section in MOVEMENT_TUNING_BOUNDS)) return undefined;
+  const sectionBounds = MOVEMENT_TUNING_BOUNDS[
+    section as MovementTuningSection
+  ] as unknown as Record<string, MovementTuningValueBounds>;
+  return sectionBounds[key];
+}
 
 const STORAGE_KEY = 'tickerworld:movement-tuning-v1';
 
@@ -201,6 +412,42 @@ function safeStorage(): Storage | null {
   }
 }
 
+export function clampMovementTuningValue(
+  path: MovementTuningPath,
+  value: number,
+): number | undefined {
+  if (!Number.isFinite(value)) return undefined;
+  const range = getMovementTuningBounds(path);
+  if (!range) return undefined;
+  const clamped = Math.min(range.max, Math.max(range.min, value));
+  return range.integer
+    ? Math.min(range.max, Math.max(range.min, Math.round(clamped)))
+    : clamped;
+}
+
+function sanitizedMovementTuning(source: unknown): MovementTuning {
+  const tuning = cloneMovementTuning();
+  const record = source && typeof source === 'object'
+    ? source as Record<string, unknown>
+    : {};
+  for (const [section, defaults] of Object.entries(DEFAULT_MOVEMENT_TUNING)) {
+    const target = tuning[section as MovementTuningSection] as unknown as Record<string, number>;
+    const rawSection = record[section];
+    const saved = rawSection && typeof rawSection === 'object'
+      ? rawSection as Record<string, unknown>
+      : {};
+    for (const [key, fallback] of Object.entries(defaults)) {
+      const candidate = saved[key];
+      const path = `${section}.${key}` as MovementTuningPath;
+      target[key] = clampMovementTuningValue(
+        path,
+        typeof candidate === 'number' ? candidate : fallback,
+      ) ?? fallback;
+    }
+  }
+  return tuning;
+}
+
 /** Debug-only persisted overrides are ignored unless the caller opts in. */
 export function loadMovementTuning(includeStoredOverrides = false): MovementTuning {
   const tuning = cloneMovementTuning();
@@ -208,26 +455,15 @@ export function loadMovementTuning(includeStoredOverrides = false): MovementTuni
   try {
     const raw = safeStorage()?.getItem(STORAGE_KEY);
     if (!raw) return tuning;
-    const parsed = JSON.parse(raw) as Record<string, Record<string, unknown>>;
-    for (const [section, defaults] of Object.entries(DEFAULT_MOVEMENT_TUNING)) {
-      const target = tuning[section as MovementTuningSection] as unknown as Record<string, number>;
-      const saved = parsed[section];
-      for (const [key, fallback] of Object.entries(defaults)) {
-        const candidate = saved?.[key];
-        target[key] = typeof candidate === 'number' && Number.isFinite(candidate)
-          ? candidate
-          : fallback;
-      }
-    }
+    return sanitizedMovementTuning(JSON.parse(raw));
   } catch {
     return cloneMovementTuning();
   }
-  return tuning;
 }
 
 export function persistMovementTuning(tuning: Readonly<MovementTuning>): void {
   try {
-    safeStorage()?.setItem(STORAGE_KEY, JSON.stringify(tuning));
+    safeStorage()?.setItem(STORAGE_KEY, JSON.stringify(sanitizedMovementTuning(tuning)));
   } catch {
     // Debug tuning is deliberately optional.
   }
@@ -246,12 +482,13 @@ export function setMovementTuningValue(
   path: MovementTuningPath,
   value: number,
 ): boolean {
-  if (!Number.isFinite(value)) return false;
+  const clamped = clampMovementTuningValue(path, value);
+  if (clamped === undefined) return false;
   const [section, key] = path.split('.', 2);
   if (!section || !key || !(section in tuning)) return false;
   const record = tuning[section as MovementTuningSection] as unknown as Record<string, number>;
   if (!(key in record)) return false;
-  record[key] = value;
+  record[key] = clamped;
   return true;
 }
 

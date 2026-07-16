@@ -125,6 +125,64 @@ export function countFreshNewsAdditions(
   ), 0);
 }
 
+export type MovementDebugScenario = 'short' | 'chain' | 'skid' | 'drop';
+
+export interface MovementDebugScenarioControls {
+  /** Restores the live game input path; false keeps modal/context locks authoritative. */
+  readonly prepareInput: () => boolean;
+  readonly setVirtualInput: (moveX: number, moveForward: number, sprint?: boolean) => void;
+  readonly setGlideHeld: (held: boolean) => void;
+  readonly requestJump: () => void;
+  readonly schedule: (delayMs: number, action: () => void) => void;
+  readonly heavyDrop: () => void;
+}
+
+/**
+ * Deterministic movement-lab choreography. Preparation intentionally happens
+ * before any jump edge so a focused DOM control cannot leave scripted input
+ * behind the ordinary editable-element/input-lock gate.
+ */
+export function runMovementDebugScenarioScript(
+  scenario: MovementDebugScenario,
+  controls: MovementDebugScenarioControls,
+): boolean {
+  if (!controls.prepareInput()) return false;
+  controls.setVirtualInput(0, 0, false);
+  controls.setGlideHeld(false);
+  if (scenario === 'short') {
+    controls.schedule(0, () => {
+      controls.setGlideHeld(true);
+      controls.requestJump();
+    });
+    controls.schedule(48, () => controls.setGlideHeld(false));
+    return true;
+  }
+  if (scenario === 'chain') {
+    // Leave the click/focus event stack before queueing the first edge.
+    controls.schedule(0, () => {
+      controls.setGlideHeld(true);
+      controls.requestJump();
+      controls.requestJump();
+    });
+    // Glide physics supplies committed forward travel once deployed. Keeping
+    // raw movement neutral beforehand prevents nearby plaza lips from ending
+    // the aerial chain before the glide pose can open.
+    controls.schedule(1_350, () => controls.setGlideHeld(false));
+    controls.schedule(1_800, () => controls.setVirtualInput(0, 0, false));
+    return true;
+  }
+  if (scenario === 'skid') {
+    controls.setVirtualInput(0, 1, true);
+    // Reach a genuine run before reversing so this remains deterministic for
+    // the slower species as well as the lightweight animals.
+    controls.schedule(1_800, () => controls.setVirtualInput(0, -1, true));
+    controls.schedule(2_300, () => controls.setVirtualInput(0, 0, false));
+    return true;
+  }
+  controls.heavyDrop();
+  return true;
+}
+
 export interface GameOptions {
   readonly activeMarket?: AssetSymbol;
   readonly routeHistory?: MarketRouteHistory;
@@ -287,6 +345,7 @@ export class Game {
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.06;
     this.renderer.domElement.setAttribute('aria-label', 'Tickerworld 3D game world');
+    this.renderer.domElement.tabIndex = 0;
     this.container.append(this.renderer.domElement);
 
     this.reducedMotion = safeReadBoolean(
@@ -402,7 +461,10 @@ export class Game {
       identity: guestIdentity,
       snapshot: () => {
         const playerState = this.player.snapshot;
-        const locomotion = this.player.getMotionDebugSnapshot().locomotionState;
+        // The room client samples this at 10 Hz in production. Reading the
+        // controller state directly keeps networking allocation-free; the
+        // full rig/debug snapshot is reserved for the opt-in debug panel.
+        const locomotion = this.player.movementState;
         return {
           x: playerState.x,
           y: playerState.y,
@@ -621,7 +683,7 @@ export class Game {
       camera: this.camera,
       fontUrl: nunitoFontUrl,
       localPosition: () => this.player.position,
-      heightAt: (x, z) => this.world.heightAt(x, z),
+      heightAt: (x, z) => this.groundHeightAt(x, z),
       localNameplate: {
         actorId: this.roomClient.identity.actorId,
         animal: () => this.player.animal,
@@ -804,6 +866,8 @@ export class Game {
     addEventListener('beforeunload', this.dispose);
     this.renderer.domElement.addEventListener('webglcontextlost', this.webglContextLost);
     this.renderer.domElement.addEventListener('webglcontextrestored', this.webglContextRestored);
+    this.renderer.domElement.addEventListener('pointerdown', this.restoreCanvasInput);
+    this.renderer.domElement.addEventListener('focus', this.restoreCanvasInput);
     this.container.addEventListener('tickerworld:share-complete', this.shareCompleteEvent);
 
     void this.market.start();
@@ -1711,45 +1775,64 @@ export class Game {
     this.world.triggerTradeSurge(side, this.activeMarket);
   }
 
-  private runDebugMovementScenario(scenario: 'short' | 'chain' | 'skid' | 'drop'): void {
+  private runDebugMovementScenario(scenario: MovementDebugScenario): void {
     if (!DEBUG_MODE || this.disposed) return;
     for (const timer of this.movementDebugTimers) window.clearTimeout(timer);
     this.movementDebugTimers.length = 0;
-    const later = (delay: number, action: () => void): void => {
-      this.movementDebugTimers.push(window.setTimeout(action, delay));
-    };
-    this.player.setVirtualInput(0, 0, false);
-    this.player.setGlideHeld(false);
-    if (scenario === 'short') {
-      this.player.setGlideHeld(true);
-      this.player.requestJump();
-      later(48, () => this.player.setGlideHeld(false));
-      return;
-    }
-    if (scenario === 'chain') {
-      this.player.setVirtualInput(0.24, 1, true);
-      this.player.setGlideHeld(true);
-      this.player.requestJump();
-      later(170, () => this.player.requestJump());
-      later(1_350, () => this.player.setGlideHeld(false));
-      later(1_800, () => this.player.setVirtualInput(0, 0, false));
-      return;
-    }
-    if (scenario === 'skid') {
-      this.player.setVirtualInput(0, 1, true);
-      // Reach a genuine run before reversing so this remains deterministic for
-      // the slower species as well as the lightweight animals.
-      later(1_800, () => this.player.setVirtualInput(0, -1, true));
-      later(2_300, () => this.player.setVirtualInput(0, 0, false));
-      return;
-    }
-    const position = this.player.authoritativePosition;
-    this.player.setPosition(
-      position.x,
-      this.groundHeightAt(position.x, position.z) + 8,
-      position.z,
-    );
+    runMovementDebugScenarioScript(scenario, {
+      prepareInput: () => this.prepareDebugMovementInput(),
+      setVirtualInput: (x, forward, sprint) => this.player.setVirtualInput(x, forward, sprint),
+      setGlideHeld: (held) => this.player.setGlideHeld(held),
+      requestJump: () => this.player.requestJump(true),
+      schedule: (delay, action) => {
+        this.movementDebugTimers.push(window.setTimeout(action, delay));
+      },
+      heavyDrop: () => {
+        const position = this.player.authoritativePosition;
+        this.player.setPosition(
+          position.x,
+          this.groundHeightAt(position.x, position.z) + 8,
+          position.z,
+        );
+      },
+    });
   }
+
+  private prepareDebugMovementInput(): boolean {
+    if (this.disposed || !this.visible || this.contextLost || this.uiInteractionLock.locked) return false;
+    // The debug panel is available over the entry veil; a deliberate scenario
+    // click counts as the same user gesture as Enter and unlocks the live path.
+    if (!this.entered) void this.enter();
+    return this.restoreCanvasKeyboardInput();
+  }
+
+  private restoreCanvasKeyboardInput(): boolean {
+    if (this.disposed
+      || !this.visible
+      || !this.entered
+      || this.contextLost
+      || this.uiInteractionLock.locked) return false;
+    const canvas = this.renderer.domElement;
+    const active = document.activeElement;
+    const changedFocus = active !== canvas;
+    if (active instanceof HTMLElement && active !== canvas) active.blur();
+    if (document.activeElement !== canvas) {
+      try {
+        canvas.focus({ preventScroll: true });
+      } catch {
+        canvas.focus();
+      }
+    }
+    // Do not cancel held movement every time an already-focused player starts
+    // a camera drag. Clear only while leaving a DOM control or entry overlay.
+    if (changedFocus) this.player.input.clear();
+    this.player.input.setEnabled(true);
+    return true;
+  }
+
+  private readonly restoreCanvasInput = (): void => {
+    this.restoreCanvasKeyboardInput();
+  };
 
   private dispatchMarketAccent(
     monument: Monument,
@@ -2045,19 +2128,19 @@ export class Game {
       const holograms = this.monuments.bigOrderHolograms.getDebugStats();
       this.updateTradeDebugPanel();
       this.hud.setDebug([
-        `fps ${this.fps.toFixed(1)} · ${this.qualityTier} · dpr ${this.pixelRatio.toFixed(2)}`,
-        `draws ${this.renderer.info.render.calls} · tris ${this.estimateTriangles()}`,
-        `chunks ${world.loadedChunks}/${world.desiredChunks} · queued ${world.queuedLoads}`,
-        `props ${world.propInstances} · portals ${this.portalSystem.getDebugStats().portals}`,
-        `market ${this.activeMarket} ${activeMarketState.mode} · tick ${activeMarketState.presentationTick} · candles ${activeMarketState.candles.length} · ${this.market.getDebugStatus()}`,
-        `room ${this.roomClient.state.connection} · remotes ${this.roomClient.state.remotes.length}${this.roomClient.state.lastError ? ` · ${this.roomClient.state.lastError.slice(0, 72)}` : ''}`,
-        `news ${this.newsMode} · posts ${this.activeNewsCount} · fireworks ${this.fireworks.getDebugStats().activeParticles} · holograms ${holograms.visible}/${holograms.capacity}`,
-        `weather rain ${world.rainIntensity.toFixed(2)} · oil jets ${oil.jets} · blasts ${oil.blasts}`,
-        `parkour ${parkour.active ? `${parkour.elapsedSeconds.toFixed(1)}s` : 'idle'} · checkpoint ${parkour.checkpointId}`,
-        `audio ${audioState.status} · music ${Math.round(audioState.musicVolume * 100)}${audioState.musicMuted ? 'x' : ''} · fx ${Math.round(audioState.sfxVolume * 100)}${audioState.sfxMuted ? 'x' : ''}`,
-        `fox ${playerState.grounded ? 'grounded' : this.player.isGliding ? 'gliding' : 'airborne'} · jumps ${playerState.jumpsUsed}/2 · vy ${playerState.verticalSpeed.toFixed(2)}`,
-        `pos ${this.player.position.x.toFixed(2)}, ${this.player.position.z.toFixed(2)} · yaw ${this.cameraRig.yaw.toFixed(2)}`,
-        `textures ${this.renderer.info.memory.textures} · geometries ${this.renderer.info.memory.geometries}`,
+        `fps ${this.fps.toFixed(1)} | ${this.qualityTier} | dpr ${this.pixelRatio.toFixed(2)}`,
+        `draws ${this.renderer.info.render.calls} | tris ${this.estimateTriangles()}`,
+        `chunks ${world.loadedChunks}/${world.desiredChunks} | queued ${world.queuedLoads}`,
+        `props ${world.propInstances} | portals ${this.portalSystem.getDebugStats().portals}`,
+        `market ${this.activeMarket} ${activeMarketState.mode} | tick ${activeMarketState.presentationTick} | candles ${activeMarketState.candles.length} | ${this.market.getDebugStatus()}`,
+        `room ${this.roomClient.state.connection} | remotes ${this.roomClient.state.remotes.length}${this.roomClient.state.lastError ? ` | ${this.roomClient.state.lastError.slice(0, 72)}` : ''}`,
+        `news ${this.newsMode} | posts ${this.activeNewsCount} | fireworks ${this.fireworks.getDebugStats().activeParticles} | holograms ${holograms.visible}/${holograms.capacity}`,
+        `weather rain ${world.rainIntensity.toFixed(2)} | oil jets ${oil.jets} | blasts ${oil.blasts}`,
+        `parkour ${parkour.active ? `${parkour.elapsedSeconds.toFixed(1)}s` : 'idle'} | checkpoint ${parkour.checkpointId}`,
+        `audio ${audioState.status} | music ${Math.round(audioState.musicVolume * 100)}${audioState.musicMuted ? 'x' : ''} | fx ${Math.round(audioState.sfxVolume * 100)}${audioState.sfxMuted ? 'x' : ''}`,
+        `fox ${playerState.grounded ? 'grounded' : this.player.isGliding ? 'gliding' : 'airborne'} | jumps ${playerState.jumpsUsed}/2 | vy ${playerState.verticalSpeed.toFixed(2)}`,
+        `pos ${this.player.position.x.toFixed(2)}, ${this.player.position.z.toFixed(2)} | yaw ${this.cameraRig.yaw.toFixed(2)}`,
+        `textures ${this.renderer.info.memory.textures} | geometries ${this.renderer.info.memory.geometries}`,
       ].join('\n'));
     }
   }
@@ -2185,6 +2268,8 @@ export class Game {
     removeEventListener('beforeunload', this.dispose);
     this.renderer.domElement.removeEventListener('webglcontextlost', this.webglContextLost);
     this.renderer.domElement.removeEventListener('webglcontextrestored', this.webglContextRestored);
+    this.renderer.domElement.removeEventListener('pointerdown', this.restoreCanvasInput);
+    this.renderer.domElement.removeEventListener('focus', this.restoreCanvasInput);
     this.container.removeEventListener('tickerworld:share-complete', this.shareCompleteEvent);
     for (const timer of this.launchCaptureTimers) window.clearTimeout(timer);
     this.launchCaptureTimers.length = 0;

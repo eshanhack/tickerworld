@@ -407,6 +407,35 @@ describe('canonical remote avatar renderer', () => {
     system.dispose();
   });
 
+  it('applies reduced motion to remote glide pitch and banking', () => {
+    let now = 1_000;
+    const { system } = createSystem({ maxPlayers: 1, now: () => now, reducedMotion: true });
+    const gliding = remote('gentle-glide', 3, 1, 'base', 'fox', null, {
+      y: 2,
+      grounded: false,
+      gait: 'glide',
+      verticalSpeed: -1.2,
+      movementState: 'glide',
+      glideBank: 1,
+      movementBlend: 1,
+      runBlend: 1,
+    });
+    system.setPlayers([gliding], now);
+    now += 200;
+    for (let frame = 0; frame < 24; frame += 1) system.update(1 / 60);
+    const aerial = system.getActorRenderRoot('gentle-glide')!.getObjectByName('RemoteAerialPivot')!;
+    const reducedPitch = Math.abs(aerial.rotation.x);
+    const reducedBank = Math.abs(aerial.rotation.z);
+
+    system.setReducedMotion(false);
+    system.setPlayers([{ ...gliding, updatedAt: 2 }], now);
+    now += 200;
+    for (let frame = 0; frame < 24; frame += 1) system.update(1 / 60);
+    expect(Math.abs(aerial.rotation.x)).toBeGreaterThan(reducedPitch * 2);
+    expect(Math.abs(aerial.rotation.z)).toBeGreaterThan(reducedBank * 2);
+    system.dispose();
+  });
+
   it('plants every species from its actual canonical paw geometry on slopes', () => {
     let now = 1_000;
     const heightAt = (x: number, z: number): number => x * 0.11 + z * 0.045;

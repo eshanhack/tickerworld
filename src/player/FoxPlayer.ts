@@ -118,6 +118,18 @@ export interface FoxMotionDebugSnapshot {
   readonly activeParticles: number;
   readonly activeRings: number;
   readonly activeTrailSegments: number;
+  readonly inputEnabled: boolean;
+  readonly jumpHeld: boolean;
+  readonly jumpEdgeQueued: boolean;
+  readonly jumpRequestSequence: number;
+  readonly inputClearSequence: number;
+  readonly jumpSequence: number;
+  readonly doubleJumpSequence: number;
+  readonly glideSequence: number;
+  readonly stateTransitionSequence: number;
+  readonly bufferedDoubleSequence: number;
+  readonly delayedDoubleSequence: number;
+  readonly maxAirtimeObserved: number;
   readonly tuning: Readonly<MovementTuning>;
   readonly rig: FoxRigDebugSnapshot;
 }
@@ -231,6 +243,18 @@ export class FoxPlayer {
   private readonly simulationPosition = new THREE.Vector3();
   private readonly previousSimulationPosition = new THREE.Vector3();
   private readonly renderedPosition = new THREE.Vector3();
+  /** Stable view returned from `snapshot`; refreshed in place to avoid RAF garbage. */
+  private readonly playerSnapshot: PlayerSnapshot = {
+    x: 0,
+    y: 0,
+    z: 0,
+    speed: 0,
+    sprinting: false,
+    surface: 'grass',
+    grounded: false,
+    jumpsUsed: 0,
+    verticalSpeed: 0,
+  };
   private readonly previousContacts: Record<FoxLegKey, boolean> = {
     frontLeft: false,
     frontRight: false,
@@ -262,8 +286,8 @@ export class FoxPlayer {
   private readonly tuning: MovementTuning;
   private readonly walkSpeedOverride: number | undefined;
   private readonly sprintSpeedOverride: number | undefined;
-  private walkSpeed: number;
-  private sprintSpeed: number;
+  private walkSpeed = 0;
+  private sprintSpeed = 0;
   private motionProfile: AnimalMotionProfile;
   private elapsed = 0;
   private gaitPhase = 0;
@@ -290,6 +314,10 @@ export class FoxPlayer {
   private jumpBufferRemaining = 0;
   private anticipationRemaining = 0;
   private bufferedDoubleJump = false;
+  private delayedDoubleJumpQueued = false;
+  private bufferedDoubleSequence = 0;
+  private delayedDoubleSequence = 0;
+  private maxAirtimeObserved = 0;
   private airborneTime = 0;
   private doublePoseRemaining = 0;
   private landingRemaining = 0;
@@ -309,6 +337,7 @@ export class FoxPlayer {
   private anticipationSequence = 0;
   private jumpSequence = 0;
   private doubleJumpSequence = 0;
+  private glideSequence = 0;
   private landSequence = 0;
   private skidSequence = 0;
   private anticipationTick = 0;
@@ -337,10 +366,9 @@ export class FoxPlayer {
     this.motionProfile = animalMotionProfile(initialAnimal);
     this.walkSpeedOverride = options.walkSpeed;
     this.sprintSpeedOverride = options.sprintSpeed;
-    this.walkSpeed = options.walkSpeed ?? this.motionProfile.walkSpeed;
-    this.sprintSpeed = options.sprintSpeed ?? this.motionProfile.sprintSpeed;
     this.reducedMotion = options.reducedMotion ?? false;
     this.tuning = options.tuning ?? loadMovementTuning(DEBUG_MODE);
+    this.syncMotionProfileTuning();
     this.input.setTuning(this.tuning.input);
 
     this.group.name = 'FoxPlayer';
@@ -465,17 +493,16 @@ export class FoxPlayer {
   }
 
   public get snapshot(): PlayerSnapshot {
-    return {
-      x: this.simulationPosition.x,
-      y: this.simulationPosition.y,
-      z: this.simulationPosition.z,
-      speed: this.horizontalSpeed,
-      sprinting: this.horizontalSpeed > this.walkSpeed * 1.08,
-      surface: this.currentSurface,
-      grounded: this.grounded,
-      jumpsUsed: this.jumpsUsed,
-      verticalSpeed: this.verticalVelocity,
-    };
+    this.playerSnapshot.x = this.simulationPosition.x;
+    this.playerSnapshot.y = this.simulationPosition.y;
+    this.playerSnapshot.z = this.simulationPosition.z;
+    this.playerSnapshot.speed = this.horizontalSpeed;
+    this.playerSnapshot.sprinting = this.horizontalSpeed > this.walkSpeed * 1.08;
+    this.playerSnapshot.surface = this.currentSurface;
+    this.playerSnapshot.grounded = this.grounded;
+    this.playerSnapshot.jumpsUsed = this.jumpsUsed;
+    this.playerSnapshot.verticalSpeed = this.verticalVelocity;
+    return this.playerSnapshot;
   }
 
   public getMotionDebugSnapshot(): FoxMotionDebugSnapshot {
@@ -514,6 +541,18 @@ export class FoxPlayer {
       activeParticles,
       activeRings,
       activeTrailSegments,
+      inputEnabled: this.input.isEnabled,
+      jumpHeld: this.input.state.jumpHeld,
+      jumpEdgeQueued: this.input.hasQueuedJump,
+      jumpRequestSequence: this.input.debugJumpRequestSequence,
+      inputClearSequence: this.input.debugClearSequence,
+      jumpSequence: this.jumpSequence >>> 0,
+      doubleJumpSequence: this.doubleJumpSequence >>> 0,
+      glideSequence: this.glideSequence >>> 0,
+      stateTransitionSequence: this.stateTransitionSequence >>> 0,
+      bufferedDoubleSequence: this.bufferedDoubleSequence >>> 0,
+      delayedDoubleSequence: this.delayedDoubleSequence >>> 0,
+      maxAirtimeObserved: this.maxAirtimeObserved,
       tuning: this.tuning,
       rig: this.rig.getDebugSnapshot(),
     };
@@ -528,9 +567,15 @@ export class FoxPlayer {
     if (this.disposed) return;
     this.rig.setAnimal(animal, skin);
     this.motionProfile = animalMotionProfile(this.rig.animal);
-    this.walkSpeed = this.walkSpeedOverride ?? this.motionProfile.walkSpeed;
-    this.sprintSpeed = this.sprintSpeedOverride ?? this.motionProfile.sprintSpeed;
+    this.syncMotionProfileTuning();
     this.model.scale.setScalar(this.motionProfile.modelScale);
+  }
+
+  private syncMotionProfileTuning(): void {
+    this.walkSpeed = (this.walkSpeedOverride ?? this.motionProfile.walkSpeed)
+      * this.tuning.physics.walkSpeedScale;
+    this.sprintSpeed = (this.sprintSpeedOverride ?? this.motionProfile.sprintSpeed)
+      * this.tuning.physics.sprintSpeedScale;
   }
 
   public setPosition(x: number, y: number, z: number): void {
@@ -548,6 +593,7 @@ export class FoxPlayer {
     this.jumpBufferRemaining = 0;
     this.anticipationRemaining = 0;
     this.bufferedDoubleJump = false;
+    this.delayedDoubleJumpQueued = false;
     this.airborneTime = 0;
     this.doublePoseRemaining = 0;
     this.landingRemaining = 0;
@@ -610,8 +656,8 @@ export class FoxPlayer {
   }
 
   /** Queue a jump through the same edge-triggered path used by the Space key. */
-  public requestJump(): void {
-    this.input.requestJump();
+  public requestJump(force = false): void {
+    this.input.requestJump(force);
   }
 
   /** Hold from touch/pointer UI to glide; keyboard Space is tracked automatically. */
@@ -633,6 +679,7 @@ export class FoxPlayer {
     resolveHorizontal?: HorizontalMovementResolver,
   ): PlayerSnapshot {
     if (this.disposed) return this.snapshot;
+    this.syncMotionProfileTuning();
     this.renderFrame = (this.renderFrame + 1) >>> 0;
     const delta = Math.min(
       Math.max(deltaSeconds, 0),
@@ -646,7 +693,12 @@ export class FoxPlayer {
       this.jumpReleaseQueued = true;
     }
     if (this.input.consumeJump()) {
-      if (this.anticipationRemaining > 0) this.bufferedDoubleJump = true;
+      if (this.anticipationRemaining > 0) {
+        if (!this.bufferedDoubleJump) {
+          this.bufferedDoubleSequence = (this.bufferedDoubleSequence + 1) >>> 0;
+        }
+        this.bufferedDoubleJump = true;
+      }
       else if (this.grounded) {
         // Begin the visible squash on the input frame even when a high-refresh
         // RAF has not accumulated a physics step yet. Physics still advances
@@ -703,9 +755,17 @@ export class FoxPlayer {
       this.simulationPosition,
       this.interpolationAlpha,
     );
-    // Ground support must meet steps immediately; airborne motion remains
-    // fully interpolated so jumps and the camera stay smooth above 60Hz.
-    if (this.grounded) this.renderedPosition.y = this.simulationPosition.y;
+    // Sample support at the interpolated XZ position. Copying the latest fixed
+    // Y here produced visible 60 Hz stair-steps on slopes even when horizontal
+    // movement and the camera were interpolating smoothly at a higher refresh.
+    if (this.grounded) {
+      this.renderedPosition.y = safeHeight(
+        heightAt,
+        this.renderedPosition.x,
+        this.renderedPosition.z,
+        this.simulationPosition.y,
+      );
+    }
     this.group.position.copy(this.simulationPosition);
     this.headingPivot.position.copy(this.renderedPosition).sub(this.simulationPosition);
     this.magicGroup.position.copy(this.headingPivot.position);
@@ -1093,7 +1153,10 @@ export class FoxPlayer {
         const queueSecondJump = this.bufferedDoubleJump;
         this.bufferedDoubleJump = false;
         this.launchJump(false, onAction);
-        if (queueSecondJump) this.jumpBufferRemaining = this.tuning.input.jumpBufferSeconds;
+        if (queueSecondJump) {
+          this.delayedDoubleJumpQueued = true;
+          this.delayedDoubleSequence = (this.delayedDoubleSequence + 1) >>> 0;
+        }
       }
     } else if (this.jumpBufferRemaining > 0) {
       if (this.grounded) {
@@ -1129,6 +1192,15 @@ export class FoxPlayer {
     }
 
     this.airborneTime += delta;
+    this.maxAirtimeObserved = Math.max(this.maxAirtimeObserved, this.airborneTime);
+    if (
+      this.delayedDoubleJumpQueued
+      && this.jumpsUsed === 1
+      && this.airborneTime >= 0.12
+    ) {
+      this.delayedDoubleJumpQueued = false;
+      this.launchJump(true, onAction);
+    }
     this.doublePoseRemaining = Math.max(0, this.doublePoseRemaining - delta);
     const nextGlideActive = jumpHeld
       && !this.grounded
@@ -1140,18 +1212,19 @@ export class FoxPlayer {
       this.emitAction(this.glideActive ? 'glide-start' : 'glide-end', 0.45, onAction);
     }
 
+    const gravityScale = this.tuning.physics.gravityScale;
     let gravity: number;
     if (this.glideActive && this.verticalVelocity <= 0) {
-      gravity = this.motionProfile.glideGravity;
+      gravity = this.motionProfile.glideGravity * this.tuning.physics.glideGravityScale;
     } else if (Math.abs(this.verticalVelocity) <= this.tuning.jump.apexVelocity) {
-      gravity = this.motionProfile.gravity * this.tuning.jump.apexGravityScale;
+      gravity = this.motionProfile.gravity * gravityScale * this.tuning.jump.apexGravityScale;
     } else if (this.verticalVelocity < 0) {
-      gravity = this.motionProfile.gravity * this.tuning.jump.fallGravityScale;
+      gravity = this.motionProfile.gravity * gravityScale * this.tuning.jump.fallGravityScale;
     } else {
-      gravity = this.motionProfile.gravity * this.tuning.jump.riseGravityScale;
+      gravity = this.motionProfile.gravity * gravityScale * this.tuning.jump.riseGravityScale;
     }
     const terminalSpeed = this.glideActive
-      ? this.motionProfile.glideTerminalSpeed
+      ? this.motionProfile.glideTerminalSpeed * this.tuning.physics.glideTerminalSpeedScale
       : this.tuning.jump.terminalSpeed;
     this.verticalVelocity = Math.max(terminalSpeed, this.verticalVelocity - gravity * delta);
     this.group.position.y += this.verticalVelocity * delta;
@@ -1165,6 +1238,7 @@ export class FoxPlayer {
       this.grounded = true;
       this.jumpsUsed = 0;
       this.bufferedDoubleJump = false;
+      this.delayedDoubleJumpQueued = false;
       this.coyoteRemaining = this.tuning.input.coyoteSeconds;
       this.airborneTime = 0;
       this.doublePoseRemaining = 0;
@@ -1214,8 +1288,8 @@ export class FoxPlayer {
     this.glideActive = false;
     this.jumpsUsed = doubleJump ? 2 : 1;
     this.verticalVelocity = doubleJump
-      ? this.motionProfile.doubleJumpImpulse
-      : this.motionProfile.jumpImpulse;
+      ? this.motionProfile.doubleJumpImpulse * this.tuning.physics.doubleJumpImpulseScale
+      : this.motionProfile.jumpImpulse * this.tuning.physics.jumpImpulseScale;
     if (doubleJump && this.movementDirection.lengthSq() > 1e-8) {
       const controlSpeed = Math.max(this.horizontalSpeed, this.walkSpeed);
       this.velocity.x = THREE.MathUtils.lerp(
@@ -1348,7 +1422,8 @@ export class FoxPlayer {
     } else if (this.verticalVelocity > 1.15) {
       this.airPose = 'rise';
       this.airProgress = THREE.MathUtils.clamp(
-        1 - this.verticalVelocity / this.motionProfile.jumpImpulse,
+        1 - this.verticalVelocity
+          / (this.motionProfile.jumpImpulse * this.tuning.physics.jumpImpulseScale),
         0,
         1,
       );
@@ -1448,6 +1523,9 @@ export class FoxPlayer {
       case 'double-jump':
         this.doubleJumpSequence = (this.doubleJumpSequence + 1) >>> 0;
         this.doubleJumpTick = this.simulationTick >>> 0;
+        break;
+      case 'glide-start':
+        this.glideSequence = (this.glideSequence + 1) >>> 0;
         break;
       case 'land':
         this.landSequence = (this.landSequence + 1) >>> 0;

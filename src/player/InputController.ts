@@ -60,7 +60,10 @@ export class PlayerInputController {
   private virtualForward = 0;
   private virtualSprint = false;
   private virtualGlide = false;
-  private jumpQueued = false;
+  private jumpQueueCount = 0;
+  private forcedJumpQueueCount = 0;
+  private jumpRequestSequence = 0;
+  private clearSequence = 0;
   private jumpReleaseQueued = false;
   private gamepadX = 0;
   private gamepadForward = 0;
@@ -124,6 +127,23 @@ export class PlayerInputController {
     };
   }
 
+  public get isEnabled(): boolean {
+    return this.enabled;
+  }
+
+  /** Debug-only visibility into the edge buffer; does not consume it. */
+  public get hasQueuedJump(): boolean {
+    return this.jumpQueueCount > 0 || this.forcedJumpQueueCount > 0;
+  }
+
+  public get debugJumpRequestSequence(): number {
+    return this.jumpRequestSequence;
+  }
+
+  public get debugClearSequence(): number {
+    return this.clearSequence;
+  }
+
   /** Poll once per rendered frame so gamepad edges share the keyboard buffer. */
   public pollGamepad(): void {
     if (!this.enabled || !this.readGamepads) return;
@@ -181,8 +201,14 @@ export class PlayerInputController {
   }
 
   /** Queue one jump edge for the next player update (keyboard and touch share this path). */
-  public requestJump(): void {
-    if (this.enabled) this.jumpQueued = true;
+  public requestJump(force = false): void {
+    if (force) {
+      this.forcedJumpQueueCount = Math.min(2, this.forcedJumpQueueCount + 1);
+      this.jumpRequestSequence = (this.jumpRequestSequence + 1) >>> 0;
+    } else if (this.enabled) {
+      this.jumpQueueCount = Math.min(2, this.jumpQueueCount + 1);
+      this.jumpRequestSequence = (this.jumpRequestSequence + 1) >>> 0;
+    }
   }
 
   /** Mirrors a held touch/pointer jump control without creating another jump edge. */
@@ -194,8 +220,12 @@ export class PlayerInputController {
 
   /** Returns a queued jump once, preventing key-repeat from creating extra jumps. */
   public consumeJump(): boolean {
-    if (!this.enabled || !this.jumpQueued) return false;
-    this.jumpQueued = false;
+    if (this.forcedJumpQueueCount > 0) {
+      this.forcedJumpQueueCount -= 1;
+      return true;
+    }
+    if (!this.enabled || this.jumpQueueCount <= 0) return false;
+    this.jumpQueueCount -= 1;
     return true;
   }
 
@@ -216,6 +246,7 @@ export class PlayerInputController {
   }
 
   public clear = (): void => {
+    this.clearSequence = (this.clearSequence + 1) >>> 0;
     this.pressed.clear();
     this.virtualX = 0;
     this.virtualForward = 0;
@@ -226,7 +257,8 @@ export class PlayerInputController {
     this.gamepadSprint = false;
     this.gamepadJumpHeld = false;
     this.gamepadJumpWasHeld = false;
-    this.jumpQueued = false;
+    this.jumpQueueCount = 0;
+    this.forcedJumpQueueCount = 0;
     this.jumpReleaseQueued = false;
   };
 

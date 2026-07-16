@@ -3,18 +3,13 @@ import {
   DEFAULT_MOVEMENT_TUNING,
   clearPersistedMovementTuning,
   cloneMovementTuning,
+  getMovementTuningBounds,
   movementTuningCode,
   persistMovementTuning,
   setMovementTuningValue,
   type MovementTuning,
   type MovementTuningPath,
 } from '../player/MovementConfig';
-
-interface RangeDescriptor {
-  readonly min: number;
-  readonly max: number;
-  readonly step: number;
-}
 
 export interface MovementDebugActions {
   readonly onShortJump?: () => void;
@@ -23,23 +18,17 @@ export interface MovementDebugActions {
   readonly onHeavyDrop?: () => void;
 }
 
-function rangeFor(path: string, value: number): RangeDescriptor {
-  if (/maxSubSteps|Count$/i.test(path)) return { min: 1, max: 16, step: 1 };
-  if (/fixedStepSeconds/i.test(path)) return { min: 1 / 120, max: 1 / 30, step: 0.00001 };
-  if (/maxFrameDeltaSeconds/i.test(path)) return { min: 0.02, max: 0.25, step: 0.001 };
-  if (/Seconds/i.test(path)) return { min: 0, max: Math.max(0.6, value * 3), step: 0.001 };
-  if (/deadzone/i.test(path)) return { min: 0, max: 0.3, step: 0.001 };
-  if (/Threshold/i.test(path)) return { min: 0, max: 1, step: 0.001 };
-  if (/collisionSweepStep/i.test(path)) return { min: 0.005, max: 0.2, step: 0.001 };
-  if (/Degrees/i.test(path)) return { min: 0, max: 14, step: 0.1 };
-  if (/Radians/i.test(path)) return { min: 0, max: Math.PI, step: 0.01 };
-  if (/Response|Spring|Damping/i.test(path)) return { min: 0, max: Math.max(100, value * 2), step: 0.1 };
-  if (/terminalSpeed/i.test(path)) return { min: -35, max: -1, step: 0.1 };
-  if (/Height|Dip|Ahead|Extension/i.test(path)) return { min: 0, max: Math.max(3, value * 3), step: 0.01 };
-  if (/Scale|Ratio|Cut|Gain|Loss|Opacity|Blend|Progress/i.test(path)) {
-    return { min: 0, max: Math.max(2, value * 2), step: 0.001 };
-  }
-  return { min: 0, max: Math.max(30, value * 2), step: 0.001 };
+export function movementDebugSnapshotText(snapshot: FoxMotionDebugSnapshot): string {
+  // Keep this developer-facing surface ASCII-only. It is frequently inspected
+  // through terminals/proxies whose encoding is outside the game's control.
+  return [
+    `${snapshot.locomotionState} | ${snapshot.fixedSteps} fixed steps | alpha ${snapshot.interpolationAlpha.toFixed(2)}`,
+    `speed ${snapshot.horizontalSpeed.toFixed(2)} | vy ${snapshot.verticalVelocity.toFixed(2)} | air ${snapshot.airtime.toFixed(2)}s`,
+      `coyote ${snapshot.coyoteRemaining.toFixed(3)} | buffer ${snapshot.jumpBufferRemaining.toFixed(3)} | jumps ${snapshot.jumpsUsed} | bank ${snapshot.glideBank.toFixed(2)}`,
+      `input ${snapshot.inputEnabled ? 'on' : 'off'} | held ${snapshot.jumpHeld ? 'yes' : 'no'} | edge ${snapshot.jumpEdgeQueued ? 'queued' : 'clear'} | requests ${snapshot.jumpRequestSequence} | clears ${snapshot.inputClearSequence}`,
+      `jumps ${snapshot.jumpSequence}/${snapshot.doubleJumpSequence} | queued-double ${snapshot.bufferedDoubleSequence}/${snapshot.delayedDoubleSequence} | glides ${snapshot.glideSequence} | max-air ${snapshot.maxAirtimeObserved.toFixed(3)} | transitions ${snapshot.stateTransitionSequence}`,
+      `fx ${snapshot.activeParticles} particles | ${snapshot.activeRings} rings | ${snapshot.activeTrailSegments} trail segments`,
+  ].join('\n');
 }
 
 /** `?debug=1` movement lab. Every exposed value updates the live controller. */
@@ -62,7 +51,8 @@ export class MovementDebugPanel {
       for (const [key, value] of Object.entries(entries)) {
         const numericValue = Number(value);
         const path = `${section}.${key}` as MovementTuningPath;
-        const range = rangeFor(path, numericValue);
+        const range = getMovementTuningBounds(path);
+        if (!range) throw new Error(`Movement tuning is missing bounds for ${path}.`);
         controls.push(`
           <label data-movement-row>
             <span>${key}</span>
@@ -73,8 +63,8 @@ export class MovementDebugPanel {
       controls.push('</fieldset>');
     }
     this.root.innerHTML = `
-      <header><strong>MOVEMENT LAB</strong><button type="button" data-movement-toggle aria-label="Collapse movement lab">−</button></header>
-      <pre data-movement-readout>waiting for player…</pre>
+      <header><strong>MOVEMENT LAB</strong><button type="button" data-movement-toggle aria-label="Collapse movement lab">-</button></header>
+      <pre data-movement-readout>waiting for player...</pre>
       <div class="movement-debug-actions">
         <button type="button" data-movement-scenario="short">SHORT JUMP</button>
         <button type="button" data-movement-scenario="chain">FULL CHAIN</button>
@@ -95,12 +85,7 @@ export class MovementDebugPanel {
 
   setSnapshot(snapshot: FoxMotionDebugSnapshot): void {
     if (this.disposed) return;
-    this.readout.textContent = [
-      `${snapshot.locomotionState} · ${snapshot.fixedSteps} fixed steps · α ${snapshot.interpolationAlpha.toFixed(2)}`,
-      `speed ${snapshot.horizontalSpeed.toFixed(2)} · vy ${snapshot.verticalVelocity.toFixed(2)} · air ${snapshot.airtime.toFixed(2)}s`,
-      `coyote ${snapshot.coyoteRemaining.toFixed(3)} · buffer ${snapshot.jumpBufferRemaining.toFixed(3)} · jumps ${snapshot.jumpsUsed} · bank ${snapshot.glideBank.toFixed(2)}`,
-      `fx ${snapshot.activeParticles} particles · ${snapshot.activeRings} rings · ${snapshot.activeTrailSegments} trail segments`,
-    ].join('\n');
+    this.readout.textContent = movementDebugSnapshotText(snapshot);
   }
 
   dispose(): void {
@@ -126,6 +111,10 @@ export class MovementDebugPanel {
     if (!button || !this.root.contains(button)) return;
     const scenario = button.dataset.movementScenario;
     if (scenario) {
+      event.preventDefault();
+      // A clicked button remains the KeyboardEvent target in browsers. Blurring
+      // it before dispatch lets Game move focus back to the canvas immediately.
+      button.blur();
       if (scenario === 'short') this.actions.onShortJump?.();
       else if (scenario === 'chain') this.actions.onFullChain?.();
       else if (scenario === 'skid') this.actions.onSkid?.();
@@ -134,7 +123,7 @@ export class MovementDebugPanel {
     }
     if (button.hasAttribute('data-movement-toggle')) {
       const collapsed = this.root.classList.toggle('is-collapsed');
-      button.textContent = collapsed ? '+' : '−';
+      button.textContent = collapsed ? '+' : '-';
       return;
     }
     if (button.hasAttribute('data-movement-reset')) {

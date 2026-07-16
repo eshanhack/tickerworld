@@ -530,16 +530,20 @@ class CanonicalRemoteVisual {
       const bank = airPose === 'glide'
         ? (pose.glideBank === undefined
             ? THREE.MathUtils.clamp(-yawRate * 0.018, -0.23, 0.23)
-            : -pose.glideBank * this.tuning.glide.bankRadians)
+            : -pose.glideBank * this.tuning.glide.bankRadians) * motion
         : 0;
       const glidePitch = airPose === 'glide'
-        ? THREE.MathUtils.clamp(-pose.verticalSpeed / 10, -0.12, 0.12)
+        ? THREE.MathUtils.clamp(
+            -pose.verticalSpeed / 10,
+            -this.tuning.glide.pitchRadians,
+            this.tuning.glide.pitchRadians,
+          ) * motion
         : 0;
       this.aerialPivot.rotation.x = damp(this.aerialPivot.rotation.x, glidePitch, 10, delta);
       this.aerialPivot.rotation.y = damp(this.aerialPivot.rotation.y, 0, 14, delta);
       this.aerialPivot.rotation.z = damp(this.aerialPivot.rotation.z, bank, 9, delta);
       this.aerialPivot.position.y = airPose === 'glide'
-        ? Math.sin(this.elapsed * 3.1) * 0.035
+        ? Math.sin(this.elapsed * 3.1) * 0.035 * motion
         : damp(this.aerialPivot.position.y, 0, 12, delta);
     }
 
