@@ -70,7 +70,30 @@ export function findNewsCandleLayout(
   layouts: readonly CandleLayout[],
 ): CandleLayout | null {
   const minute = newsMinute(item.createdAt);
-  return layouts.find((layout) => layout.candle.openTime === minute) ?? null;
+  let nearest: CandleLayout | null = null;
+  let nearestDistance = Number.POSITIVE_INFINITY;
+
+  for (const layout of layouts) {
+    const distance = Math.abs(layout.candle.openTime - minute);
+    if (distance === 0) return layout;
+    if (
+      distance < nearestDistance
+      // Prefer the earlier candle when a gap leaves two equally-near choices.
+      // This makes the fallback independent of layout iteration order and avoids
+      // visually implying that a post happened during a later candle.
+      || (distance === nearestDistance
+        && nearest !== null
+        && layout.candle.openTime < nearest.candle.openTime)
+    ) {
+      nearest = layout;
+      nearestDistance = distance;
+    }
+  }
+
+  // A reconnecting/bootstrap chart can temporarily omit the post's exact
+  // minute. Keep the post visible on the nearest available candle; a later
+  // update automatically moves it to the exact minute when history catches up.
+  return nearest;
 }
 
 export function activeNewsItems(

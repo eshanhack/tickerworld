@@ -56,6 +56,46 @@ describe('news chart presentation helpers', () => {
     expect(findNewsCandleLayout(item('headline', minute + 43_210), layouts)?.x).toBe(1);
   });
 
+  it('prefers the exact tweet minute over fallback candles regardless of layout order', () => {
+    const minute = Date.UTC(2026, 6, 11, 4, 20);
+    const layouts = [
+      layout(minute + 60_000, 3),
+      layout(minute, 1),
+      layout(minute - 60_000, -3),
+    ];
+
+    expect(findNewsCandleLayout(item('exact', minute + 12_000), layouts)?.x).toBe(1);
+  });
+
+  it('falls back to the deterministic nearest candle when chart history has a gap', () => {
+    const minute = Date.UTC(2026, 6, 11, 4, 20);
+    const post = item('gap', minute + 12_000);
+    const laterFirst = [
+      layout(minute + 60_000, 4),
+      layout(minute - 60_000, -4),
+    ];
+    const earlierFirst = [...laterFirst].reverse();
+
+    expect(findNewsCandleLayout(post, laterFirst)?.x).toBe(-4);
+    expect(findNewsCandleLayout(post, earlierFirst)?.x).toBe(-4);
+    expect(findNewsCandleLayout(post, [])).toBeNull();
+  });
+
+  it('keeps a live post pinned and overlayable while its exact candle is unavailable', () => {
+    const minute = Date.UTC(2026, 6, 11, 4, 20);
+    const post = item('bootstrap-gap', minute + 12_000);
+    const panel = new NewsPanel();
+
+    panel.setItems([post], minute + 30_000);
+    panel.update([layout(minute - 60_000, -2)], minute + 30_000);
+
+    const pin = panel.root.getObjectByName('news-pin-hit-bootstrap-gap');
+    expect(pin?.visible).toBe(true);
+    expect(panel.getSelection()?.item.id).toBe('bootstrap-gap');
+    expect(panel.getSelectedCandleAnchor()?.x).toBe(-2);
+    panel.dispose();
+  });
+
   it('keeps only unexpired ten-minute posts, newest first', () => {
     const now = Date.UTC(2026, 6, 11, 4, 30);
     const active = activeNewsItems([
