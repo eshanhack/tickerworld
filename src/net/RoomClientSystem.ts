@@ -129,6 +129,24 @@ export interface LocalNetworkSnapshot {
   readonly runBlend?: number;
   readonly airProgress?: number;
   readonly simulationTick?: number;
+  readonly velocityX?: number;
+  readonly velocityZ?: number;
+  readonly turnLean?: number;
+  readonly accelerationLean?: number;
+  readonly glideBank?: number;
+  readonly anticipationSequence?: number;
+  readonly jumpSequence?: number;
+  readonly doubleJumpSequence?: number;
+  readonly landSequence?: number;
+  readonly skidSequence?: number;
+  readonly anticipationTick?: number;
+  readonly jumpTick?: number;
+  readonly doubleJumpTick?: number;
+  readonly landTick?: number;
+  readonly skidTick?: number;
+  readonly landingTier?: 'soft' | 'heavy';
+  readonly stateTransitionSequence?: number;
+  readonly stateTransitionTick?: number;
 }
 
 export interface RoomClientSnapshot {
@@ -433,11 +451,20 @@ export function parseRemote(value: unknown): NetPlayerState | null {
     const parsed = finite(value, Number.NaN);
     return Number.isFinite(parsed) ? Math.max(0, Math.min(1, parsed)) : undefined;
   };
-  const simulationTick = typeof source.simulationTick === 'number'
-    && Number.isInteger(source.simulationTick)
-    && source.simulationTick >= 0
-      ? source.simulationTick >>> 0
-      : undefined;
+  const optionalUint = (value: unknown): number | undefined => (
+    typeof value === 'number' && Number.isInteger(value) && value >= 0
+      ? value >>> 0
+      : undefined
+  );
+  const optionalRange = (value: unknown, minimum: number, maximum: number): number | undefined => {
+    const parsed = finite(value, Number.NaN);
+    return Number.isFinite(parsed) ? Math.max(minimum, Math.min(maximum, parsed)) : undefined;
+  };
+  const simulationTick = optionalUint(source.simulationTick);
+  const motionStateV2 = source.motionStateV2 === true;
+  const landingTier = source.landingTier === 'heavy' || source.landingTier === 'soft'
+    ? source.landingTier
+    : undefined;
   return {
     actorId,
     x: finite(source.x),
@@ -464,6 +491,59 @@ export function parseRemote(value: unknown): NetPlayerState | null {
       ? { airProgress: optionalUnit(source.airProgress) }
       : {}),
     ...(movementState && simulationTick !== undefined ? { simulationTick } : {}),
+    ...(movementState && motionStateV2 ? { motionStateV2: true } : {}),
+    ...(movementState && motionStateV2 && optionalRange(source.velocityX, -12, 12) !== undefined
+      ? { velocityX: optionalRange(source.velocityX, -12, 12) }
+      : {}),
+    ...(movementState && motionStateV2 && optionalRange(source.velocityZ, -12, 12) !== undefined
+      ? { velocityZ: optionalRange(source.velocityZ, -12, 12) }
+      : {}),
+    ...(movementState && motionStateV2 && optionalRange(source.turnLean, -0.5, 0.5) !== undefined
+      ? { turnLean: optionalRange(source.turnLean, -0.5, 0.5) }
+      : {}),
+    ...(movementState && motionStateV2 && optionalRange(source.accelerationLean, -0.25, 0.25) !== undefined
+      ? { accelerationLean: optionalRange(source.accelerationLean, -0.25, 0.25) }
+      : {}),
+    ...(movementState && motionStateV2 && optionalRange(source.glideBank, -1, 1) !== undefined
+      ? { glideBank: optionalRange(source.glideBank, -1, 1) }
+      : {}),
+    ...(movementState && motionStateV2 && optionalUint(source.anticipationSequence) !== undefined
+      ? { anticipationSequence: optionalUint(source.anticipationSequence) }
+      : {}),
+    ...(movementState && motionStateV2 && optionalUint(source.jumpSequence) !== undefined
+      ? { jumpSequence: optionalUint(source.jumpSequence) }
+      : {}),
+    ...(movementState && motionStateV2 && optionalUint(source.doubleJumpSequence) !== undefined
+      ? { doubleJumpSequence: optionalUint(source.doubleJumpSequence) }
+      : {}),
+    ...(movementState && motionStateV2 && optionalUint(source.landSequence) !== undefined
+      ? { landSequence: optionalUint(source.landSequence) }
+      : {}),
+    ...(movementState && motionStateV2 && optionalUint(source.skidSequence) !== undefined
+      ? { skidSequence: optionalUint(source.skidSequence) }
+      : {}),
+    ...(movementState && motionStateV2 && optionalUint(source.anticipationTick) !== undefined
+      ? { anticipationTick: optionalUint(source.anticipationTick) }
+      : {}),
+    ...(movementState && motionStateV2 && optionalUint(source.jumpTick) !== undefined
+      ? { jumpTick: optionalUint(source.jumpTick) }
+      : {}),
+    ...(movementState && motionStateV2 && optionalUint(source.doubleJumpTick) !== undefined
+      ? { doubleJumpTick: optionalUint(source.doubleJumpTick) }
+      : {}),
+    ...(movementState && motionStateV2 && optionalUint(source.landTick) !== undefined
+      ? { landTick: optionalUint(source.landTick) }
+      : {}),
+    ...(movementState && motionStateV2 && optionalUint(source.skidTick) !== undefined
+      ? { skidTick: optionalUint(source.skidTick) }
+      : {}),
+    ...(movementState && motionStateV2 && landingTier ? { landingTier } : {}),
+    ...(movementState && motionStateV2 && optionalUint(source.stateTransitionSequence) !== undefined
+      ? { stateTransitionSequence: optionalUint(source.stateTransitionSequence) }
+      : {}),
+    ...(movementState && motionStateV2 && optionalUint(source.stateTransitionTick) !== undefined
+      ? { stateTransitionTick: optionalUint(source.stateTransitionTick) }
+      : {}),
     animal: stringValue(source.animal, 'fox') as AnimalKind,
     skin: stringValue(source.skin, 'base') as SkinId,
     username: typeof source.username === 'string' && source.username ? source.username : null,

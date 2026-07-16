@@ -1,3 +1,5 @@
+import type { MovementTuning } from './MovementConfig';
+
 export interface PlayerInputState {
   /** Horizontal intent, where -1 is left and +1 is right. */
   readonly moveX: number;
@@ -15,6 +17,7 @@ export interface PlayerInputControllerOptions {
   readonly document?: Document | null;
   /** Override browser gamepad discovery in deterministic tests. */
   readonly gamepads?: (() => readonly (Gamepad | null)[]) | null;
+  readonly tuning?: Readonly<MovementTuning['input']>;
 }
 
 const MOVEMENT_KEYS = new Set([
@@ -58,11 +61,20 @@ export class PlayerInputController {
   private virtualSprint = false;
   private virtualGlide = false;
   private jumpQueued = false;
+  private jumpReleaseQueued = false;
   private gamepadX = 0;
   private gamepadForward = 0;
   private gamepadSprint = false;
   private gamepadJumpHeld = false;
   private gamepadJumpWasHeld = false;
+  private inputTuning: Readonly<Pick<
+    MovementTuning['input'],
+    'gamepadDeadzone' | 'gamepadSprintThreshold' | 'gamepadTriggerThreshold'
+  >> = {
+    gamepadDeadzone: 0.14,
+    gamepadSprintThreshold: 0.82,
+    gamepadTriggerThreshold: 0.45,
+  };
   private enabled = true;
 
   public constructor(options: PlayerInputControllerOptions = {}) {
@@ -77,6 +89,7 @@ export class PlayerInputController {
           ? () => navigator.getGamepads()
           : null)
       : options.gamepads;
+    if (options.tuning) this.inputTuning = options.tuning;
 
     this.target?.addEventListener('keydown', this.onKeyDown);
     this.target?.addEventListener('keyup', this.onKeyUp);
@@ -128,6 +141,7 @@ export class PlayerInputController {
       pad = null;
     }
     if (!pad) {
+      if (this.gamepadJumpWasHeld) this.jumpReleaseQueued = true;
       this.gamepadX = 0;
       this.gamepadForward = 0;
       this.gamepadSprint = false;
@@ -135,7 +149,7 @@ export class PlayerInputController {
       this.gamepadJumpWasHeld = false;
       return;
     }
-    const deadzone = 0.14;
+    const deadzone = Math.max(0, Math.min(0.95, this.inputTuning.gamepadDeadzone));
     const axis = (value: number | undefined): number => {
       const safe = clampAxis(value ?? 0);
       if (Math.abs(safe) <= deadzone) return 0;
@@ -144,12 +158,13 @@ export class PlayerInputController {
     this.gamepadX = axis(pad.axes[0]);
     this.gamepadForward = -axis(pad.axes[1]);
     this.gamepadSprint = Boolean(
-      Math.hypot(this.gamepadX, this.gamepadForward) >= 0.82
+      Math.hypot(this.gamepadX, this.gamepadForward) >= this.inputTuning.gamepadSprintThreshold
       || pad.buttons[1]?.pressed
-      || (pad.buttons[7]?.value ?? 0) > 0.45,
+      || (pad.buttons[7]?.value ?? 0) > this.inputTuning.gamepadTriggerThreshold,
     );
     this.gamepadJumpHeld = Boolean(pad.buttons[0]?.pressed);
     if (this.gamepadJumpHeld && !this.gamepadJumpWasHeld) this.requestJump();
+    if (!this.gamepadJumpHeld && this.gamepadJumpWasHeld) this.jumpReleaseQueued = true;
     this.gamepadJumpWasHeld = this.gamepadJumpHeld;
   }
 
@@ -160,6 +175,11 @@ export class PlayerInputController {
     this.virtualSprint = sprint;
   }
 
+  /** Shares the live debug tuning object without allocating during polling. */
+  public setTuning(tuning: Readonly<MovementTuning['input']>): void {
+    this.inputTuning = tuning;
+  }
+
   /** Queue one jump edge for the next player update (keyboard and touch share this path). */
   public requestJump(): void {
     if (this.enabled) this.jumpQueued = true;
@@ -167,13 +187,26 @@ export class PlayerInputController {
 
   /** Mirrors a held touch/pointer jump control without creating another jump edge. */
   public setVirtualGlide(held: boolean): void {
-    this.virtualGlide = this.enabled && held;
+    const next = this.enabled && held;
+    if (!next && this.virtualGlide) this.jumpReleaseQueued = true;
+    this.virtualGlide = next;
   }
 
   /** Returns a queued jump once, preventing key-repeat from creating extra jumps. */
   public consumeJump(): boolean {
     if (!this.enabled || !this.jumpQueued) return false;
     this.jumpQueued = false;
+    return true;
+  }
+
+  /**
+   * Returns one held-jump release edge. Keeping this edge in the input buffer
+   * prevents a quick press-and-release between two rendered frames from being
+   * mistaken for a full-height jump by the fixed-step controller.
+   */
+  public consumeJumpRelease(): boolean {
+    if (!this.enabled || !this.jumpReleaseQueued) return false;
+    this.jumpReleaseQueued = false;
     return true;
   }
 
@@ -194,6 +227,7 @@ export class PlayerInputController {
     this.gamepadJumpHeld = false;
     this.gamepadJumpWasHeld = false;
     this.jumpQueued = false;
+    this.jumpReleaseQueued = false;
   };
 
   public dispose(): void {
@@ -218,6 +252,7 @@ export class PlayerInputController {
 
   private readonly onKeyUp = (event: KeyboardEvent): void => {
     if (!MOVEMENT_KEYS.has(event.code)) return;
+    if (event.code === 'Space' && this.pressed.has('Space')) this.jumpReleaseQueued = true;
     this.pressed.delete(event.code);
   };
 

@@ -232,6 +232,7 @@ export class Game {
   private runtimeCapabilities: RuntimeCapabilities = OFFLINE_RUNTIME_CAPABILITIES;
   private latestRelayMids: readonly CompactMarketMid[] = [];
   private readonly launchCaptureTimers: number[] = [];
+  private readonly movementDebugTimers: number[] = [];
   private latestTradeTapeSnapshot?: TradeTapeSnapshot;
   private readonly tradeTierTimes: Record<Exclude<TradeTier, 'dust'>, number[]> = {
     minor: [], notable: [], big: [], whale: [],
@@ -539,6 +540,7 @@ export class Game {
         this.signatureDistrict.setReducedMotion(enabled);
         this.parkour.setReducedMotion(enabled);
         this.emotes?.setReducedMotion(enabled);
+        this.remoteAvatars?.setReducedMotion(enabled);
         this.portalSystem?.setReducedMotion(enabled);
         this.monuments.setReducedMotion(enabled);
         safeWrite(REDUCED_MOTION_KEY, String(enabled));
@@ -589,6 +591,12 @@ export class Game {
       this.movementDebugPanel = new MovementDebugPanel(
         this.hud.mountLayer('tickerworld-movement-debug-layer'),
         this.movementTuning,
+        {
+          onShortJump: () => this.runDebugMovementScenario('short'),
+          onFullChain: () => this.runDebugMovementScenario('chain'),
+          onSkid: () => this.runDebugMovementScenario('skid'),
+          onHeavyDrop: () => this.runDebugMovementScenario('drop'),
+        },
       );
     }
     this.portalSystem = new PortalSystem({
@@ -638,6 +646,8 @@ export class Game {
         });
         return chart ? [chart] : [];
       },
+      tuning: this.movementTuning,
+      reducedMotion: this.reducedMotion,
     });
     if (LAUNCH_CAPTURE_MODE) this.remoteAvatars.setLabelsVisible(false);
     this.emotes = new EmoteVisualSystem({
@@ -820,6 +830,11 @@ export class Game {
           fireworks: this.fireworks,
           oilEffects: this.oilEffects,
           signatureDistrict: this.signatureDistrict,
+          remoteAvatars: this.remoteAvatars,
+          movementSnapshot: () => this.player.getMotionDebugSnapshot(),
+          runMovementScenario: (scenario: 'short' | 'chain' | 'skid' | 'drop') => (
+            this.runDebugMovementScenario(scenario)
+          ),
           triggerLargeUp: () => this.triggerDebugMarketEvent('up', 'large'),
           triggerExceptionalUp: () => this.triggerDebugMarketEvent('up', 'exceptional'),
           triggerLargeDown: () => this.triggerDebugMarketEvent('down', 'large'),
@@ -1696,6 +1711,46 @@ export class Game {
     this.world.triggerTradeSurge(side, this.activeMarket);
   }
 
+  private runDebugMovementScenario(scenario: 'short' | 'chain' | 'skid' | 'drop'): void {
+    if (!DEBUG_MODE || this.disposed) return;
+    for (const timer of this.movementDebugTimers) window.clearTimeout(timer);
+    this.movementDebugTimers.length = 0;
+    const later = (delay: number, action: () => void): void => {
+      this.movementDebugTimers.push(window.setTimeout(action, delay));
+    };
+    this.player.setVirtualInput(0, 0, false);
+    this.player.setGlideHeld(false);
+    if (scenario === 'short') {
+      this.player.setGlideHeld(true);
+      this.player.requestJump();
+      later(48, () => this.player.setGlideHeld(false));
+      return;
+    }
+    if (scenario === 'chain') {
+      this.player.setVirtualInput(0.24, 1, true);
+      this.player.setGlideHeld(true);
+      this.player.requestJump();
+      later(170, () => this.player.requestJump());
+      later(1_350, () => this.player.setGlideHeld(false));
+      later(1_800, () => this.player.setVirtualInput(0, 0, false));
+      return;
+    }
+    if (scenario === 'skid') {
+      this.player.setVirtualInput(0, 1, true);
+      // Reach a genuine run before reversing so this remains deterministic for
+      // the slower species as well as the lightweight animals.
+      later(1_800, () => this.player.setVirtualInput(0, -1, true));
+      later(2_300, () => this.player.setVirtualInput(0, 0, false));
+      return;
+    }
+    const position = this.player.authoritativePosition;
+    this.player.setPosition(
+      position.x,
+      this.groundHeightAt(position.x, position.z) + 8,
+      position.z,
+    );
+  }
+
   private dispatchMarketAccent(
     monument: Monument,
     sourceId: string,
@@ -2133,6 +2188,8 @@ export class Game {
     this.container.removeEventListener('tickerworld:share-complete', this.shareCompleteEvent);
     for (const timer of this.launchCaptureTimers) window.clearTimeout(timer);
     this.launchCaptureTimers.length = 0;
+    for (const timer of this.movementDebugTimers) window.clearTimeout(timer);
+    this.movementDebugTimers.length = 0;
     this.market.dispose();
     this.tradeTape.dispose();
     this.news.dispose();

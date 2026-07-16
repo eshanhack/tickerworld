@@ -42,10 +42,41 @@ describe('authoritative movement validation', () => {
       movementBlend: 1,
       runBlend: 0.72,
       airProgress: 0.4,
+      speed: Math.hypot(7.2, -3.1),
       simulationTick: 4_294_967_295,
+      velocityX: 7.2,
+      velocityZ: -3.1,
+      turnLean: 0.18,
+      accelerationLean: -0.07,
+      glideBank: -0.82,
+      anticipationSequence: 4,
+      jumpSequence: 4,
+      doubleJumpSequence: 3,
+      landSequence: 2,
+      skidSequence: 1,
+      anticipationTick: 4_294_967_280,
+      jumpTick: 4_294_967_283,
+      doubleJumpTick: 4_294_967_290,
+      landTick: 4_294_967_294,
+      skidTick: 4_294_967_270,
+      landingTier: 'heavy',
+      stateTransitionSequence: 12,
+      stateTransitionTick: 4_294_967_294,
     }), { x: 0, y: 0, z: 14 }, tracker(), 1_000)).toEqual({ accepted: true });
     const invalid = validateMove(snapshot({ gaitPhase: Number.NaN }), { x: 0, y: 0, z: 14 }, tracker(), 1_000);
     expect(invalid.accepted).toBe(false);
+    expect(validateMove(
+      snapshot({ glideBank: 1.01 }),
+      { x: 0, y: 0, z: 14 },
+      tracker(),
+      1_000,
+    ).accepted).toBe(false);
+    expect(validateMove(
+      snapshot({ speed: 1, velocityX: 8, velocityZ: 8 }),
+      { x: 0, y: 0, z: 14 },
+      tracker(),
+      1_000,
+    ).accepted).toBe(false);
   });
 
   it('accepts the fastest lightweight species and rejects speed above the shared ceiling tolerance', () => {
@@ -92,5 +123,60 @@ describe('authoritative movement validation', () => {
     const nonFinite = validateMove(snapshot({ x: Number.NaN }), { x: 0, y: 0, z: 14 }, tracker(), 1_000);
     expect(stale.accepted).toBe(false);
     expect(nonFinite.accepted).toBe(false);
+  });
+
+  it('accepts uint32 action wrap but rejects rewinds and implausible serial jumps', () => {
+    const previous = snapshot({
+      sequence: 10,
+      simulationTick: 0xffff_ffff,
+      doubleJumpSequence: 0xffff_ffff,
+      doubleJumpTick: 0xffff_fffc,
+      stateTransitionSequence: 0xffff_ffff,
+      stateTransitionTick: 0xffff_fffd,
+    });
+    const wrapped = snapshot({
+      sequence: 11,
+      simulationTick: 5,
+      doubleJumpSequence: 0,
+      doubleJumpTick: 2,
+      stateTransitionSequence: 0,
+      stateTransitionTick: 3,
+    });
+    expect(validateMove(
+      wrapped,
+      { x: 0, y: 0, z: 14 },
+      tracker({ lastSequence: 10, lastMotion: previous }),
+      1_000,
+    )).toEqual({ accepted: true });
+
+    const rewind = snapshot({
+      sequence: 11,
+      simulationTick: 104,
+      doubleJumpSequence: 8,
+      doubleJumpTick: 98,
+    });
+    const baseline = snapshot({
+      sequence: 10,
+      simulationTick: 100,
+      doubleJumpSequence: 9,
+      doubleJumpTick: 98,
+    });
+    expect(validateMove(
+      rewind,
+      { x: 0, y: 0, z: 14 },
+      tracker({ lastSequence: 10, lastMotion: baseline }),
+      1_000,
+    ).accepted).toBe(false);
+    expect(validateMove(
+      snapshot({
+        sequence: 11,
+        simulationTick: 104,
+        doubleJumpSequence: 20,
+        doubleJumpTick: 102,
+      }),
+      { x: 0, y: 0, z: 14 },
+      tracker({ lastSequence: 10, lastMotion: baseline }),
+      1_000,
+    ).accepted).toBe(false);
   });
 });

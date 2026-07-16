@@ -91,6 +91,24 @@ const moveSchema = z.object({
   runBlend: z.number().finite().min(0).max(1).optional(),
   airProgress: z.number().finite().min(0).max(1).optional(),
   simulationTick: z.number().int().nonnegative().max(0xffff_ffff).optional(),
+  velocityX: z.number().finite().min(-12).max(12).optional(),
+  velocityZ: z.number().finite().min(-12).max(12).optional(),
+  turnLean: z.number().finite().min(-0.5).max(0.5).optional(),
+  accelerationLean: z.number().finite().min(-0.25).max(0.25).optional(),
+  glideBank: z.number().finite().min(-1).max(1).optional(),
+  anticipationSequence: z.number().int().nonnegative().max(0xffff_ffff).optional(),
+  jumpSequence: z.number().int().nonnegative().max(0xffff_ffff).optional(),
+  doubleJumpSequence: z.number().int().nonnegative().max(0xffff_ffff).optional(),
+  landSequence: z.number().int().nonnegative().max(0xffff_ffff).optional(),
+  skidSequence: z.number().int().nonnegative().max(0xffff_ffff).optional(),
+  anticipationTick: z.number().int().nonnegative().max(0xffff_ffff).optional(),
+  jumpTick: z.number().int().nonnegative().max(0xffff_ffff).optional(),
+  doubleJumpTick: z.number().int().nonnegative().max(0xffff_ffff).optional(),
+  landTick: z.number().int().nonnegative().max(0xffff_ffff).optional(),
+  skidTick: z.number().int().nonnegative().max(0xffff_ffff).optional(),
+  landingTier: z.enum(['soft', 'heavy']).optional(),
+  stateTransitionSequence: z.number().int().nonnegative().max(0xffff_ffff).optional(),
+  stateTransitionTick: z.number().int().nonnegative().max(0xffff_ffff).optional(),
 });
 
 const chatSchema = z.object({
@@ -455,6 +473,7 @@ export class MarketRoom extends Room<{ state: MarketRoomState; client: MarketCli
     }
     data.move.lastSequence = snapshot.sequence;
     data.move.lastAcceptedAt = now;
+    data.move.lastMotion = snapshot;
     player.x = snapshot.x;
     player.y = snapshot.y;
     player.z = snapshot.z;
@@ -469,6 +488,27 @@ export class MarketRoom extends Room<{ state: MarketRoomState; client: MarketCli
     player.runBlend = snapshot.runBlend ?? 0;
     player.airProgress = snapshot.airProgress ?? 1;
     player.simulationTick = snapshot.simulationTick ?? 0;
+    player.motionStateV2 = snapshot.velocityX !== undefined
+      && snapshot.velocityZ !== undefined
+      && snapshot.stateTransitionSequence !== undefined;
+    player.velocityX = snapshot.velocityX ?? 0;
+    player.velocityZ = snapshot.velocityZ ?? 0;
+    player.turnLean = snapshot.turnLean ?? 0;
+    player.accelerationLean = snapshot.accelerationLean ?? 0;
+    player.glideBank = snapshot.glideBank ?? 0;
+    player.anticipationSequence = snapshot.anticipationSequence ?? 0;
+    player.jumpSequence = snapshot.jumpSequence ?? 0;
+    player.doubleJumpSequence = snapshot.doubleJumpSequence ?? 0;
+    player.landSequence = snapshot.landSequence ?? 0;
+    player.skidSequence = snapshot.skidSequence ?? 0;
+    player.anticipationTick = snapshot.anticipationTick ?? 0;
+    player.jumpTick = snapshot.jumpTick ?? 0;
+    player.doubleJumpTick = snapshot.doubleJumpTick ?? 0;
+    player.landTick = snapshot.landTick ?? 0;
+    player.skidTick = snapshot.skidTick ?? 0;
+    player.landingTier = snapshot.landingTier ?? 'soft';
+    player.stateTransitionSequence = snapshot.stateTransitionSequence ?? 0;
+    player.stateTransitionTick = snapshot.stateTransitionTick ?? 0;
     player.updatedAt = now;
     getRoomServices().admissions.updatePosition(`${this.roomId}:${client.sessionId}`, player.x, player.z);
   }
@@ -504,6 +544,11 @@ export class MarketRoom extends Room<{ state: MarketRoomState; client: MarketCli
     player.movementBlend = 0;
     player.runBlend = 0;
     player.airProgress = 1;
+    player.velocityX = 0;
+    player.velocityZ = 0;
+    player.turnLean = 0;
+    player.accelerationLean = 0;
+    player.glideBank = 0;
     player.updatedAt = now;
     data.move.lastAcceptedAt = now;
     data.move.lastReceivedAt = now;

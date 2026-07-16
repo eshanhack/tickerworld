@@ -11,6 +11,9 @@ export interface MovementTuning {
   };
   readonly input: {
     deadzone: number;
+    gamepadDeadzone: number;
+    gamepadSprintThreshold: number;
+    gamepadTriggerThreshold: number;
     coyoteSeconds: number;
     jumpBufferSeconds: number;
     jumpReleaseCut: number;
@@ -30,6 +33,8 @@ export interface MovementTuning {
     skidSeconds: number;
     skidBrake: number;
     groundSnapHeight: number;
+    /** Maximum planar integration segment before collision resolution runs. */
+    collisionSweepStep: number;
     uphillSpeedLoss: number;
     downhillSpeedGain: number;
   };
@@ -96,6 +101,9 @@ export const DEFAULT_MOVEMENT_TUNING: Readonly<MovementTuning> = Object.freeze({
   },
   input: {
     deadzone: 0.04,
+    gamepadDeadzone: 0.14,
+    gamepadSprintThreshold: 0.82,
+    gamepadTriggerThreshold: 0.45,
     coyoteSeconds: 0.11,
     jumpBufferSeconds: 0.12,
     jumpReleaseCut: 0.42,
@@ -115,6 +123,7 @@ export const DEFAULT_MOVEMENT_TUNING: Readonly<MovementTuning> = Object.freeze({
     skidSeconds: 0.15,
     skidBrake: 0.92,
     groundSnapHeight: 0.32,
+    collisionSweepStep: 0.04,
     uphillSpeedLoss: 0.11,
     downhillSpeedGain: 0.075,
   },

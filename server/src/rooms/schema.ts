@@ -1,4 +1,4 @@
-import { MapSchema, Schema, type } from '@colyseus/schema';
+import { Encoder, MapSchema, Schema, type } from '@colyseus/schema';
 import {
   PROTOCOL_VERSION,
   WORLD_DAY_DURATION_SECONDS,
@@ -6,6 +6,13 @@ import {
   type MoveSnapshot,
   type SharedWorldEnvironment,
 } from '@tickerworld/shared';
+
+// Fifty canonical avatars now carry compact motion-detail fields. Colyseus'
+// small default encoder scratch buffer can overflow while a full shard is
+// joining, which drops state patches precisely when fidelity matters most.
+// The room itself remains capped at 50 players; this only sizes the bounded
+// serialization workspace for that known maximum.
+Encoder.BUFFER_SIZE = 64 * 1024;
 
 export class PlayerState extends Schema {
   @type('string') actorId = '';
@@ -23,6 +30,25 @@ export class PlayerState extends Schema {
   @type('float32') runBlend = 0;
   @type('float32') airProgress = 1;
   @type('uint32') simulationTick = 0;
+  @type('boolean') motionStateV2 = false;
+  @type('float32') velocityX = 0;
+  @type('float32') velocityZ = 0;
+  @type('float32') turnLean = 0;
+  @type('float32') accelerationLean = 0;
+  @type('float32') glideBank = 0;
+  @type('uint32') anticipationSequence = 0;
+  @type('uint32') jumpSequence = 0;
+  @type('uint32') doubleJumpSequence = 0;
+  @type('uint32') landSequence = 0;
+  @type('uint32') skidSequence = 0;
+  @type('uint32') anticipationTick = 0;
+  @type('uint32') jumpTick = 0;
+  @type('uint32') doubleJumpTick = 0;
+  @type('uint32') landTick = 0;
+  @type('uint32') skidTick = 0;
+  @type('string') landingTier = 'soft';
+  @type('uint32') stateTransitionSequence = 0;
+  @type('uint32') stateTransitionTick = 0;
   @type('string') animal = 'fox';
   @type('string') skin = 'base';
   @type('string') username = '';
@@ -48,6 +74,8 @@ export class MarketRoomState extends Schema {
   @type('boolean') scopedChat = true;
   /** Positive capability; absent on earlier protocol-v2 room schemas. */
   @type('boolean') motionStateV1 = true;
+  /** Exact lean/velocity and lossless short-action counters. */
+  @type('boolean') motionStateV2 = true;
   @type(WorldEnvironmentState) environment = new WorldEnvironmentState();
   @type({ map: PlayerState }) players = new MapSchema<PlayerState>();
 }

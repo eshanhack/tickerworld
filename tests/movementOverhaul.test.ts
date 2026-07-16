@@ -63,6 +63,35 @@ describe('movement overhaul', () => {
     input.dispose();
   });
 
+  it('applies live gamepad deadzone and sprint tuning without rebuilding input', () => {
+    const tuning = cloneMovementTuning();
+    tuning.input.gamepadDeadzone = 0.9;
+    tuning.input.gamepadSprintThreshold = 0.95;
+    const gamepad = {
+      connected: true,
+      axes: [0.7, -0.8],
+      buttons: Array.from({ length: 8 }, () => ({ pressed: false, touched: false, value: 0 })),
+    } as unknown as Gamepad;
+    const input = new PlayerInputController({
+      target: null,
+      document: null,
+      gamepads: () => [gamepad],
+      tuning: tuning.input,
+    });
+    input.pollGamepad();
+    expect(input.state.moveX).toBe(0);
+    expect(input.state.moveForward).toBe(0);
+    expect(input.state.sprint).toBe(false);
+
+    tuning.input.gamepadDeadzone = 0.1;
+    tuning.input.gamepadSprintThreshold = 0.5;
+    input.pollGamepad();
+    expect(input.state.moveX).toBeGreaterThan(0.6);
+    expect(input.state.moveForward).toBeGreaterThan(0.7);
+    expect(input.state.sprint).toBe(true);
+    input.dispose();
+  });
+
   it('keeps every runtime constant centralized, editable, and exportable', () => {
     const tuning = cloneMovementTuning();
     expect(setMovementTuningValue(tuning, 'jump.fallGravityScale', 2.05)).toBe(true);
@@ -83,22 +112,69 @@ describe('movement overhaul', () => {
       verticalSpeed: 0,
       grounded: true,
       gait: 'run',
-      movementState: '',
-      gaitPhase: 0,
-      movementBlend: 0,
-      runBlend: 0,
-      airProgress: 0,
+      movementState: 'run',
+      gaitPhase: 0.42,
+      movementBlend: 1,
+      runBlend: 0.8,
+      airProgress: 1,
       simulationTick: 0,
+      motionStateV2: false,
+      velocityX: 0,
+      velocityZ: 0,
+      turnLean: 0,
+      accelerationLean: 0,
+      glideBank: 0,
+      stateTransitionSequence: 0,
+      stateTransitionTick: 0,
       animal: 'fox',
       skin: 'base',
       username: null,
       updatedAt: 1,
     });
-    expect(legacy?.movementState).toBeUndefined();
-    expect(legacy?.gaitPhase).toBeUndefined();
-    expect(legacy?.movementBlend).toBeUndefined();
-    expect(legacy?.runBlend).toBeUndefined();
-    expect(legacy?.airProgress).toBeUndefined();
+    expect(legacy?.movementState).toBe('run');
+    expect(legacy?.gaitPhase).toBe(0.42);
+    expect(legacy?.movementBlend).toBe(1);
+    expect(legacy?.velocityX).toBeUndefined();
+    expect(legacy?.turnLean).toBeUndefined();
+    expect(legacy?.stateTransitionSequence).toBeUndefined();
+  });
+
+  it('accepts exact remote detail only when the sending player advertises v2 motion', () => {
+    const exact = parseRemote({
+      actorId: 'v2-actor',
+      x: 1,
+      y: 0,
+      z: 2,
+      yaw: 0.5,
+      speed: 4,
+      verticalSpeed: -2,
+      grounded: false,
+      gait: 'air',
+      movementState: 'glide',
+      gaitPhase: 0.42,
+      movementBlend: 1,
+      runBlend: 0.8,
+      airProgress: 0.5,
+      simulationTick: 84,
+      motionStateV2: true,
+      velocityX: 3.2,
+      velocityZ: -4.1,
+      turnLean: 0.14,
+      accelerationLean: -0.03,
+      glideBank: 0.62,
+      stateTransitionSequence: 7,
+      stateTransitionTick: 81,
+      animal: 'fox',
+      skin: 'base',
+      username: null,
+      updatedAt: 1,
+    });
+    expect(exact?.motionStateV2).toBe(true);
+    expect(exact?.velocityX).toBe(3.2);
+    expect(exact?.velocityZ).toBe(-4.1);
+    expect(exact?.turnLean).toBe(0.14);
+    expect(exact?.glideBank).toBe(0.62);
+    expect(exact?.stateTransitionSequence).toBe(7);
   });
 
   it('runs equivalent fixed simulation across 30, 60, 120, and jittered render frames', () => {
@@ -202,6 +278,29 @@ describe('movement overhaul', () => {
     expect(heldApex - tappedApex).toBeGreaterThan(0.3);
   });
 
+  it('preserves a press-and-release that happens entirely between rendered frames', () => {
+    const full = player().fox;
+    const tapped = player().fox;
+    full.setGlideHeld(true);
+    full.requestJump();
+    tapped.setGlideHeld(true);
+    tapped.requestJump();
+    // Mobile taps and very fast keyboard taps can release before the next RAF.
+    // The release must survive until the fixed simulation consumes it.
+    tapped.setGlideHeld(false);
+
+    let fullApex = 0;
+    let tappedApex = 0;
+    for (let frame = 0; frame < 150; frame += 1) {
+      step(full, 1 / 120);
+      step(tapped, 1 / 120);
+      fullApex = Math.max(fullApex, full.position.y);
+      tappedApex = Math.max(tappedApex, tapped.position.y);
+    }
+
+    expect(fullApex - tappedApex).toBeGreaterThan(0.3);
+  });
+
   it('uses analog magnitude once and preserves traversal speed while lightly steering a glide', () => {
     const half = player();
     const full = player();
@@ -303,6 +402,33 @@ describe('movement overhaul', () => {
     expect(minimumPivotSpeed).toBeGreaterThan(5.6);
     expect(fox.snapshot.speed).toBeGreaterThan(6.6);
     expect(fox.getMotionDebugSnapshot().locomotionState).not.toBe('idle');
+  });
+
+  it('sweeps thin blockers and keeps tangential wall movement flowing', () => {
+    const { fox, input } = player();
+    const samples: Array<{ x: number; z: number }> = [];
+    const thinWall = (
+      previousX: number,
+      _previousZ: number,
+      nextX: number,
+      nextZ: number,
+    ) => ({
+      // This intentionally behaves like an endpoint-only district collider.
+      // Micro-sweeping must prevent a fast diagonal step from skipping it.
+      x: nextX >= 1 && nextX <= 1.04 ? previousX : nextX,
+      z: nextZ,
+    });
+    input.setVirtualInput(1, 1, true);
+    for (let frame = 0; frame < 150; frame += 1) {
+      fox.update(1 / 60, 0, flat, grass, undefined, undefined, thinWall);
+      samples.push({ x: fox.snapshot.x, z: fox.snapshot.z });
+    }
+
+    expect(Math.max(...samples.map(({ x }) => x))).toBeLessThan(1.001);
+    expect(samples.at(-1)!.z).toBeLessThan(-8);
+    const wallSamples = samples.filter(({ x }) => x > 0.9);
+    expect(wallSamples.length).toBeGreaterThan(30);
+    expect(wallSamples.every(({ x }) => x < 1.001)).toBe(true);
   });
 
   it('keeps ordinary full jumps soft while reserving heavy landings for real drops', () => {
@@ -411,6 +537,155 @@ describe('movement overhaul', () => {
     expect(fox.networkMotion.simulationTick).toBeGreaterThan(0);
     expect(fox.networkMotion.gaitPhase).toBeGreaterThanOrEqual(0);
     expect(fox.networkMotion.gaitPhase).toBeLessThan(1);
+    expect(fox.networkMotion.velocityX).toBeCloseTo(fox.snapshot.speed * -Math.sin(fox.travelYaw), 3);
+    expect(fox.networkMotion.velocityZ).toBeCloseTo(fox.snapshot.speed * -Math.cos(fox.travelYaw), 3);
+    expect(Math.abs(fox.networkMotion.turnLean)).toBeLessThanOrEqual(fox.movementTuning.glide.bankRadians);
+    expect(Math.abs(fox.networkMotion.glideBank)).toBeLessThanOrEqual(1);
+    expect(fox.networkMotion.jumpSequence).toBeGreaterThan(0);
+    expect(fox.networkMotion.doubleJumpSequence).toBeGreaterThan(0);
+  });
+
+  it('draws sampled world-space glide ribbons and bank sparkles from fixed pools', () => {
+    const { fox, input } = player();
+    input.setVirtualInput(0.45, 1, true);
+    fox.setGlideHeld(true);
+    fox.requestJump();
+    for (let frame = 0; frame < 12; frame += 1) step(fox, 1 / 60);
+    fox.requestJump();
+    for (let frame = 0; frame < 90 && !fox.isGliding; frame += 1) step(fox, 1 / 60);
+    expect(fox.isGliding).toBe(true);
+    for (let frame = 0; frame < 30; frame += 1) step(fox, 1 / 60);
+
+    const ribbon = fox.group.getObjectByName('GlideRibbonLeft');
+    expect(ribbon).toBeInstanceOf(THREE.InstancedMesh);
+    const matrix = new THREE.Matrix4();
+    const position = new THREE.Vector3();
+    const quaternion = new THREE.Quaternion();
+    const scale = new THREE.Vector3();
+    const centers: number[] = [];
+    for (let index = 0; index < (ribbon as THREE.InstancedMesh).count; index += 1) {
+      (ribbon as THREE.InstancedMesh).getMatrixAt(index, matrix);
+      matrix.decompose(position, quaternion, scale);
+      if (scale.lengthSq() > 0.00001) centers.push(position.z);
+    }
+    expect(centers.length).toBeGreaterThan(6);
+    expect(Math.max(...centers) - Math.min(...centers)).toBeGreaterThan(0.25);
+    const visibleSparkles = [...fox.group.children]
+      .flatMap((child) => child.children)
+      .filter(({ name, visible }) => name.startsWith('FoxMagicParticle') && visible);
+    expect(visibleSparkles.length).toBeGreaterThan(0);
+  });
+
+  it('keeps glide trail history stable across 30, 60, and 120 Hz rendering', () => {
+    const measureTrail = (delta: number): number => {
+      const { fox, input } = player();
+      input.setVirtualInput(0, 1, true);
+      fox.setGlideHeld(true);
+      fox.requestJump();
+      for (let frame = 0; frame < 12; frame += 1) step(fox, 1 / 60);
+      fox.requestJump();
+      for (let frame = 0; frame < 90 && !fox.isGliding; frame += 1) step(fox, 1 / 60);
+      expect(fox.isGliding).toBe(true);
+      for (let elapsed = 0; elapsed < 0.6; elapsed += delta) step(fox, delta);
+
+      const ribbon = fox.group.getObjectByName('GlideRibbonLeft') as THREE.InstancedMesh;
+      const matrix = new THREE.Matrix4();
+      const position = new THREE.Vector3();
+      const quaternion = new THREE.Quaternion();
+      const scale = new THREE.Vector3();
+      const centers: number[] = [];
+      for (let index = 0; index < ribbon.count; index += 1) {
+        ribbon.getMatrixAt(index, matrix);
+        matrix.decompose(position, quaternion, scale);
+        if (scale.lengthSq() > 0.00001) centers.push(position.z);
+      }
+      expect(centers.length).toBeGreaterThan(10);
+      return Math.max(...centers) - Math.min(...centers);
+    };
+    const extents = [measureTrail(1 / 30), measureTrail(1 / 60), measureTrail(1 / 120)];
+    expect(Math.max(...extents) - Math.min(...extents)).toBeLessThan(0.45);
+  });
+
+  it('keeps network motion ticks monotonic across a hard position correction', () => {
+    const { fox, input } = player();
+    input.setVirtualInput(0, 1, true);
+    for (let frame = 0; frame < 12; frame += 1) step(fox, 1 / 60);
+    const before = fox.networkMotion.simulationTick;
+    fox.setPosition(3, 0, -4);
+    expect(fox.networkMotion.simulationTick).toBe(before);
+    step(fox, 1 / 60);
+    expect(fox.networkMotion.simulationTick).toBe(before + 1);
+  });
+
+  it('soaks one logical minute of circles, hops, double jumps, and glides with bounded pools', () => {
+    const { fox, input } = player();
+    const rollingGround = (x: number, z: number): number => (
+      Math.sin(x * 0.17) * 0.12 + Math.cos(z * 0.14) * 0.1
+    );
+    fox.setPosition(6, rollingGround(6, 0), 0);
+    const initialObjects = new Set<THREE.Object3D>();
+    fox.group.traverse((object) => initialObjects.add(object));
+    const states = new Set<string>();
+    let airborneStage = -1;
+    let maximumParticles = 0;
+    let maximumRings = 0;
+    let maximumTrailSegments = 0;
+    const guard = (
+      _previousX: number,
+      _previousZ: number,
+      nextX: number,
+      nextZ: number,
+    ): { x: number; z: number } => {
+      const radius = Math.hypot(nextX, nextZ);
+      if (radius > 30) return { x: nextX / radius * 30, z: nextZ / radius * 30 };
+      if (radius < 4) {
+        const safe = Math.max(0.001, radius);
+        return { x: nextX / safe * 4, z: nextZ / safe * 4 };
+      }
+      return { x: nextX, z: nextZ };
+    };
+
+    for (let frame = 0; frame < 3_600; frame += 1) {
+      const phase = frame * 0.018;
+      input.setVirtualInput(Math.sin(phase), Math.cos(phase), frame % 480 < 360);
+      if (airborneStage < 0 && fox.snapshot.grounded && frame % 210 === 0) {
+        fox.setGlideHeld(true);
+        fox.requestJump();
+        airborneStage = 0;
+      } else if (airborneStage >= 0) {
+        airborneStage += 1;
+        if (airborneStage === 12) fox.requestJump();
+        if (airborneStage === 82) fox.setGlideHeld(false);
+        if (airborneStage > 20 && fox.snapshot.grounded) airborneStage = -1;
+      }
+      fox.update(1 / 60, 0, rollingGround, grass, undefined, undefined, guard);
+      const motion = fox.getMotionDebugSnapshot();
+      states.add(motion.locomotionState);
+      maximumParticles = Math.max(maximumParticles, motion.activeParticles);
+      maximumRings = Math.max(maximumRings, motion.activeRings);
+      maximumTrailSegments = Math.max(maximumTrailSegments, motion.activeTrailSegments);
+      expect([
+        fox.snapshot.x,
+        fox.snapshot.y,
+        fox.snapshot.z,
+        fox.snapshot.speed,
+        fox.snapshot.verticalSpeed,
+      ].every(Number.isFinite)).toBe(true);
+    }
+
+    const finalObjects = new Set<THREE.Object3D>();
+    fox.group.traverse((object) => finalObjects.add(object));
+    expect(finalObjects.size).toBe(initialObjects.size);
+    expect(states).toEqual(expect.objectContaining(new Set([
+      'run',
+      'double-jump',
+      'glide',
+      'land-soft',
+    ])));
+    expect(maximumParticles).toBeLessThanOrEqual(32);
+    expect(maximumRings).toBeLessThanOrEqual(5);
+    expect(maximumTrailSegments).toBeLessThanOrEqual(72);
+    expect(Math.hypot(fox.snapshot.x, fox.snapshot.z)).toBeLessThanOrEqual(30.01);
   });
 
   it('keeps every animal responsive through the full airborne chain', () => {

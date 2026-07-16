@@ -56,6 +56,8 @@ function createSystem(options: {
   occlusionBounds?: ConstructorParameters<typeof RemoteAvatarSystem>[0]['occlusionBounds'];
   detailDistance?: number;
   cullDistance?: number;
+  heightAt?: (x: number, z: number) => number;
+  reducedMotion?: boolean;
 } = {}): { parent: Group; camera: PerspectiveCamera; system: RemoteAvatarSystem } {
   const parent = new Group();
   const camera = new PerspectiveCamera(52, 1, 0.1, 100);
@@ -72,6 +74,8 @@ function createSystem(options: {
     occlusionBounds: options.occlusionBounds,
     detailDistance: options.detailDistance,
     cullDistance: options.cullDistance,
+    heightAt: options.heightAt,
+    reducedMotion: options.reducedMotion,
     viewport: () => ({ left: 0, top: 0, width: 800, height: 600 }),
   });
   return { parent, camera, system };
@@ -151,6 +155,46 @@ describe('remote avatar interpolation', () => {
       0.5,
     );
     expect(flip.airProgress).toBeCloseTo(0.5, 6);
+  });
+
+  it('switches short action counters on their exact replicated simulation tick', () => {
+    const before = {
+      x: 0, y: 0, z: 0, yaw: 0, speed: 7, verticalSpeed: 0, grounded: true, gait: 'run' as const,
+      movementState: 'run' as const,
+      simulationTick: 100,
+      stateTransitionSequence: 7,
+      stateTransitionTick: 96,
+      doubleJumpSequence: 2,
+      doubleJumpTick: 88,
+      turnLean: -0.08,
+      accelerationLean: 0.03,
+      glideBank: 0,
+    };
+    const after = {
+      ...before,
+      y: 1,
+      grounded: false,
+      gait: 'air' as const,
+      movementState: 'double-jump' as const,
+      simulationTick: 106,
+      stateTransitionSequence: 8,
+      stateTransitionTick: 104,
+      doubleJumpSequence: 3,
+      doubleJumpTick: 103,
+      turnLean: 0.16,
+      accelerationLean: -0.05,
+      glideBank: 0.7,
+    };
+    const early = interpolateRemotePose(before, after, 0.4);
+    const event = interpolateRemotePose(before, after, 0.55);
+    const state = interpolateRemotePose(before, after, 0.7);
+    expect(early.doubleJumpSequence).toBe(2);
+    expect(event.doubleJumpSequence).toBe(3);
+    expect(event.movementState).toBe('run');
+    expect(state.movementState).toBe('double-jump');
+    expect(state.turnLean).toBeCloseTo(0.088, 3);
+    expect(state.glideBank).toBeCloseTo(0.49, 3);
+    expect(state.simulationTick).toBe(104);
   });
 
   it('clips bubbles without clipping the full room message', () => {
@@ -332,6 +376,170 @@ describe('canonical remote avatar renderer', () => {
     now += 200;
     system.update(1 / 60);
     expect(root.getObjectByName('FoxModel')!.position.y).toBeLessThan(0.02);
+    system.dispose();
+  });
+
+  it('applies reduced-motion flips to remotes and updates the preference live', () => {
+    let now = 1_000;
+    const { system } = createSystem({ maxPlayers: 1, now: () => now, reducedMotion: true });
+    const airborne = remote('gentle', 3, 1, 'base', 'rabbit', null, {
+      y: 2,
+      grounded: false,
+      gait: 'air',
+      verticalSpeed: 0.2,
+      movementState: 'double-jump',
+      airProgress: 0.48,
+      movementBlend: 1,
+      runBlend: 1,
+    });
+    system.setPlayers([airborne], now);
+    now += 200;
+    system.update(1 / 60);
+    const aerial = system.getActorRenderRoot('gentle')!.getObjectByName('RemoteAerialPivot')!;
+    expect(Math.abs(aerial.rotation.x)).toBeGreaterThan(0.5);
+    expect(Math.abs(aerial.rotation.x)).toBeLessThan(Math.PI);
+
+    system.setReducedMotion(false);
+    system.setPlayers([{ ...airborne, updatedAt: 2 }], now);
+    now += 200;
+    system.update(1 / 60);
+    expect(Math.abs(aerial.rotation.x)).toBeGreaterThan(Math.PI * 1.5);
+    system.dispose();
+  });
+
+  it('plants every species from its actual canonical paw geometry on slopes', () => {
+    let now = 1_000;
+    const heightAt = (x: number, z: number): number => x * 0.11 + z * 0.045;
+    const { system } = createSystem({ maxPlayers: 3, now: () => now, heightAt });
+    const animals = ['frog', 'bear', 'rabbit'] as const;
+    system.setPlayers(animals.map((animal, index) => {
+      const x = index * 3 - 3;
+      const z = -8;
+      return remote(`slope-${animal}`, x, 1, 'base', animal, null, {
+        y: heightAt(x, z),
+        z,
+        speed: 0,
+        gait: 'idle',
+      });
+    }), now);
+    now += 200;
+    for (let frame = 0; frame < 30; frame += 1) system.update(1 / 60);
+
+    for (const animal of animals) {
+      const root = system.getActorRenderRoot(`slope-${animal}`)!;
+      root.updateMatrixWorld(true);
+      for (const name of [
+        'FoxFrontLeftPaw',
+        'FoxFrontRightPaw',
+        'FoxHindLeftPaw',
+        'FoxHindRightPaw',
+      ]) {
+        const paw = root.getObjectByName(name) as Mesh;
+        const positions = paw.geometry.getAttribute('position');
+        const vertex = new Vector3();
+        let minimumClearance = Number.POSITIVE_INFINITY;
+        for (let index = 0; index < positions.count; index += 1) {
+          vertex.fromBufferAttribute(positions, index).applyMatrix4(paw.matrixWorld);
+          minimumClearance = Math.min(
+            minimumClearance,
+            vertex.y - heightAt(vertex.x, vertex.z),
+          );
+        }
+        expect(minimumClearance).toBeGreaterThan(-0.045);
+        expect(minimumClearance).toBeLessThan(0.2);
+      }
+    }
+    system.dispose();
+  });
+
+  it('replays skipped short actions and exact lean from compact motion counters', () => {
+    let now = 2_000;
+    const { system } = createSystem({ maxPlayers: 1, now: () => now });
+    system.setPlayers([remote('lossless', 2, 1, 'base', 'fox', null, {
+      movementState: 'run',
+      movementBlend: 1,
+      runBlend: 1,
+      simulationTick: 100,
+      doubleJumpSequence: 3,
+      doubleJumpTick: 92,
+      turnLean: 0,
+      accelerationLean: 0,
+      velocityX: 0,
+      velocityZ: -7,
+    })], now);
+    now += 200;
+    system.update(1 / 60);
+
+    // The next 10Hz sample has already moved on to fall; the monotonic action
+    // serial still guarantees that the celebratory flip is rendered once.
+    system.setPlayers([remote('lossless', 2.7, 2, 'base', 'fox', null, {
+      y: 1.8,
+      grounded: false,
+      gait: 'air',
+      movementState: 'fall',
+      movementBlend: 1,
+      runBlend: 1,
+      simulationTick: 106,
+      doubleJumpSequence: 4,
+      doubleJumpTick: 103,
+      turnLean: 0.2,
+      accelerationLean: -0.06,
+      velocityX: 4.4,
+      velocityZ: -5.4,
+    })], now);
+    now += 200;
+    for (let frame = 0; frame < 8; frame += 1) system.update(1 / 60);
+    const root = system.getActorRenderRoot('lossless')!;
+    const aerial = root.getObjectByName('RemoteAerialPivot')!;
+    const model = root.getObjectByName('FoxModel')!;
+    expect(Math.abs(aerial.rotation.x)).toBeGreaterThan(0.5);
+    expect(model.rotation.z).toBeGreaterThan(0.08);
+    expect(model.rotation.x).toBeLessThan(-0.01);
+    system.dispose();
+  });
+
+  it('does not replay historical action counters after distance culling', () => {
+    let now = 2_000;
+    const { system } = createSystem({ maxPlayers: 1, now: () => now, cullDistance: 10 });
+    system.setPlayers([remote('culled', 20, 1, 'base', 'fox', null, {
+      grounded: false,
+      gait: 'air',
+      movementState: 'fall',
+      verticalSpeed: -3,
+      simulationTick: 100,
+      doubleJumpSequence: 2,
+      doubleJumpTick: 90,
+    })], now);
+    now += 200;
+    system.update(1 / 60);
+    expect(system.getDebugStats().rendered).toBe(0);
+
+    system.setPlayers([remote('culled', 20, 2, 'base', 'fox', null, {
+      grounded: false,
+      gait: 'air',
+      movementState: 'fall',
+      verticalSpeed: -3,
+      simulationTick: 106,
+      doubleJumpSequence: 3,
+      doubleJumpTick: 103,
+    })], now);
+    now += 200;
+    system.update(1 / 60);
+
+    system.setPlayers([remote('culled', 2, 3, 'base', 'fox', null, {
+      grounded: false,
+      gait: 'air',
+      movementState: 'fall',
+      verticalSpeed: -3,
+      simulationTick: 112,
+      doubleJumpSequence: 3,
+      doubleJumpTick: 103,
+    })], now);
+    now += 200;
+    system.update(1 / 60);
+    expect(system.getDebugStats().rendered).toBe(1);
+    const aerial = system.getActorRenderRoot('culled')!.getObjectByName('RemoteAerialPivot')!;
+    expect(Math.abs(aerial.rotation.x)).toBeLessThan(0.3);
     system.dispose();
   });
 

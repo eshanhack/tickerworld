@@ -111,6 +111,13 @@ export interface FoxMotionDebugSnapshot {
   readonly fixedSteps: number;
   readonly interpolationAlpha: number;
   readonly airtime: number;
+  readonly coyoteRemaining: number;
+  readonly jumpBufferRemaining: number;
+  readonly jumpsUsed: number;
+  readonly glideBank: number;
+  readonly activeParticles: number;
+  readonly activeRings: number;
+  readonly activeTrailSegments: number;
   readonly tuning: Readonly<MovementTuning>;
   readonly rig: FoxRigDebugSnapshot;
 }
@@ -122,6 +129,24 @@ export interface FoxNetworkMotionSnapshot {
   readonly runBlend: number;
   readonly airProgress: number;
   readonly simulationTick: number;
+  readonly velocityX: number;
+  readonly velocityZ: number;
+  readonly turnLean: number;
+  readonly accelerationLean: number;
+  readonly glideBank: number;
+  readonly anticipationSequence: number;
+  readonly jumpSequence: number;
+  readonly doubleJumpSequence: number;
+  readonly landSequence: number;
+  readonly skidSequence: number;
+  readonly anticipationTick: number;
+  readonly jumpTick: number;
+  readonly doubleJumpTick: number;
+  readonly landTick: number;
+  readonly skidTick: number;
+  readonly landingTier: 'soft' | 'heavy';
+  readonly stateTransitionSequence: number;
+  readonly stateTransitionTick: number;
 }
 
 interface MagicParticle {
@@ -141,9 +166,20 @@ interface MovementRing {
   bornFrame: number;
 }
 
+interface GlideTrailSegment {
+  readonly center: THREE.Vector3;
+  readonly direction: THREE.Vector3;
+  life: number;
+  maxLife: number;
+  active: boolean;
+}
+
 const DEFAULT_SURFACE: SurfaceSampler = () => 'grass';
 const NO_HEIGHT: HeightSampler = () => 0;
 const SPRINT_CLUSTER_SECONDS = 0.08;
+const GLIDE_TRAIL_SEGMENTS_PER_SIDE = 36;
+const GLIDE_TRAIL_LIFETIME_SECONDS = 0.56;
+const GLIDE_TRAIL_SAMPLE_DISTANCE = 0.08;
 
 function damp(current: number, target: number, responsiveness: number, deltaSeconds: number): number {
   return THREE.MathUtils.lerp(current, target, 1 - Math.exp(-responsiveness * deltaSeconds));
@@ -179,6 +215,19 @@ export class FoxPlayer {
   private readonly magicParticles: MagicParticle[] = [];
   private readonly movementRings: MovementRing[] = [];
   private readonly glideRibbons: readonly THREE.Mesh[];
+  private readonly glideTrailSegments: readonly [GlideTrailSegment[], GlideTrailSegment[]] = [[], []];
+  private readonly glideTrailLast: readonly [THREE.Vector3, THREE.Vector3] = [
+    new THREE.Vector3(),
+    new THREE.Vector3(),
+  ];
+  private readonly glideTrailReady = [false, false];
+  private readonly glideTrailCursor = [0, 0];
+  private readonly glideTrailMatrix = new THREE.Matrix4();
+  private readonly glideTrailPosition = new THREE.Vector3();
+  private readonly glideTrailDirection = new THREE.Vector3();
+  private readonly glideTrailScale = new THREE.Vector3();
+  private readonly glideTrailQuaternion = new THREE.Quaternion();
+  private readonly glideTrailForward = new THREE.Vector3(0, 0, 1);
   private readonly simulationPosition = new THREE.Vector3();
   private readonly previousSimulationPosition = new THREE.Vector3();
   private readonly renderedPosition = new THREE.Vector3();
@@ -257,6 +306,18 @@ export class FoxPlayer {
   private fixedAccumulator = 0;
   private fixedStepsLastFrame = 0;
   private simulationTick = 0;
+  private anticipationSequence = 0;
+  private jumpSequence = 0;
+  private doubleJumpSequence = 0;
+  private landSequence = 0;
+  private skidSequence = 0;
+  private anticipationTick = 0;
+  private jumpTick = 0;
+  private doubleJumpTick = 0;
+  private landTick = 0;
+  private skidTick = 0;
+  private stateTransitionSequence = 0;
+  private stateTransitionTick = 0;
   private interpolationAlpha = 0;
   private skidRemaining = 0;
   private glideBank = 0;
@@ -280,6 +341,7 @@ export class FoxPlayer {
     this.sprintSpeed = options.sprintSpeed ?? this.motionProfile.sprintSpeed;
     this.reducedMotion = options.reducedMotion ?? false;
     this.tuning = options.tuning ?? loadMovementTuning(DEBUG_MODE);
+    this.input.setTuning(this.tuning.input);
 
     this.group.name = 'FoxPlayer';
     this.headingPivot.name = 'FoxHeadingPivot';
@@ -338,6 +400,24 @@ export class FoxPlayer {
       runBlend: this.runBlend,
       airProgress: this.airProgress,
       simulationTick: this.simulationTick >>> 0,
+      velocityX: this.velocity.x,
+      velocityZ: this.velocity.z,
+      turnLean: this.turnLean,
+      accelerationLean: this.accelerationLean,
+      glideBank: this.glideBank,
+      anticipationSequence: this.anticipationSequence >>> 0,
+      jumpSequence: this.jumpSequence >>> 0,
+      doubleJumpSequence: this.doubleJumpSequence >>> 0,
+      landSequence: this.landSequence >>> 0,
+      skidSequence: this.skidSequence >>> 0,
+      anticipationTick: this.anticipationTick >>> 0,
+      jumpTick: this.jumpTick >>> 0,
+      doubleJumpTick: this.doubleJumpTick >>> 0,
+      landTick: this.landTick >>> 0,
+      skidTick: this.skidTick >>> 0,
+      landingTier: this.lastLanding,
+      stateTransitionSequence: this.stateTransitionSequence >>> 0,
+      stateTransitionTick: this.stateTransitionTick >>> 0,
     };
   }
 
@@ -399,6 +479,14 @@ export class FoxPlayer {
   }
 
   public getMotionDebugSnapshot(): FoxMotionDebugSnapshot {
+    let activeParticles = 0;
+    let activeRings = 0;
+    let activeTrailSegments = 0;
+    for (const particle of this.magicParticles) if (particle.mesh.visible) activeParticles += 1;
+    for (const ring of this.movementRings) if (ring.mesh.visible) activeRings += 1;
+    for (const side of this.glideTrailSegments) {
+      for (const segment of side) if (segment.active) activeTrailSegments += 1;
+    }
     return {
       locomotionState: this.stateValue,
       airPose: this.airPose,
@@ -419,6 +507,13 @@ export class FoxPlayer {
       fixedSteps: this.fixedStepsLastFrame,
       interpolationAlpha: this.interpolationAlpha,
       airtime: this.airborneTime,
+      coyoteRemaining: this.coyoteRemaining,
+      jumpBufferRemaining: this.jumpBufferRemaining,
+      jumpsUsed: this.jumpsUsed,
+      glideBank: this.glideBank,
+      activeParticles,
+      activeRings,
+      activeTrailSegments,
       tuning: this.tuning,
       rig: this.rig.getDebugSnapshot(),
     };
@@ -457,9 +552,7 @@ export class FoxPlayer {
     this.doublePoseRemaining = 0;
     this.landingRemaining = 0;
     this.glideActive = false;
-    this.stateValue = 'idle';
     this.fixedAccumulator = 0;
-    this.simulationTick = 0;
     this.interpolationAlpha = 0;
     this.facingAngularVelocity = 0;
     this.skidRemaining = 0;
@@ -476,12 +569,17 @@ export class FoxPlayer {
     this.previousFacingYaw = this.facingYaw;
     this.previousTurnLean = this.turnLean;
     this.previousAccelerationLean = this.accelerationLean;
+    this.commitState('idle');
     this.aerialPivot.rotation.set(0, 0, 0);
     this.aerialPivot.scale.set(1, 1, 1);
     this.rig.resetSecondaryMotion();
     for (const particle of this.magicParticles) particle.mesh.visible = false;
     for (const ring of this.movementRings) ring.mesh.visible = false;
     for (const ribbon of this.glideRibbons) ribbon.visible = false;
+    for (const side of [0, 1] as const) {
+      this.glideTrailReady[side] = false;
+      for (const segment of this.glideTrailSegments[side]) segment.active = false;
+    }
   }
 
   public setHeadingYaw(yaw: number): void {
@@ -544,7 +642,9 @@ export class FoxPlayer {
     this.frameStart.copy(this.renderedPosition);
     this.input.pollGamepad();
     const input = this.input.state;
-    if (!input.jumpHeld && this.jumpWasHeld) this.jumpReleaseQueued = true;
+    if (this.input.consumeJumpRelease() || (!input.jumpHeld && this.jumpWasHeld)) {
+      this.jumpReleaseQueued = true;
+    }
     if (this.input.consumeJump()) {
       if (this.anticipationRemaining > 0) this.bufferedDoubleJump = true;
       else if (this.grounded) {
@@ -553,10 +653,11 @@ export class FoxPlayer {
         // only inside the fixed loop below.
         this.jumpBufferRemaining = 0;
         this.anticipationRemaining = this.tuning.jump.anticipationSeconds;
+        this.markAnticipation();
         this.landingRemaining = 0;
         this.airPose = 'anticipate';
         this.airProgress = 0;
-        this.stateValue = 'jump-anticipate';
+        this.commitState('jump-anticipate');
       } else {
         this.jumpBufferRemaining = this.tuning.input.jumpBufferSeconds;
       }
@@ -741,7 +842,7 @@ export class FoxPlayer {
           0,
           this.movementDirection.z * retainedSpeed,
         );
-        this.stateValue = 'skid';
+        this.commitState('skid');
         this.spawnMagic(this.tuning.vfx.skidDustCount, 0.72);
         this.spawnMovementRing(0.6, 0xd7bd8a);
         this.emitAction('skid', 0.82, onAction);
@@ -854,36 +955,42 @@ export class FoxPlayer {
     );
     const stepStartX = this.group.position.x;
     const stepStartZ = this.group.position.z;
-    let nextX = stepStartX + this.velocity.x * delta;
-    let nextZ = stepStartZ + this.velocity.z * delta;
-    if (this.grounded) {
-      const currentGround = safeHeight(heightAt, this.group.position.x, this.group.position.z, this.group.position.y);
-      const proposedGround = safeHeight(heightAt, nextX, nextZ, currentGround);
-      if (proposedGround - currentGround > this.tuning.ground.groundSnapHeight) {
-        const xGround = safeHeight(heightAt, nextX, this.group.position.z, currentGround);
-        const zGround = safeHeight(heightAt, this.group.position.x, nextZ, currentGround);
-        if (xGround - currentGround > this.tuning.ground.groundSnapHeight) nextX = this.group.position.x;
-        if (zGround - currentGround > this.tuning.ground.groundSnapHeight) nextZ = this.group.position.z;
-        const finalGround = safeHeight(heightAt, nextX, nextZ, currentGround);
-        if (finalGround - currentGround > this.tuning.ground.groundSnapHeight) {
-          nextX = this.group.position.x;
-          nextZ = this.group.position.z;
+    const displacementX = this.velocity.x * delta;
+    const displacementZ = this.velocity.z * delta;
+    const displacementLength = Math.hypot(displacementX, displacementZ);
+    const sweepStep = Math.max(0.01, this.tuning.ground.collisionSweepStep);
+    const sweepCount = Math.max(1, Math.min(8, Math.ceil(displacementLength / sweepStep)));
+    const segmentX = displacementX / sweepCount;
+    const segmentZ = displacementZ / sweepCount;
+    for (let segment = 0; segment < sweepCount; segment += 1) {
+      const segmentStartX = this.group.position.x;
+      const segmentStartZ = this.group.position.z;
+      let nextX = segmentStartX + segmentX;
+      let nextZ = segmentStartZ + segmentZ;
+      if (this.grounded) {
+        const currentGround = safeHeight(heightAt, segmentStartX, segmentStartZ, this.group.position.y);
+        const proposedGround = safeHeight(heightAt, nextX, nextZ, currentGround);
+        if (proposedGround - currentGround > this.tuning.ground.groundSnapHeight) {
+          const xGround = safeHeight(heightAt, nextX, segmentStartZ, currentGround);
+          const zGround = safeHeight(heightAt, segmentStartX, nextZ, currentGround);
+          if (xGround - currentGround > this.tuning.ground.groundSnapHeight) nextX = segmentStartX;
+          if (zGround - currentGround > this.tuning.ground.groundSnapHeight) nextZ = segmentStartZ;
+          const finalGround = safeHeight(heightAt, nextX, nextZ, currentGround);
+          if (finalGround - currentGround > this.tuning.ground.groundSnapHeight) {
+            nextX = segmentStartX;
+            nextZ = segmentStartZ;
+          }
         }
       }
-    }
-    this.group.position.x = nextX;
-    this.group.position.z = nextZ;
-    if (resolveHorizontal) {
-      const resolved = resolveHorizontal(
-        stepStartX,
-        stepStartZ,
-        this.group.position.x,
-        this.group.position.z,
-      );
-      if (Number.isFinite(resolved.x) && Number.isFinite(resolved.z)) {
-        this.group.position.x = resolved.x;
-        this.group.position.z = resolved.z;
+      if (resolveHorizontal) {
+        const resolved = resolveHorizontal(segmentStartX, segmentStartZ, nextX, nextZ);
+        if (Number.isFinite(resolved.x) && Number.isFinite(resolved.z)) {
+          nextX = resolved.x;
+          nextZ = resolved.z;
+        }
       }
+      this.group.position.x = nextX;
+      this.group.position.z = nextZ;
     }
     const actualX = (this.group.position.x - stepStartX) / delta;
     const actualZ = (this.group.position.z - stepStartZ) / delta;
@@ -898,7 +1005,7 @@ export class FoxPlayer {
 
     this.advanceGait(delta, sprintRequested);
     this.updateAirPose(delta);
-    this.stateValue = this.deriveLocomotionState();
+    this.commitState(this.deriveLocomotionState());
   }
 
   public dispose(): void {
@@ -996,6 +1103,7 @@ export class FoxPlayer {
           0,
           this.tuning.jump.anticipationSeconds - delta,
         );
+        this.markAnticipation();
         this.landingRemaining = 0;
         this.airPose = 'anticipate';
         this.airProgress = 1 - this.anticipationRemaining / this.tuning.jump.anticipationSeconds;
@@ -1332,6 +1440,26 @@ export class FoxPlayer {
     impactSpeed?: number,
     airtime = this.airborneTime,
   ): void {
+    switch (type) {
+      case 'jump':
+        this.jumpSequence = (this.jumpSequence + 1) >>> 0;
+        this.jumpTick = this.simulationTick >>> 0;
+        break;
+      case 'double-jump':
+        this.doubleJumpSequence = (this.doubleJumpSequence + 1) >>> 0;
+        this.doubleJumpTick = this.simulationTick >>> 0;
+        break;
+      case 'land':
+        this.landSequence = (this.landSequence + 1) >>> 0;
+        this.landTick = this.simulationTick >>> 0;
+        break;
+      case 'skid':
+        this.skidSequence = (this.skidSequence + 1) >>> 0;
+        this.skidTick = this.simulationTick >>> 0;
+        break;
+      default:
+        break;
+    }
     if (!onAction) return;
     const state = type === 'skid' ? 'skid' : this.deriveLocomotionState();
     onAction({
@@ -1345,6 +1473,18 @@ export class FoxPlayer {
       airtime,
       ...(landing ? { landing } : {}),
     });
+  }
+
+  private markAnticipation(): void {
+    this.anticipationSequence = (this.anticipationSequence + 1) >>> 0;
+    this.anticipationTick = this.simulationTick >>> 0;
+  }
+
+  private commitState(next: FoxLocomotionState): void {
+    if (next === this.stateValue) return;
+    this.stateValue = next;
+    this.stateTransitionSequence = (this.stateTransitionSequence + 1) >>> 0;
+    this.stateTransitionTick = this.simulationTick >>> 0;
   }
 
   private emitFootfalls(
@@ -1456,8 +1596,8 @@ export class FoxPlayer {
     }
 
     const ribbons: THREE.Mesh[] = [];
-    const ribbonGeometry = new THREE.BoxGeometry(0.055, 0.022, 1.45);
-    for (const side of [-1, 1] as const) {
+    const ribbonGeometry = new THREE.BoxGeometry(1, 1, 1);
+    for (const [sideIndex, side] of ([-1, 1] as const).entries()) {
       const material = new THREE.MeshBasicMaterial({
         color: side < 0 ? 0xd9c8ff : 0xbcebd8,
         transparent: true,
@@ -1465,12 +1605,34 @@ export class FoxPlayer {
         depthWrite: false,
         blending: THREE.AdditiveBlending,
       });
-      const ribbon = new THREE.Mesh(ribbonGeometry, material);
+      const ribbon = new THREE.InstancedMesh(
+        ribbonGeometry,
+        material,
+        GLIDE_TRAIL_SEGMENTS_PER_SIDE,
+      );
       ribbon.name = side < 0 ? 'GlideRibbonLeft' : 'GlideRibbonRight';
-      ribbon.position.set(side * 0.26, 0.48, 0.9);
       ribbon.visible = false;
+      ribbon.frustumCulled = false;
       ribbon.renderOrder = 2;
-      this.headingPivot.add(ribbon);
+      ribbon.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      this.glideTrailScale.set(0, 0, 0);
+      this.glideTrailMatrix.compose(
+        this.glideTrailPosition.set(0, -100, 0),
+        this.glideTrailQuaternion.identity(),
+        this.glideTrailScale,
+      );
+      for (let index = 0; index < GLIDE_TRAIL_SEGMENTS_PER_SIDE; index += 1) {
+        ribbon.setMatrixAt(index, this.glideTrailMatrix);
+        this.glideTrailSegments[sideIndex as 0 | 1].push({
+          center: new THREE.Vector3(),
+          direction: new THREE.Vector3(0, 0, 1),
+          life: 0,
+          maxLife: GLIDE_TRAIL_LIFETIME_SECONDS,
+          active: false,
+        });
+      }
+      ribbon.instanceMatrix.needsUpdate = true;
+      this.movementFxGroup.add(ribbon);
       ribbons.push(ribbon);
     }
     return ribbons;
@@ -1529,17 +1691,82 @@ export class FoxPlayer {
     const ribbonOpacity = this.reducedMotion
       ? this.tuning.vfx.glideRibbonOpacity * 0.35
       : this.tuning.vfx.glideRibbonOpacity;
-    for (let index = 0; index < this.glideRibbons.length; index += 1) {
-      const ribbon = this.glideRibbons[index]!;
-      if (this.glideActive) ribbon.visible = true;
+    if (this.glideActive) this.sampleGlideTrail();
+    else {
+      this.glideTrailReady[0] = false;
+      this.glideTrailReady[1] = false;
+    }
+    for (const sideIndex of [0, 1] as const) {
+      const ribbon = this.glideRibbons[sideIndex] as THREE.InstancedMesh;
       const material = ribbon.material as THREE.MeshBasicMaterial;
-      material.opacity = damp(material.opacity, this.glideActive ? ribbonOpacity : 0, 8, delta);
-      const side = index === 0 ? -1 : 1;
-      ribbon.position.x = side * 0.26 + Math.sin(this.elapsed * 5.2 + index * Math.PI) * 0.035;
-      ribbon.position.y = 0.48 + Math.sin(this.elapsed * 4.1 + index) * 0.035;
-      ribbon.rotation.y = -this.glideBank * side * 0.08;
-      ribbon.scale.z = 0.78 + this.normalizedSpeed * 0.42;
-      if (!this.glideActive && material.opacity < 0.002) ribbon.visible = false;
+      let anyActive = false;
+      for (let index = 0; index < this.glideTrailSegments[sideIndex].length; index += 1) {
+        const segment = this.glideTrailSegments[sideIndex][index]!;
+        if (segment.active) {
+          segment.life -= delta;
+          if (segment.life <= 0) segment.active = false;
+        }
+        if (!segment.active) {
+          this.glideTrailMatrix.compose(
+            this.glideTrailPosition.set(0, -100, 0),
+            this.glideTrailQuaternion.identity(),
+            this.glideTrailScale.set(0, 0, 0),
+          );
+          ribbon.setMatrixAt(index, this.glideTrailMatrix);
+          continue;
+        }
+        anyActive = true;
+        const fade = THREE.MathUtils.smoothstep(segment.life / segment.maxLife, 0, 1);
+        const length = Math.max(0.01, segment.direction.length());
+        this.glideTrailDirection.copy(segment.direction).multiplyScalar(1 / length);
+        this.glideTrailQuaternion.setFromUnitVectors(this.glideTrailForward, this.glideTrailDirection);
+        this.glideTrailPosition.copy(segment.center).sub(this.renderedPosition);
+        this.glideTrailScale.set(0.05 * fade, 0.016 * fade, length * 1.08);
+        this.glideTrailMatrix.compose(
+          this.glideTrailPosition,
+          this.glideTrailQuaternion,
+          this.glideTrailScale,
+        );
+        ribbon.setMatrixAt(index, this.glideTrailMatrix);
+      }
+      material.opacity = damp(material.opacity, anyActive ? ribbonOpacity : 0, 10, delta);
+      ribbon.visible = anyActive || material.opacity >= 0.002;
+      ribbon.instanceMatrix.needsUpdate = true;
+    }
+  }
+
+  private sampleGlideTrail(): void {
+    const rightX = Math.cos(this.facingYaw);
+    const rightZ = -Math.sin(this.facingYaw);
+    for (const sideIndex of [0, 1] as const) {
+      const side = sideIndex === 0 ? -1 : 1;
+      this.glideTrailPosition.set(
+        this.renderedPosition.x + rightX * side * 0.33,
+        this.renderedPosition.y + 0.5 + Math.sin(this.elapsed * 4.1 + sideIndex) * 0.025,
+        this.renderedPosition.z + rightZ * side * 0.33,
+      );
+      const previous = this.glideTrailLast[sideIndex];
+      if (!this.glideTrailReady[sideIndex]) {
+        previous.copy(this.glideTrailPosition);
+        this.glideTrailReady[sideIndex] = true;
+        continue;
+      }
+      this.glideTrailDirection.copy(this.glideTrailPosition).sub(previous);
+      // Distance-based sampling makes trail history independent of whether the
+      // renderer is running at 30, 60, or 120 Hz.
+      if (this.glideTrailDirection.lengthSq() < GLIDE_TRAIL_SAMPLE_DISTANCE ** 2) continue;
+      const segments = this.glideTrailSegments[sideIndex];
+      const cursor = this.glideTrailCursor[sideIndex] ?? 0;
+      this.glideTrailCursor[sideIndex] = cursor + 1;
+      const segment = segments[cursor % segments.length]!;
+      segment.center.copy(previous).add(this.glideTrailPosition).multiplyScalar(0.5);
+      segment.direction.copy(this.glideTrailDirection);
+      segment.maxLife = this.reducedMotion
+        ? GLIDE_TRAIL_LIFETIME_SECONDS * 0.55
+        : GLIDE_TRAIL_LIFETIME_SECONDS;
+      segment.life = segment.maxLife;
+      segment.active = true;
+      previous.copy(this.glideTrailPosition);
     }
   }
 
@@ -1591,9 +1818,39 @@ export class FoxPlayer {
     this.magicTimer -= delta;
     if (this.magicTimer > 0) return;
     const active = !this.grounded || speed > 0.55;
-    this.spawnMagic(1, this.glideActive ? 0.52 : (active ? 0.38 : 0.2));
+    if (this.glideActive && Math.abs(this.glideBank) > 0.28) {
+      this.spawnBankSparkle(Math.sign(this.glideBank) || 1);
+    } else {
+      this.spawnMagic(1, this.glideActive ? 0.52 : (active ? 0.38 : 0.2));
+    }
     this.magicTimer = this.reducedMotion
       ? (active ? 0.24 : 0.85)
       : (this.glideActive ? 0.065 : (active ? 0.105 : 0.52));
+  }
+
+  private spawnBankSparkle(side: number): void {
+    const serial = this.magicCursor++;
+    const particle = this.magicParticles[serial % this.magicParticles.length];
+    if (!particle) return;
+    const rightX = Math.cos(this.facingYaw);
+    const rightZ = -Math.sin(this.facingYaw);
+    const forwardX = -Math.sin(this.facingYaw);
+    const forwardZ = -Math.cos(this.facingYaw);
+    particle.mesh.position.set(
+      rightX * side * 0.42 - forwardX * 0.08,
+      0.52,
+      rightZ * side * 0.42 - forwardZ * 0.08,
+    );
+    particle.velocity.set(
+      rightX * side * 0.16 + forwardX * 0.22,
+      0.08,
+      rightZ * side * 0.16 + forwardZ * 0.22,
+    );
+    particle.maxLife = this.reducedMotion ? 0.2 : 0.34;
+    particle.life = particle.maxLife;
+    particle.bornFrame = this.renderFrame;
+    particle.baseScale = this.reducedMotion ? 0.42 : 0.7;
+    particle.mesh.scale.setScalar(0.08);
+    particle.mesh.visible = true;
   }
 }

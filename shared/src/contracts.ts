@@ -77,6 +77,26 @@ export interface MoveSnapshot {
   runBlend?: number;
   airProgress?: number;
   simulationTick?: number;
+  /** Optional v2 motion-detail capability used for exact remote secondary motion. */
+  velocityX?: number;
+  velocityZ?: number;
+  turnLean?: number;
+  accelerationLean?: number;
+  glideBank?: number;
+  /** Monotonic action counters keep sub-100ms poses visible across 10Hz patches. */
+  anticipationSequence?: number;
+  jumpSequence?: number;
+  doubleJumpSequence?: number;
+  landSequence?: number;
+  skidSequence?: number;
+  anticipationTick?: number;
+  jumpTick?: number;
+  doubleJumpTick?: number;
+  landTick?: number;
+  skidTick?: number;
+  landingTier?: 'soft' | 'heavy';
+  stateTransitionSequence?: number;
+  stateTransitionTick?: number;
 }
 
 export type ReplicatedMovementState =
@@ -114,6 +134,26 @@ export interface NetPlayerState {
   runBlend?: number;
   airProgress?: number;
   simulationTick?: number;
+  /** Distinguishes exact motion fields from zero-valued schema defaults sent for legacy clients. */
+  motionStateV2?: boolean;
+  velocityX?: number;
+  velocityZ?: number;
+  turnLean?: number;
+  accelerationLean?: number;
+  glideBank?: number;
+  anticipationSequence?: number;
+  jumpSequence?: number;
+  doubleJumpSequence?: number;
+  landSequence?: number;
+  skidSequence?: number;
+  anticipationTick?: number;
+  jumpTick?: number;
+  doubleJumpTick?: number;
+  landTick?: number;
+  skidTick?: number;
+  landingTier?: 'soft' | 'heavy';
+  stateTransitionSequence?: number;
+  stateTransitionTick?: number;
   animal: AnimalKind;
   skin: SkinId;
   username: string | null;

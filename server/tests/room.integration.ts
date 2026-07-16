@@ -368,7 +368,7 @@ describe.sequential('Colyseus market rooms', () => {
       y: sampleBoundedTerrainHeight(localBeforeMove.x + 0.2, localBeforeMove.z + 0.1),
       z: localBeforeMove.z + 0.1,
       yaw: 0.1,
-      speed: 1,
+      speed: Math.hypot(1.7, -0.8),
       verticalSpeed: 0,
       grounded: true,
       gait: 'walk' as const,
@@ -378,6 +378,24 @@ describe.sequential('Colyseus market rooms', () => {
       runBlend: 0.84,
       airProgress: 1,
       simulationTick: 240,
+      velocityX: 1.7,
+      velocityZ: -0.8,
+      turnLean: 0.16,
+      accelerationLean: -0.04,
+      glideBank: 0.72,
+      anticipationSequence: 5,
+      jumpSequence: 5,
+      doubleJumpSequence: 2,
+      landSequence: 4,
+      skidSequence: 3,
+      anticipationTick: 221,
+      jumpTick: 224,
+      doubleJumpTick: 230,
+      landTick: 236,
+      skidTick: 218,
+      landingTier: 'heavy' as const,
+      stateTransitionSequence: 14,
+      stateTransitionTick: 238,
     };
     first.send('move', move);
     await new Promise((resolve) => setTimeout(resolve, 250));
@@ -390,8 +408,16 @@ describe.sequential('Colyseus market rooms', () => {
       gait: 'walk',
       movementState: 'run',
       simulationTick: 240,
+      anticipationSequence: 5,
+      doubleJumpSequence: 2,
+      landSequence: 4,
+      landingTier: 'heavy',
+      stateTransitionSequence: 14,
+      motionStateV2: true,
     });
     expect(remote.gaitPhase).toBeCloseTo(0.37, 4);
+    expect(remote.velocityX).toBeCloseTo(1.7, 4);
+    expect(remote.velocityZ).toBeCloseTo(-0.8, 4);
 
     const authoritative = [...(testServer.getRoomById(first.roomId).state as any).players.values()]
       .find((player: any) => player.actorId === firstIdentity.actorId);
