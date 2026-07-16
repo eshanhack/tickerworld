@@ -1196,7 +1196,7 @@ export class FoxPlayer {
     if (
       this.delayedDoubleJumpQueued
       && this.jumpsUsed === 1
-      && this.airborneTime >= 0.12
+      && this.airborneTime >= this.tuning.jump.queuedDoubleDelaySeconds
     ) {
       this.delayedDoubleJumpQueued = false;
       this.launchJump(true, onAction);

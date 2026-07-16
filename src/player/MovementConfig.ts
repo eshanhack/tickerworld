@@ -58,6 +58,7 @@ export interface MovementTuning {
     airAccelerationRatio: number;
     airTurnResponse: number;
     doubleControlBurst: number;
+    queuedDoubleDelaySeconds: number;
     doublePoseSeconds: number;
     softLandingSpeed: number;
     heavyLandingSpeed: number;
@@ -175,6 +176,7 @@ export const DEFAULT_MOVEMENT_TUNING: Readonly<MovementTuning> = Object.freeze({
     airAccelerationRatio: 0.76,
     airTurnResponse: 4.4,
     doubleControlBurst: 0.26,
+    queuedDoubleDelaySeconds: 0.12,
     doublePoseSeconds: 0.44,
     softLandingSpeed: 5.5,
     heavyLandingSpeed: 12.2,
@@ -321,6 +323,7 @@ export const MOVEMENT_TUNING_BOUNDS = Object.freeze({
     airAccelerationRatio: bounds(0, 2, 0.001),
     airTurnResponse: bounds(0, 100, 0.1),
     doubleControlBurst: bounds(0, 2, 0.001),
+    queuedDoubleDelaySeconds: bounds(0, 0.6, 0.001),
     doublePoseSeconds: bounds(0, 2, 0.001),
     softLandingSpeed: bounds(0, 30, 0.001),
     heavyLandingSpeed: bounds(0, 30, 0.001),

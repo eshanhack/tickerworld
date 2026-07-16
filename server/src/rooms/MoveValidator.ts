@@ -78,9 +78,13 @@ function hasPlausibleMotionProgress(
     Math.max(18, Math.ceil(elapsedMs * 0.09) + 12),
   );
 
-  if (previous.simulationTick !== undefined) {
-    if (snapshot.simulationTick === undefined
-      || uint32Delta(snapshot.simulationTick, previous.simulationTick) > maxTickAdvance) {
+  const simulationAdvance = previous.simulationTick === undefined
+    ? undefined
+    : snapshot.simulationTick === undefined
+      ? null
+      : uint32Delta(snapshot.simulationTick, previous.simulationTick);
+  if (simulationAdvance !== undefined) {
+    if (simulationAdvance === null || simulationAdvance > maxTickAdvance) {
       return false;
     }
   }
@@ -103,7 +107,24 @@ function hasPlausibleMotionProgress(
       : maxActionAdvance;
     if (serialAdvance > allowedAdvance) return false;
     const tickAdvance = uint32Delta(nextTick, previousTick);
-    if (serialAdvance === 0 ? tickAdvance !== 0 : tickAdvance > maxTickAdvance) return false;
+    if (serialAdvance === 0) {
+      if (tickAdvance !== 0) return false;
+      continue;
+    }
+
+    // An action tick records when that action most recently fired, so after a
+    // long idle its delta from the *previous action tick* can legitimately be
+    // thousands of fixed steps. Validate a newly-fired event against the
+    // simulation interval carried by these two network samples instead. This
+    // retains uint32 wrap support while preventing a future/backdated event.
+    if (simulationAdvance !== undefined && simulationAdvance !== null) {
+      const eventOffset = uint32Delta(nextTick, previous.simulationTick!);
+      if (eventOffset > simulationAdvance) return false;
+    } else if (tickAdvance > maxTickAdvance) {
+      // Legacy motion snapshots may omit simulationTick. Keep the old bounded
+      // delta check for that compatibility path.
+      return false;
+    }
   }
   return true;
 }

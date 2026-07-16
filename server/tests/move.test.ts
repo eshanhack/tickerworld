@@ -179,4 +179,69 @@ describe('authoritative movement validation', () => {
       1_000,
     ).accepted).toBe(false);
   });
+
+  it('accepts the first jump action after a long idle simulation', () => {
+    const idle = snapshot({
+      sequence: 10,
+      simulationTick: 4_200,
+      anticipationSequence: 0,
+      anticipationTick: 0,
+      jumpSequence: 0,
+      jumpTick: 0,
+      stateTransitionSequence: 1,
+      stateTransitionTick: 1,
+    });
+    const anticipation = snapshot({
+      sequence: 11,
+      simulationTick: 4_206,
+      movementState: 'jump-anticipate',
+      anticipationSequence: 1,
+      anticipationTick: 4_203,
+      jumpSequence: 0,
+      jumpTick: 0,
+      stateTransitionSequence: 2,
+      stateTransitionTick: 4_203,
+    });
+
+    expect(validateMove(
+      anticipation,
+      { x: 0, y: 0, z: 14 },
+      tracker({ lastSequence: 10, lastMotion: idle }),
+      1_000,
+    )).toEqual({ accepted: true });
+  });
+
+  it('rejects a newly-fired action tick outside its simulation interval', () => {
+    const idle = snapshot({
+      sequence: 10,
+      simulationTick: 4_200,
+      anticipationSequence: 0,
+      anticipationTick: 0,
+    });
+    const futureEvent = snapshot({
+      sequence: 11,
+      simulationTick: 4_206,
+      anticipationSequence: 1,
+      anticipationTick: 4_207,
+    });
+    const staleEvent = snapshot({
+      sequence: 11,
+      simulationTick: 4_206,
+      anticipationSequence: 1,
+      anticipationTick: 4_199,
+    });
+
+    expect(validateMove(
+      futureEvent,
+      { x: 0, y: 0, z: 14 },
+      tracker({ lastSequence: 10, lastMotion: idle }),
+      1_000,
+    ).accepted).toBe(false);
+    expect(validateMove(
+      staleEvent,
+      { x: 0, y: 0, z: 14 },
+      tracker({ lastSequence: 10, lastMotion: idle }),
+      1_000,
+    ).accepted).toBe(false);
+  });
 });
